@@ -1,7 +1,90 @@
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600&family=Outfit:wght@300;400;500;600&display=swap');
 @import "tailwindcss";
+
+:root {
+  --bg-base:       #0c0b0a;
+  --bg-surface:    #131110;
+  --bg-elevated:   #1b1916;
+  --bg-sidebar:    #0f0e0d;
+  --border-dim:    #1f1d1b;
+  --border-mid:    #2c2926;
+  --border-bright: #3c3935;
+  --text-primary:  #e3ddd2;
+  --text-secondary:#96908a;
+  --text-muted:    #514d4a;
+  --accent:        #bf8b5e;
+  --accent-bright: #cc9b6e;
+  --accent-dim:    rgba(191, 139, 94, 0.1);
+  --accent-glow:   rgba(191, 139, 94, 0.05);
+  --red:           #e05252;
+}
+
+*, *::before, *::after {
+  font-family: 'Outfit', sans-serif;
+  box-sizing: border-box;
+}
 
 html, body, #root {
   height: 100%;
   margin: 0;
   padding: 0;
+  background: var(--bg-base);
+  color: var(--text-primary);
+}
+
+::-webkit-scrollbar        { width: 3px; height: 3px; }
+::-webkit-scrollbar-track  { background: transparent; }
+::-webkit-scrollbar-thumb  { background: var(--border-mid); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-bright); }
+
+/* Form fields — bottom-border-only luxury style */
+.ff {
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border-mid);
+  color: var(--text-primary);
+  font-size: 14px;
+  font-family: 'Outfit', sans-serif;
+  font-weight: 400;
+  padding: 8px 0;
+  outline: none;
+  transition: border-color 0.15s ease;
+  appearance: none;
+}
+.ff::placeholder { color: var(--text-muted); }
+.ff:focus        { border-bottom-color: var(--accent); }
+
+select.ff { cursor: pointer; }
+textarea.ff { resize: none; }
+
+select option {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(7px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+.anim-fade-up {
+  opacity: 0;
+  animation: fadeUp 0.22s ease forwards;
+}
+.anim-fade-in {
+  opacity: 0;
+  animation: fadeIn 0.18s ease forwards;
+}
+.anim-scale-in {
+  opacity: 0;
+  animation: scaleIn 0.2s ease forwards;
 }
