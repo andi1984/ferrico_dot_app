@@ -1,0 +1,235 @@
+name: PR Test Report
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+concurrency:
+  group: pr-report-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  report:
+    name: Build test report
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Rust setup ──────────────────────────────────────────────────────────
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workdir: src-tauri
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      # ── Frontend setup ──────────────────────────────────────────────────────
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      # ── Run Rust tests ──────────────────────────────────────────────────────
+      - name: Run Rust tests
+        id: rust_tests
+        working-directory: src-tauri
+        continue-on-error: true
+        run: |
+          cargo test --workspace 2>&1 | tee ../rust-test-output.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Collect Rust coverage
+        id: rust_coverage
+        working-directory: src-tauri
+        continue-on-error: true
+        run: |
+          cargo llvm-cov --workspace --text 2>/dev/null | tee ../rust-coverage.txt || true
+
+      # ── Run frontend tests ──────────────────────────────────────────────────
+      - name: Run frontend tests
+        id: frontend_tests
+        continue-on-error: true
+        run: |
+          bun run test:json 2>&1 || true
+
+      - name: Type check frontend
+        id: frontend_typecheck
+        continue-on-error: true
+        run: |
+          bun run typecheck 2>&1 | tee ts-errors.txt
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      # ── Build markdown comment ───────────────────────────────────────────────
+      - name: Build comment
+        id: build_comment
+        shell: bash
+        run: |
+          SHORT_SHA="${{ github.event.pull_request.head.sha }}"
+          SHORT_SHA="${SHORT_SHA:0:7}"
+          BRANCH="${{ github.head_ref }}"
+
+          # ── Rust test table ──────────────────────────────────────────────────
+          RUST_PASS=0
+          RUST_FAIL=0
+          RUST_ROWS=""
+          if [ -f rust-test-output.txt ]; then
+            while IFS= read -r line; do
+              if [[ "$line" =~ ^"test "[a-z] ]]; then
+                name=$(echo "$line" | sed 's/^test //' | sed 's/ \.\.\. .*//')
+                status=$(echo "$line" | awk '{print $NF}')
+                if [ "$status" = "ok" ]; then
+                  RUST_ROWS="${RUST_ROWS}| \`${name}\` | ✅ |\n"
+                  RUST_PASS=$((RUST_PASS + 1))
+                else
+                  RUST_ROWS="${RUST_ROWS}| \`${name}\` | ❌ |\n"
+                  RUST_FAIL=$((RUST_FAIL + 1))
+                fi
+              fi
+            done < rust-test-output.txt
+          fi
+
+          if [ $RUST_FAIL -eq 0 ]; then
+            RUST_STATUS="✅"
+          else
+            RUST_STATUS="❌"
+          fi
+
+          # ── Coverage table ───────────────────────────────────────────────────
+          COV_ROWS=""
+          TOTAL_COV=""
+          if [ -f rust-coverage.txt ]; then
+            while IFS= read -r line; do
+              if [[ "$line" =~ ^"src/" ]]; then
+                filename=$(echo "$line" | awk '{print $1}' | sed 's|src/||')
+                total_lines=$(echo "$line" | awk '{print $8}')
+                missed_lines=$(echo "$line" | awk '{print $9}')
+                cover=$(echo "$line" | awk '{print $10}')
+                if [[ "$total_lines" =~ ^[0-9]+$ ]]; then
+                  covered=$((total_lines - missed_lines))
+                  COV_ROWS="${COV_ROWS}| \`${filename}\` | ${total_lines} | ${covered} | ${cover} |\n"
+                fi
+              elif [[ "$line" =~ ^TOTAL ]]; then
+                total_lines=$(echo "$line" | awk '{print $8}')
+                missed_lines=$(echo "$line" | awk '{print $9}')
+                cover=$(echo "$line" | awk '{print $10}')
+                if [[ "$total_lines" =~ ^[0-9]+$ ]]; then
+                  covered=$((total_lines - missed_lines))
+                  TOTAL_COV="| **Total** | **${total_lines}** | **${covered}** | **${cover}** |"
+                fi
+              fi
+            done < rust-coverage.txt
+          fi
+
+          # ── Frontend test table ──────────────────────────────────────────────
+          FE_PASS=0
+          FE_FAIL=0
+          FE_ROWS=""
+          if [ -f vitest-results.json ] && command -v jq &>/dev/null; then
+            FE_PASS=$(jq '.numPassedTests // 0' vitest-results.json)
+            FE_FAIL=$(jq '.numFailedTests // 0' vitest-results.json)
+            FE_ROWS=$(jq -r '
+              .testResults[]?.assertionResults[]? |
+              "| `\(.fullName)` | \(if .status == "passed" then "✅" else "❌" end) |"
+            ' vitest-results.json 2>/dev/null || echo "")
+          fi
+
+          if [ "$FE_FAIL" -eq 0 ]; then
+            FE_STATUS="✅"
+          else
+            FE_STATUS="❌"
+          fi
+
+          # ── TypeScript ───────────────────────────────────────────────────────
+          TS_ERRORS=$(grep -c "error TS" ts-errors.txt 2>/dev/null || echo 0)
+          if [ "$TS_ERRORS" -eq 0 ]; then
+            TS_LINE="TypeScript ✅ — 0 errors"
+          else
+            TS_LINE="TypeScript ❌ — ${TS_ERRORS} error(s)"
+          fi
+
+          # ── Assemble comment ─────────────────────────────────────────────────
+          {
+            echo 'BODY<<COMMENT_EOF'
+            echo "## 🧪 Test Report — \`${BRANCH}\` @ \`${SHORT_SHA}\`"
+            echo ""
+            echo "### 🦀 Rust — ${RUST_STATUS} ${RUST_PASS} passed · ${RUST_FAIL} failed"
+            echo ""
+            if [ -n "$RUST_ROWS" ]; then
+              echo "<details>"
+              echo "<summary>Test details</summary>"
+              echo ""
+              echo "| Test | Result |"
+              echo "|------|--------|"
+              echo -e "$RUST_ROWS"
+              echo "</details>"
+              echo ""
+            fi
+            if [ -n "$COV_ROWS" ] || [ -n "$TOTAL_COV" ]; then
+              echo "#### 📊 Coverage"
+              echo ""
+              echo "| File | Lines | Covered | % |"
+              echo "|------|------:|--------:|---|"
+              echo -e "$COV_ROWS"
+              [ -n "$TOTAL_COV" ] && echo "$TOTAL_COV"
+              echo ""
+            fi
+            echo "---"
+            echo ""
+            echo "### 🌐 Frontend — ${FE_STATUS} ${FE_PASS} passed · ${FE_FAIL} failed"
+            echo ""
+            if [ -n "$FE_ROWS" ]; then
+              echo "<details>"
+              echo "<summary>Test details</summary>"
+              echo ""
+              echo "| Test | Result |"
+              echo "|------|--------|"
+              echo "$FE_ROWS"
+              echo ""
+              echo "</details>"
+              echo ""
+            fi
+            echo "$TS_LINE"
+            echo ""
+            echo "---"
+            echo "*Updated on push · ${{ github.event.pull_request.head.sha }}*"
+            echo 'COMMENT_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      # ── Post sticky comment ──────────────────────────────────────────────────
+      - name: Post PR comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: test-report
+          message: ${{ steps.build_comment.outputs.BODY }}
+
+      # ── Fail the job if any tests failed ────────────────────────────────────
+      - name: Check results
+        run: |
+          FAILED=0
+          if grep -q "^test result: FAILED" rust-test-output.txt 2>/dev/null; then
+            echo "❌ Rust tests failed"
+            FAILED=1
+          fi
+          if [ -f vitest-results.json ]; then
+            FE_FAIL=$(jq '.numFailedTests // 0' vitest-results.json)
+            if [ "$FE_FAIL" -gt 0 ]; then
+              echo "❌ Frontend tests failed ($FE_FAIL failures)"
+              FAILED=1
+            fi
+          fi
+          if [ -s ts-errors.txt ]; then
+            echo "❌ TypeScript errors found"
+            FAILED=1
+          fi
+          exit $FAILED

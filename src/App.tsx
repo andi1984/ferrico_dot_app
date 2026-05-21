@@ -1,48 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { Bookmark, Folder, Tag, Selection } from './types'
-
-// ─── Error ────────────────────────────────────────────────────────────────────
-
-function extractErrorMessage(e: unknown): string {
-  if (typeof e === 'string') return e
-  if (e && typeof e === 'object' && 'message' in e) return String((e as { message: unknown }).message)
-  return String(e)
-}
-
-// ─── Utils ────────────────────────────────────────────────────────────────────
-
-function duckduckgoFavicon(url: string): string {
-  try {
-    const { hostname } = new URL(url)
-    return `https://icons.duckduckgo.com/ip3/${hostname}.ico`
-  } catch {
-    return ''
-  }
-}
-
-function domainOf(url: string): string {
-  try {
-    return new URL(url).hostname.replace(/^www\./, '')
-  } catch {
-    return url
-  }
-}
-
-function initials(title: string): string {
-  return title.trim().charAt(0).toUpperCase() || '?'
-}
-
-function formatDate(ts: number): string {
-  const d = new Date(ts * 1000)
-  const now = new Date()
-  const diffMs = now.getTime() - d.getTime()
-  const diffDays = Math.floor(diffMs / 86400000)
-  if (diffDays === 0) return 'Today'
-  if (diffDays === 1) return 'Yesterday'
-  if (diffDays < 7) return `${diffDays}d ago`
-  return d.toLocaleDateString('en', { month: 'short', day: 'numeric' })
-}
+import { duckduckgoFavicon, domainOf, initials, formatDate, extractErrorMessage } from './utils'
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
 
