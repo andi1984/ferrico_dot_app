@@ -228,10 +228,11 @@ fn get_bookmarks(
                      WHERE bt.tag_id = ?1 ORDER BY b.created_at DESC",
                 )
                 .map_err(|e| e.to_string())?;
-            stmt.query_map(params![tid], row_to_raw)
+            let rows: Vec<RawBookmark> = stmt.query_map(params![tid], row_to_raw)
                 .map_err(|e| e.to_string())?
                 .filter_map(|r| r.ok())
-                .collect()
+                .collect();
+            rows
         }
         (Some(fid), None) => {
             let mut stmt = db
@@ -241,10 +242,11 @@ fn get_bookmarks(
                      ORDER BY created_at DESC",
                 )
                 .map_err(|e| e.to_string())?;
-            stmt.query_map(params![fid], row_to_raw)
+            let rows: Vec<RawBookmark> = stmt.query_map(params![fid], row_to_raw)
                 .map_err(|e| e.to_string())?
                 .filter_map(|r| r.ok())
-                .collect()
+                .collect();
+            rows
         }
         (None, None) => {
             let mut stmt = db
@@ -253,10 +255,11 @@ fn get_bookmarks(
                      created_at, updated_at FROM bookmarks ORDER BY created_at DESC",
                 )
                 .map_err(|e| e.to_string())?;
-            stmt.query_map([], row_to_raw)
+            let rows: Vec<RawBookmark> = stmt.query_map([], row_to_raw)
                 .map_err(|e| e.to_string())?
                 .filter_map(|r| r.ok())
-                .collect()
+                .collect();
+            rows
         }
     };
 
@@ -477,7 +480,7 @@ fn export_opml(state: State<'_, AppState>) -> Result<String, String> {
         let mut stmt = db
             .prepare("SELECT id, name, parent_id, created_at FROM folders ORDER BY name")
             .map_err(|e| e.to_string())?;
-        stmt.query_map([], |row| {
+        let rows: Vec<Folder> = stmt.query_map([], |row| {
             Ok(Folder {
                 id: row.get(0)?,
                 name: row.get(1)?,
@@ -487,7 +490,8 @@ fn export_opml(state: State<'_, AppState>) -> Result<String, String> {
         })
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
-        .collect()
+        .collect();
+        rows
     };
 
     let bookmarks: Vec<RawBookmark> = {
@@ -497,10 +501,11 @@ fn export_opml(state: State<'_, AppState>) -> Result<String, String> {
                  created_at, updated_at FROM bookmarks ORDER BY created_at",
             )
             .map_err(|e| e.to_string())?;
-        stmt.query_map([], row_to_raw)
+        let rows: Vec<RawBookmark> = stmt.query_map([], row_to_raw)
             .map_err(|e| e.to_string())?
             .filter_map(|r| r.ok())
-            .collect()
+            .collect();
+        rows
     };
 
     let mut xml = String::from(
