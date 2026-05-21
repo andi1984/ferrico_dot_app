@@ -21,7 +21,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self' tauri: https://tauri.localhost; img-src 'self' tauri: https://tauri.localhost https://icons.duckduckgo.com data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'"
     }
   }
 }

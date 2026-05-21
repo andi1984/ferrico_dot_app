@@ -9,8 +9,11 @@ use axum::{
     routing::post,
     Json, Router,
 };
-use rusqlite::{params, Connection};
+use rand::RngCore;
+use rand::rngs::OsRng;
+use rusqlite::{params, params_from_iter, Connection};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -63,8 +66,8 @@ struct HttpState {
 
 // ─── DB Init ─────────────────────────────────────────────────────────────────
 
-fn init_db(data_dir: &PathBuf) -> Connection {
-    let conn = Connection::open(data_dir.join("ferrico.db")).expect("open db");
+fn init_db(data_dir: &PathBuf) -> Result<Connection, rusqlite::Error> {
+    let conn = Connection::open(data_dir.join("ferrico.db"))?;
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
          PRAGMA foreign_keys = ON;
@@ -100,9 +103,8 @@ fn init_db(data_dir: &PathBuf) -> Connection {
            tag_id      TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
            PRIMARY KEY (bookmark_id, tag_id)
          );",
-    )
-    .expect("create tables");
-    conn
+    )?;
+    Ok(conn)
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -140,41 +142,62 @@ fn row_to_raw(row: &rusqlite::Row) -> rusqlite::Result<RawBookmark> {
     })
 }
 
-fn get_tags_for_bookmark(conn: &Connection, bookmark_id: &str) -> Vec<Tag> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT t.id, t.name, t.color, t.created_at \
-             FROM tags t JOIN bookmark_tags bt ON bt.tag_id = t.id \
-             WHERE bt.bookmark_id = ?1 ORDER BY t.name",
-        )
-        .unwrap();
-    stmt.query_map(params![bookmark_id], |row| {
-        Ok(Tag {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            color: row.get(2)?,
-            created_at: row.get(3)?,
-        })
-    })
-    .unwrap()
-    .filter_map(|r| r.ok())
-    .collect()
+fn get_tags_batch(
+    conn: &Connection,
+    bookmark_ids: &[String],
+) -> rusqlite::Result<HashMap<String, Vec<Tag>>> {
+    let mut map: HashMap<String, Vec<Tag>> = HashMap::new();
+    if bookmark_ids.is_empty() {
+        return Ok(map);
+    }
+    let placeholders = (1..=bookmark_ids.len())
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT bt.bookmark_id, t.id, t.name, t.color, t.created_at \
+         FROM tags t JOIN bookmark_tags bt ON bt.tag_id = t.id \
+         WHERE bt.bookmark_id IN ({placeholders}) ORDER BY t.name"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(bookmark_ids.iter()), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            Tag {
+                id: row.get(1)?,
+                name: row.get(2)?,
+                color: row.get(3)?,
+                created_at: row.get(4)?,
+            },
+        ))
+    })?;
+    for row in rows.flatten() {
+        map.entry(row.0).or_default().push(row.1);
+    }
+    Ok(map)
 }
 
-fn enrich(raw: RawBookmark, conn: &Connection) -> Bookmark {
-    let tags = get_tags_for_bookmark(conn, &raw.id);
-    Bookmark {
-        id: raw.id,
-        url: raw.url,
-        title: raw.title,
-        description: raw.description,
-        favicon_url: raw.favicon_url,
-        feed_url: raw.feed_url,
-        folder_id: raw.folder_id,
-        tags,
-        created_at: raw.created_at,
-        updated_at: raw.updated_at,
-    }
+fn enrich_batch(raws: Vec<RawBookmark>, conn: &Connection) -> rusqlite::Result<Vec<Bookmark>> {
+    let ids: Vec<String> = raws.iter().map(|r| r.id.clone()).collect();
+    let mut tags_map = get_tags_batch(conn, &ids)?;
+    Ok(raws
+        .into_iter()
+        .map(|r| {
+            let tags = tags_map.remove(&r.id).unwrap_or_default();
+            Bookmark {
+                id: r.id,
+                url: r.url,
+                title: r.title,
+                description: r.description,
+                favicon_url: r.favicon_url,
+                feed_url: r.feed_url,
+                folder_id: r.folder_id,
+                tags,
+                created_at: r.created_at,
+                updated_at: r.updated_at,
+            }
+        })
+        .collect())
 }
 
 fn xml_escape(s: &str) -> String {
@@ -192,8 +215,8 @@ fn get_bookmarks(
     tag_id: Option<String>,
     search: Option<String>,
     state: State<'_, AppState>,
-) -> Vec<Bookmark> {
-    let db = state.db.lock().unwrap();
+) -> Result<Vec<Bookmark>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
 
     let raws: Vec<RawBookmark> = match (&folder_id, &tag_id) {
         (_, Some(tid)) => {
@@ -204,9 +227,9 @@ fn get_bookmarks(
                      FROM bookmarks b JOIN bookmark_tags bt ON bt.bookmark_id = b.id \
                      WHERE bt.tag_id = ?1 ORDER BY b.created_at DESC",
                 )
-                .unwrap();
+                .map_err(|e| e.to_string())?;
             stmt.query_map(params![tid], row_to_raw)
-                .unwrap()
+                .map_err(|e| e.to_string())?
                 .filter_map(|r| r.ok())
                 .collect()
         }
@@ -217,9 +240,9 @@ fn get_bookmarks(
                      created_at, updated_at FROM bookmarks WHERE folder_id = ?1 \
                      ORDER BY created_at DESC",
                 )
-                .unwrap();
+                .map_err(|e| e.to_string())?;
             stmt.query_map(params![fid], row_to_raw)
-                .unwrap()
+                .map_err(|e| e.to_string())?
                 .filter_map(|r| r.ok())
                 .collect()
         }
@@ -229,15 +252,15 @@ fn get_bookmarks(
                     "SELECT id, url, title, description, favicon_url, feed_url, folder_id, \
                      created_at, updated_at FROM bookmarks ORDER BY created_at DESC",
                 )
-                .unwrap();
+                .map_err(|e| e.to_string())?;
             stmt.query_map([], row_to_raw)
-                .unwrap()
+                .map_err(|e| e.to_string())?
                 .filter_map(|r| r.ok())
                 .collect()
         }
     };
 
-    let mut bookmarks: Vec<Bookmark> = raws.into_iter().map(|r| enrich(r, &db)).collect();
+    let mut bookmarks = enrich_batch(raws, &db).map_err(|e| e.to_string())?;
 
     if let Some(q) = search {
         let q = q.to_lowercase();
@@ -252,7 +275,14 @@ fn get_bookmarks(
         });
     }
 
-    bookmarks
+    Ok(bookmarks)
+}
+
+#[tauri::command]
+fn get_bookmark_count(state: State<'_, AppState>) -> Result<i64, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.query_row("SELECT COUNT(*) FROM bookmarks", [], |r| r.get(0))
+        .map_err(|e| e.to_string())
 }
 
 #[derive(Deserialize)]
@@ -267,8 +297,8 @@ pub struct CreateBookmarkInput {
 }
 
 #[tauri::command]
-fn add_bookmark(input: CreateBookmarkInput, state: State<'_, AppState>) -> Bookmark {
-    let db = state.db.lock().unwrap();
+fn add_bookmark(input: CreateBookmarkInput, state: State<'_, AppState>) -> Result<Bookmark, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     let id = Uuid::new_v4().to_string();
     let ts = now();
 
@@ -288,7 +318,7 @@ fn add_bookmark(input: CreateBookmarkInput, state: State<'_, AppState>) -> Bookm
             ts
         ],
     )
-    .unwrap();
+    .map_err(|e| e.to_string())?;
 
     if let Some(tag_ids) = &input.tag_ids {
         for tid in tag_ids {
@@ -296,12 +326,16 @@ fn add_bookmark(input: CreateBookmarkInput, state: State<'_, AppState>) -> Bookm
                 "INSERT OR IGNORE INTO bookmark_tags (bookmark_id, tag_id) VALUES (?1, ?2)",
                 params![id, tid],
             )
-            .ok();
+            .map_err(|e| e.to_string())?;
         }
     }
 
-    let tags = get_tags_for_bookmark(&db, &id);
-    Bookmark {
+    let tags = get_tags_batch(&db, &[id.clone()])
+        .map_err(|e| e.to_string())?
+        .remove(&id)
+        .unwrap_or_default();
+
+    Ok(Bookmark {
         id,
         url: input.url,
         title: input.title,
@@ -312,102 +346,122 @@ fn add_bookmark(input: CreateBookmarkInput, state: State<'_, AppState>) -> Bookm
         tags,
         created_at: ts,
         updated_at: ts,
-    }
+    })
 }
 
 #[tauri::command]
-fn delete_bookmark(id: String, state: State<'_, AppState>) {
-    let db = state.db.lock().unwrap();
+fn delete_bookmark(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     db.execute("DELETE FROM bookmarks WHERE id = ?1", params![id])
-        .unwrap();
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
-fn get_folders(state: State<'_, AppState>) -> Vec<Folder> {
-    let db = state.db.lock().unwrap();
+fn get_folders(state: State<'_, AppState>) -> Result<Vec<Folder>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     let mut stmt = db
         .prepare("SELECT id, name, parent_id, created_at FROM folders ORDER BY name")
-        .unwrap();
-    stmt.query_map([], |row| {
-        Ok(Folder {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            parent_id: row.get(2)?,
-            created_at: row.get(3)?,
+        .map_err(|e| e.to_string())?;
+    let folders = stmt
+        .query_map([], |row| {
+            Ok(Folder {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                parent_id: row.get(2)?,
+                created_at: row.get(3)?,
+            })
         })
-    })
-    .unwrap()
-    .filter_map(|r| r.ok())
-    .collect()
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(folders)
 }
 
 #[tauri::command]
-fn add_folder(name: String, parent_id: Option<String>, state: State<'_, AppState>) -> Folder {
-    let db = state.db.lock().unwrap();
+fn add_folder(
+    name: String,
+    parent_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Folder, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     let id = Uuid::new_v4().to_string();
     let ts = now();
     db.execute(
         "INSERT INTO folders (id, name, parent_id, created_at) VALUES (?1, ?2, ?3, ?4)",
         params![id, name, parent_id, ts],
     )
-    .unwrap();
-    Folder {
+    .map_err(|e| e.to_string())?;
+    Ok(Folder {
         id,
         name,
         parent_id,
         created_at: ts,
-    }
+    })
 }
 
 #[tauri::command]
-fn delete_folder(id: String, state: State<'_, AppState>) {
-    let db = state.db.lock().unwrap();
+fn delete_folder(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     db.execute("DELETE FROM folders WHERE id = ?1", params![id])
-        .unwrap();
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
-fn get_tags(state: State<'_, AppState>) -> Vec<Tag> {
-    let db = state.db.lock().unwrap();
+fn get_tags(state: State<'_, AppState>) -> Result<Vec<Tag>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     let mut stmt = db
         .prepare("SELECT id, name, color, created_at FROM tags ORDER BY name")
-        .unwrap();
-    stmt.query_map([], |row| {
-        Ok(Tag {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            color: row.get(2)?,
-            created_at: row.get(3)?,
+        .map_err(|e| e.to_string())?;
+    let tags = stmt
+        .query_map([], |row| {
+            Ok(Tag {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                color: row.get(2)?,
+                created_at: row.get(3)?,
+            })
         })
-    })
-    .unwrap()
-    .filter_map(|r| r.ok())
-    .collect()
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(tags)
 }
 
 #[tauri::command]
-fn add_tag(name: String, color: String, state: State<'_, AppState>) -> Tag {
-    let db = state.db.lock().unwrap();
+fn add_tag(name: String, color: String, state: State<'_, AppState>) -> Result<Tag, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     let id = Uuid::new_v4().to_string();
     let ts = now();
     db.execute(
         "INSERT OR IGNORE INTO tags (id, name, color, created_at) VALUES (?1, ?2, ?3, ?4)",
         params![id, name, color, ts],
     )
-    .unwrap();
-    Tag {
-        id,
-        name,
-        color,
-        created_at: ts,
-    }
+    .map_err(|e| e.to_string())?;
+
+    // SELECT after INSERT OR IGNORE so we always return the actual record (handles name conflict)
+    db.query_row(
+        "SELECT id, name, color, created_at FROM tags WHERE name = ?1",
+        params![name],
+        |row| {
+            Ok(Tag {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                color: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        },
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn delete_tag(id: String, state: State<'_, AppState>) {
-    let db = state.db.lock().unwrap();
+fn delete_tag(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
     db.execute("DELETE FROM tags WHERE id = ?1", params![id])
-        .unwrap();
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -416,13 +470,13 @@ fn get_api_token(state: State<'_, AppState>) -> String {
 }
 
 #[tauri::command]
-fn export_opml(state: State<'_, AppState>) -> String {
-    let db = state.db.lock().unwrap();
+fn export_opml(state: State<'_, AppState>) -> Result<String, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
 
     let folders: Vec<Folder> = {
         let mut stmt = db
             .prepare("SELECT id, name, parent_id, created_at FROM folders ORDER BY name")
-            .unwrap();
+            .map_err(|e| e.to_string())?;
         stmt.query_map([], |row| {
             Ok(Folder {
                 id: row.get(0)?,
@@ -431,7 +485,7 @@ fn export_opml(state: State<'_, AppState>) -> String {
                 created_at: row.get(3)?,
             })
         })
-        .unwrap()
+        .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect()
     };
@@ -442,9 +496,9 @@ fn export_opml(state: State<'_, AppState>) -> String {
                 "SELECT id, url, title, description, favicon_url, feed_url, folder_id, \
                  created_at, updated_at FROM bookmarks ORDER BY created_at",
             )
-            .unwrap();
+            .map_err(|e| e.to_string())?;
         stmt.query_map([], row_to_raw)
-            .unwrap()
+            .map_err(|e| e.to_string())?
             .filter_map(|r| r.ok())
             .collect()
     };
@@ -456,26 +510,43 @@ fn export_opml(state: State<'_, AppState>) -> String {
          <body>\n",
     );
 
-    for folder in &folders {
+    append_folder_tree(&mut xml, &folders, &bookmarks, None, 2);
+
+    xml.push_str("</body>\n</opml>");
+    Ok(xml)
+}
+
+fn append_folder_tree(
+    xml: &mut String,
+    folders: &[Folder],
+    bookmarks: &[RawBookmark],
+    parent_id: Option<&str>,
+    indent: usize,
+) {
+    let pad = " ".repeat(indent);
+    for folder in folders
+        .iter()
+        .filter(|f| f.parent_id.as_deref() == parent_id)
+    {
         xml.push_str(&format!(
-            "  <outline text=\"{}\">\n",
+            "{}<outline text=\"{}\">\n",
+            pad,
             xml_escape(&folder.name)
         ));
         for b in bookmarks
             .iter()
             .filter(|b| b.folder_id.as_deref() == Some(&folder.id))
         {
-            append_outline(&mut xml, b, 4);
+            append_outline(xml, b, indent + 2);
         }
-        xml.push_str("  </outline>\n");
+        append_folder_tree(xml, folders, bookmarks, Some(&folder.id), indent + 2);
+        xml.push_str(&format!("{}</outline>\n", pad));
     }
-
-    for b in bookmarks.iter().filter(|b| b.folder_id.is_none()) {
-        append_outline(&mut xml, b, 2);
+    if parent_id.is_none() {
+        for b in bookmarks.iter().filter(|b| b.folder_id.is_none()) {
+            append_outline(xml, b, indent);
+        }
     }
-
-    xml.push_str("</body>\n</opml>");
-    xml
 }
 
 fn append_outline(xml: &mut String, b: &RawBookmark, indent: usize) {
@@ -561,10 +632,14 @@ async fn start_http_server(db: Arc<Mutex<Connection>>, token: String) {
         .with_state(state)
         .layer(cors);
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:59432")
-        .await
-        .expect("bind 127.0.0.1:59432");
-    axum::serve(listener, app).await.unwrap();
+    match tokio::net::TcpListener::bind("127.0.0.1:59432").await {
+        Ok(listener) => {
+            if let Err(e) = axum::serve(listener, app).await {
+                eprintln!("HTTP server error: {e}");
+            }
+        }
+        Err(e) => eprintln!("HTTP server failed to bind 127.0.0.1:59432: {e}"),
+    }
 }
 
 // ─── Settings ────────────────────────────────────────────────────────────────
@@ -578,9 +653,9 @@ fn load_or_create_token(data_dir: &PathBuf) -> String {
             }
         }
     }
-    let token: String = (0..32)
-        .map(|_| format!("{:02x}", rand::random::<u8>()))
-        .collect();
+    let mut bytes = [0u8; 32];
+    OsRng.fill_bytes(&mut bytes);
+    let token: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
     fs::write(
         &path,
         serde_json::to_string_pretty(&serde_json::json!({ "api_token": token })).unwrap(),
@@ -597,7 +672,7 @@ fn main() {
         .unwrap_or_else(|| PathBuf::from("."));
     fs::create_dir_all(&data_dir).ok();
 
-    let conn = init_db(&data_dir);
+    let conn = init_db(&data_dir).expect("init db");
     let api_token = load_or_create_token(&data_dir);
     let db = Arc::new(Mutex::new(conn));
 
@@ -612,6 +687,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             get_bookmarks,
+            get_bookmark_count,
             add_bookmark,
             delete_bookmark,
             get_folders,
