@@ -4,7 +4,7 @@ import type { Bookmark, Folder, Tag, Selection } from './types'
 
 // ─── Utils ───────────────────────────────────────────────────────────────────
 
-function faviconUrl(url: string): string {
+function duckduckgoFavicon(url: string): string {
   try {
     const { hostname } = new URL(url)
     return `https://icons.duckduckgo.com/ip3/${hostname}.ico`
@@ -27,9 +27,9 @@ function initials(title: string): string {
 
 // ─── Favicon ─────────────────────────────────────────────────────────────────
 
-function Favicon({ url, title }: { url: string; title: string }) {
+function Favicon({ storedUrl, bookmarkUrl, title }: { storedUrl: string | null; bookmarkUrl: string; title: string }) {
   const [failed, setFailed] = useState(false)
-  const src = faviconUrl(url)
+  const src = storedUrl || duckduckgoFavicon(bookmarkUrl)
 
   if (!src || failed) {
     return (
@@ -61,7 +61,7 @@ function BookmarkCard({
   return (
     <div className="group bg-slate-800 hover:bg-slate-750 border border-slate-700 hover:border-slate-600 rounded-xl p-4 flex flex-col gap-3 transition-all duration-150">
       <div className="flex items-start gap-3">
-        <Favicon url={bookmark.url} title={bookmark.title} />
+        <Favicon storedUrl={bookmark.favicon_url} bookmarkUrl={bookmark.url} title={bookmark.title} />
         <div className="flex-1 min-w-0">
           <a
             href={bookmark.url}
@@ -377,10 +377,12 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
   async function handleExport() {
     const opml = await invoke<string>('export_opml')
     const blob = new Blob([opml], { type: 'text/xml' })
+    const objectUrl = URL.createObjectURL(blob)
     const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
+    a.href = objectUrl
     a.download = 'ferrico-bookmarks.opml'
     a.click()
+    URL.revokeObjectURL(objectUrl)
   }
 
   return (
@@ -616,22 +618,37 @@ export default function App() {
   const [folders, setFolders] = useState<Folder[]>([])
   const [tags, setTags] = useState<Tag[]>([])
   const [selection, setSelection] = useState<Selection>({ type: 'all' })
+  const [searchInput, setSearchInput] = useState('')
   const [search, setSearch] = useState('')
+  const [totalCount, setTotalCount] = useState(0)
   const [modal, setModal] = useState<Modal>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    const t = setTimeout(() => setSearch(searchInput), 300)
+    return () => clearTimeout(t)
+  }, [searchInput])
 
   const loadAll = useCallback(async () => {
-    const [b, f, t] = await Promise.all([
-      invoke<Bookmark[]>('get_bookmarks', {
-        folderId: selection.type === 'folder' ? selection.id : null,
-        tagId: selection.type === 'tag' ? selection.id : null,
-        search: search || null,
-      }),
-      invoke<Folder[]>('get_folders'),
-      invoke<Tag[]>('get_tags'),
-    ])
-    setBookmarks(b)
-    setFolders(f)
-    setTags(t)
+    try {
+      const [b, f, t, count] = await Promise.all([
+        invoke<Bookmark[]>('get_bookmarks', {
+          folderId: selection.type === 'folder' ? selection.id : null,
+          tagId: selection.type === 'tag' ? selection.id : null,
+          search: search || null,
+        }),
+        invoke<Folder[]>('get_folders'),
+        invoke<Tag[]>('get_tags'),
+        invoke<number>('get_bookmark_count'),
+      ])
+      setBookmarks(b)
+      setFolders(f)
+      setTags(t)
+      setTotalCount(count)
+      setError(null)
+    } catch (e) {
+      setError(String(e))
+    }
   }, [selection, search])
 
   useEffect(() => { loadAll() }, [loadAll])
@@ -640,48 +657,68 @@ export default function App() {
     url: string; title: string; description: string
     folder_id: string | null; tag_ids: string[]; feed_url: string | null
   }) {
-    const faviconSrc = faviconUrl(data.url)
-    await invoke('add_bookmark', {
-      input: {
-        ...data,
-        favicon_url: faviconSrc || null,
-      },
-    })
-    setModal(null)
-    loadAll()
+    try {
+      await invoke('add_bookmark', {
+        input: { ...data, favicon_url: duckduckgoFavicon(data.url) || null },
+      })
+      setModal(null)
+      loadAll()
+    } catch (e) {
+      setError(String(e))
+    }
   }
 
   async function handleDeleteBookmark(id: string) {
-    await invoke('delete_bookmark', { id })
-    loadAll()
+    try {
+      await invoke('delete_bookmark', { id })
+      loadAll()
+    } catch (e) {
+      setError(String(e))
+    }
   }
 
   async function handleAddFolder(name: string) {
-    await invoke('add_folder', { name, parentId: null })
-    setModal(null)
-    loadAll()
+    try {
+      await invoke('add_folder', { name, parentId: null })
+      setModal(null)
+      loadAll()
+    } catch (e) {
+      setError(String(e))
+    }
   }
 
   async function handleDeleteFolder(id: string) {
-    await invoke('delete_folder', { id })
-    if (selection.type === 'folder' && selection.id === id) {
-      setSelection({ type: 'all' })
+    try {
+      await invoke('delete_folder', { id })
+      if (selection.type === 'folder' && selection.id === id) {
+        setSelection({ type: 'all' })
+      }
+      loadAll()
+    } catch (e) {
+      setError(String(e))
     }
-    loadAll()
   }
 
   async function handleAddTag(name: string, color: string) {
-    await invoke('add_tag', { name, color })
-    setModal(null)
-    loadAll()
+    try {
+      await invoke('add_tag', { name, color })
+      setModal(null)
+      loadAll()
+    } catch (e) {
+      setError(String(e))
+    }
   }
 
   async function handleDeleteTag(id: string) {
-    await invoke('delete_tag', { id })
-    if (selection.type === 'tag' && selection.id === id) {
-      setSelection({ type: 'all' })
+    try {
+      await invoke('delete_tag', { id })
+      if (selection.type === 'tag' && selection.id === id) {
+        setSelection({ type: 'all' })
+      }
+      loadAll()
+    } catch (e) {
+      setError(String(e))
     }
-    loadAll()
   }
 
   function selectionTitle(): string {
@@ -698,7 +735,7 @@ export default function App() {
         folders={folders}
         tags={tags}
         selection={selection}
-        bookmarkCount={bookmarks.length}
+        bookmarkCount={totalCount}
         onSelect={setSelection}
         onAddFolder={() => setModal('add-folder')}
         onDeleteFolder={handleDeleteFolder}
@@ -708,6 +745,13 @@ export default function App() {
       />
 
       <div className="flex-1 flex flex-col min-w-0">
+        {/* Error banner */}
+        {error && (
+          <div className="bg-red-900/50 border-b border-red-700 px-6 py-2 flex items-center justify-between gap-4 flex-none">
+            <p className="text-red-300 text-sm truncate">{error}</p>
+            <button onClick={() => setError(null)} className="text-red-400 hover:text-red-200 flex-none text-xs">Dismiss</button>
+          </div>
+        )}
         {/* Header */}
         <header className="flex items-center gap-4 px-6 py-4 border-b border-slate-800 flex-none">
           <div className="flex-1">
@@ -720,13 +764,13 @@ export default function App() {
             </svg>
             <input
               type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
               placeholder="Search bookmarks…"
               className="bg-transparent text-slate-300 text-sm placeholder-slate-600 focus:outline-none flex-1 min-w-0"
             />
-            {search && (
-              <button onClick={() => setSearch('')} className="text-slate-600 hover:text-slate-400 transition-colors">
+            {searchInput && (
+              <button onClick={() => setSearchInput('')} className="text-slate-600 hover:text-slate-400 transition-colors">
                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                 </svg>
