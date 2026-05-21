@@ -138,6 +138,11 @@ fn export_opml(state: State<'_, AppState>) -> Result<String, AppError> {
     db_export_opml(&db)
 }
 
+#[tauri::command]
+fn open_url(url: String) -> Result<(), AppError> {
+    open::that(url).map_err(|e| AppError::Validation { message: e.to_string() })
+}
+
 // ─── HTTP Server (browser extension endpoint) ─────────────────────────────────
 
 #[derive(Deserialize)]
@@ -264,6 +269,7 @@ fn main() {
             delete_tag,
             get_api_token,
             export_opml,
+            open_url,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

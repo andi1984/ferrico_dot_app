@@ -3,53 +3,104 @@ import { invoke } from '@tauri-apps/api/core'
 import type { Bookmark, Folder, Tag, Selection } from './types'
 import { duckduckgoFavicon, domainOf, initials, formatDate, extractErrorMessage } from './utils'
 
+// ─── Context Menu ─────────────────────────────────────────────────────────────
+
+interface CtxItem {
+  label: string
+  action: () => void
+  danger?: boolean
+  sep?: true
+}
+
+interface CtxMenuState { x: number; y: number; items: CtxItem[] }
+
+function ContextMenu({ state, onClose }: { state: CtxMenuState; onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    function handler(e: MouseEvent | KeyboardEvent) {
+      if (e instanceof KeyboardEvent && e.key !== 'Escape') return
+      if (e instanceof MouseEvent && ref.current?.contains(e.target as Node)) return
+      onClose()
+    }
+    document.addEventListener('mousedown', handler)
+    document.addEventListener('keydown', handler)
+    return () => {
+      document.removeEventListener('mousedown', handler)
+      document.removeEventListener('keydown', handler)
+    }
+  }, [onClose])
+
+  const style: React.CSSProperties = {
+    left: Math.min(state.x, window.innerWidth - 180),
+    top: Math.min(state.y, window.innerHeight - (state.items.length * 34 + 16)),
+  }
+
+  return (
+    <div ref={ref} className="ctx-menu" style={style} role="menu">
+      {state.items.map((item, i) =>
+        item.sep ? <div key={i} className="ctx-sep" role="separator" /> : (
+          <button
+            key={i}
+            className={`ctx-item${item.danger ? ' danger' : ''}`}
+            role="menuitem"
+            onClick={() => { item.action(); onClose() }}
+          >
+            {item.label}
+          </button>
+        )
+      )}
+    </div>
+  )
+}
+
 // ─── Icons ────────────────────────────────────────────────────────────────────
 
 const IconClose = ({ size = 16 }: { size?: number }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <path d="M18 6 6 18M6 6l12 12" />
   </svg>
 )
 
 const IconPlus = ({ size = 16 }: { size?: number }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <path d="M12 5v14M5 12h14" />
   </svg>
 )
 
 const IconSearch = ({ size = 15 }: { size?: number }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
   </svg>
 )
 
 const IconFolder = ({ size = 14 }: { size?: number }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round">
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
   </svg>
 )
 
 const IconAll = ({ size = 14 }: { size?: number }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round">
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
   </svg>
 )
 
 const IconSettings = ({ size = 14 }: { size?: number }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round">
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <circle cx="12" cy="12" r="3" />
     <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
   </svg>
 )
 
 const IconChevronDown = ({ size = 14 }: { size?: number }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <path d="m6 9 6 6 6-6" />
   </svg>
 )
 
 const IconExport = ({ size = 14 }: { size?: number }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round">
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
   </svg>
 )
@@ -63,6 +114,7 @@ function Favicon({ storedUrl, bookmarkUrl, title }: { storedUrl: string | null; 
   if (!src || failed) {
     return (
       <div
+        aria-hidden="true"
         className="w-7 h-7 rounded flex-none flex items-center justify-center text-xs font-semibold select-none"
         style={{ background: 'var(--accent-dim)', color: 'var(--accent)' }}
       >
@@ -84,17 +136,22 @@ function Favicon({ storedUrl, bookmarkUrl, title }: { storedUrl: string | null; 
 
 // ─── BookmarkRow ──────────────────────────────────────────────────────────────
 
-function BookmarkRow({ bookmark, onDelete, index }: {
+function BookmarkRow({ bookmark, onDelete, onContext, index }: {
   bookmark: Bookmark
   onDelete: (id: string) => void
+  onContext: (e: React.MouseEvent, bookmark: Bookmark) => void
   index: number
 }) {
   const [hovered, setHovered] = useState(false)
-  const [titleHovered, setTitleHovered] = useState(false)
+
+  function openUrl(e: React.MouseEvent | React.KeyboardEvent) {
+    e.preventDefault()
+    invoke('open_url', { url: bookmark.url }).catch(() => {})
+  }
 
   return (
     <div
-      className="anim-fade-up relative flex items-center gap-4 px-6 py-3 border-b transition-colors duration-150 cursor-default"
+      className="anim-fade-up relative flex items-center gap-4 px-6 py-3 border-b transition-colors duration-150"
       style={{
         borderColor: 'var(--border-dim)',
         background: hovered ? 'var(--bg-elevated)' : 'transparent',
@@ -102,11 +159,13 @@ function BookmarkRow({ bookmark, onDelete, index }: {
       }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      onContextMenu={(e) => onContext(e, bookmark)}
     >
       {/* Left accent bar */}
       <div
         className="absolute left-0 top-2 bottom-2 w-0.5 rounded-full transition-opacity duration-200"
         style={{ background: 'var(--accent)', opacity: hovered ? 1 : 0 }}
+        aria-hidden="true"
       />
 
       <Favicon storedUrl={bookmark.favicon_url} bookmarkUrl={bookmark.url} title={bookmark.title} />
@@ -116,18 +175,18 @@ function BookmarkRow({ bookmark, onDelete, index }: {
         <div className="flex items-baseline gap-2 min-w-0">
           <a
             href={bookmark.url}
-            target="_blank"
-            rel="noreferrer"
-            className="text-sm font-medium truncate leading-snug transition-colors duration-100"
-            style={{ color: titleHovered ? 'var(--accent-bright)' : 'var(--text-primary)' }}
-            onMouseEnter={() => setTitleHovered(true)}
-            onMouseLeave={() => setTitleHovered(false)}
+            onClick={openUrl}
+            className="text-sm font-medium truncate leading-snug transition-colors duration-100 cursor-pointer"
+            style={{ color: 'var(--text-primary)' }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--accent-bright)')}
+            onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-primary)')}
           >
             {bookmark.title}
           </a>
           <span
             className="text-xs flex-none hidden sm:block"
             style={{ color: 'var(--text-muted)' }}
+            aria-hidden="true"
           >
             {domainOf(bookmark.url)}
           </span>
@@ -141,7 +200,7 @@ function BookmarkRow({ bookmark, onDelete, index }: {
 
       {/* Tags */}
       {bookmark.tags.length > 0 && (
-        <div className="hidden lg:flex items-center gap-1.5 flex-none">
+        <div className="hidden lg:flex items-center gap-1.5 flex-none" aria-label="Tags">
           {bookmark.tags.slice(0, 2).map((tag) => (
             <span
               key={tag.id}
@@ -152,7 +211,7 @@ function BookmarkRow({ bookmark, onDelete, index }: {
             </span>
           ))}
           {bookmark.tags.length > 2 && (
-            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }} aria-label={`${bookmark.tags.length - 2} more tags`}>
               +{bookmark.tags.length - 2}
             </span>
           )}
@@ -170,14 +229,15 @@ function BookmarkRow({ bookmark, onDelete, index }: {
       {/* Delete */}
       <button
         onClick={() => onDelete(bookmark.id)}
-        className="p-1 rounded flex-none transition-all duration-150"
+        className="p-1 rounded flex-none transition-all duration-150 cursor-pointer"
         style={{
           color: 'var(--text-muted)',
           opacity: hovered ? 1 : 0,
         }}
         onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--red)')}
         onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
-        title="Delete bookmark"
+        aria-label={`Delete ${bookmark.title}`}
+        tabIndex={hovered ? 0 : -1}
       >
         <IconClose size={13} />
       </button>
@@ -192,29 +252,44 @@ function ModalShell({ title, onClose, children }: {
   onClose: () => void
   children: React.ReactNode
 }) {
+  const titleId = `modal-title-${title.replace(/\s+/g, '-').toLowerCase()}`
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onClose])
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
       style={{ background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(4px)' }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
     >
       <div
         className="anim-scale-in w-full max-w-md rounded-xl shadow-2xl overflow-hidden"
         style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-mid)' }}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
       >
         {/* Header */}
         <div
           className="flex items-center justify-between px-6 py-4"
           style={{ borderBottom: '1px solid var(--border-dim)' }}
         >
-          <span className="text-sm font-semibold tracking-wide" style={{ color: 'var(--text-primary)' }}>
+          <span id={titleId} className="text-sm font-semibold tracking-wide" style={{ color: 'var(--text-primary)' }}>
             {title}
           </span>
           <button
             onClick={onClose}
-            className="rounded p-1 transition-colors duration-150"
+            className="rounded p-1 transition-colors duration-150 cursor-pointer"
             style={{ color: 'var(--text-muted)' }}
             onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--text-primary)')}
             onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
+            aria-label="Close dialog"
           >
             <IconClose size={15} />
           </button>
@@ -227,9 +302,13 @@ function ModalShell({ title, onClose, children }: {
 
 // ─── Field Label ──────────────────────────────────────────────────────────────
 
-function FieldLabel({ children }: { children: React.ReactNode }) {
+function FieldLabel({ children, htmlFor }: { children: React.ReactNode; htmlFor?: string }) {
   return (
-    <label className="block text-xs font-medium uppercase tracking-widest mb-2" style={{ color: 'var(--text-muted)' }}>
+    <label
+      htmlFor={htmlFor}
+      className="block text-xs font-medium uppercase tracking-widest mb-2"
+      style={{ color: 'var(--text-muted)' }}
+    >
       {children}
     </label>
   )
@@ -243,7 +322,7 @@ function ModalActions({ onClose, submitLabel }: { onClose: () => void; submitLab
       <button
         type="button"
         onClick={onClose}
-        className="flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-colors duration-150"
+        className="flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-colors duration-150 cursor-pointer"
         style={{ border: '1px solid var(--border-mid)', color: 'var(--text-secondary)' }}
         onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--border-bright)')}
         onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--border-mid)')}
@@ -252,7 +331,7 @@ function ModalActions({ onClose, submitLabel }: { onClose: () => void; submitLab
       </button>
       <button
         type="submit"
-        className="flex-1 px-4 py-2 rounded-lg text-sm font-semibold transition-opacity duration-150 hover:opacity-90"
+        className="flex-1 px-4 py-2 rounded-lg text-sm font-semibold transition-opacity duration-150 hover:opacity-90 cursor-pointer"
         style={{ background: 'var(--accent)', color: '#0c0b0a' }}
       >
         {submitLabel}
@@ -298,23 +377,23 @@ function AddBookmarkModal({ folders, tags, onAdd, onClose }: AddBookmarkModalPro
     <ModalShell title="New Bookmark" onClose={onClose}>
       <form onSubmit={handleSubmit} className="p-6 flex flex-col gap-5">
         <div>
-          <FieldLabel>URL *</FieldLabel>
-          <input ref={urlRef} value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com" className="ff" />
+          <FieldLabel htmlFor="bm-url">URL *</FieldLabel>
+          <input id="bm-url" ref={urlRef} value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com" className="ff" />
         </div>
         <div>
-          <FieldLabel>Title *</FieldLabel>
-          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Page title" className="ff" />
+          <FieldLabel htmlFor="bm-title">Title *</FieldLabel>
+          <input id="bm-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Page title" className="ff" />
         </div>
         <div>
-          <FieldLabel>Note</FieldLabel>
-          <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Optional note…" rows={2} className="ff" />
+          <FieldLabel htmlFor="bm-note">Note</FieldLabel>
+          <textarea id="bm-note" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Optional note…" rows={2} className="ff" />
         </div>
 
         {folders.length > 0 && (
           <div>
-            <FieldLabel>Folder</FieldLabel>
+            <FieldLabel htmlFor="bm-folder">Folder</FieldLabel>
             <div className="relative">
-              <select value={folderId} onChange={(e) => setFolderId(e.target.value)} className="ff pr-6">
+              <select id="bm-folder" value={folderId} onChange={(e) => setFolderId(e.target.value)} className="ff pr-6">
                 <option value="">No folder</option>
                 {folders.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
               </select>
@@ -328,13 +407,14 @@ function AddBookmarkModal({ folders, tags, onAdd, onClose }: AddBookmarkModalPro
         {tags.length > 0 && (
           <div>
             <FieldLabel>Tags</FieldLabel>
-            <div className="flex flex-wrap gap-2 pt-1">
+            <div className="flex flex-wrap gap-2 pt-1" role="group" aria-label="Select tags">
               {tags.map((tag) => (
                 <button
                   key={tag.id}
                   type="button"
                   onClick={() => toggleTag(tag.id)}
-                  className="px-2.5 py-1 rounded text-xs font-medium transition-all duration-150"
+                  aria-pressed={selectedTags.has(tag.id)}
+                  className="px-2.5 py-1 rounded text-xs font-medium transition-all duration-150 cursor-pointer"
                   style={
                     selectedTags.has(tag.id)
                       ? { background: tag.color + '28', color: tag.color, border: `1px solid ${tag.color}66` }
@@ -372,8 +452,8 @@ function AddFolderModal({ onAdd, onClose }: { onAdd: (name: string) => void; onC
     <ModalShell title="New Folder" onClose={onClose}>
       <form onSubmit={handleSubmit} className="p-6 flex flex-col gap-5">
         <div>
-          <FieldLabel>Name</FieldLabel>
-          <input ref={ref} value={name} onChange={(e) => setName(e.target.value)} placeholder="Folder name" className="ff" />
+          <FieldLabel htmlFor="folder-name">Name</FieldLabel>
+          <input id="folder-name" ref={ref} value={name} onChange={(e) => setName(e.target.value)} placeholder="Folder name" className="ff" />
         </div>
         <ModalActions onClose={onClose} submitLabel="Create folder" />
       </form>
@@ -384,6 +464,7 @@ function AddFolderModal({ onAdd, onClose }: { onAdd: (name: string) => void; onC
 // ─── Add Tag Modal ────────────────────────────────────────────────────────────
 
 const TAG_COLORS = ['#bf8b5e', '#e07a5f', '#f2cc8f', '#81b29a', '#6a9fb5', '#a78bca', '#e8a0b4', '#7fb5b5']
+const TAG_COLOR_NAMES = ['Tan', 'Red', 'Yellow', 'Green', 'Blue', 'Purple', 'Pink', 'Teal']
 
 function AddTagModal({ onAdd, onClose }: { onAdd: (name: string, color: string) => void; onClose: () => void }) {
   const [name, setName] = useState('')
@@ -402,22 +483,24 @@ function AddTagModal({ onAdd, onClose }: { onAdd: (name: string, color: string) 
     <ModalShell title="New Tag" onClose={onClose}>
       <form onSubmit={handleSubmit} className="p-6 flex flex-col gap-5">
         <div>
-          <FieldLabel>Name</FieldLabel>
-          <input ref={ref} value={name} onChange={(e) => setName(e.target.value)} placeholder="Tag name" className="ff" />
+          <FieldLabel htmlFor="tag-name">Name</FieldLabel>
+          <input id="tag-name" ref={ref} value={name} onChange={(e) => setName(e.target.value)} placeholder="Tag name" className="ff" />
         </div>
         <div>
           <FieldLabel>Color</FieldLabel>
-          <div className="flex gap-2.5 pt-1">
-            {TAG_COLORS.map((c) => (
+          <div className="flex gap-2.5 pt-1" role="radiogroup" aria-label="Tag color">
+            {TAG_COLORS.map((c, i) => (
               <button
                 key={c}
                 type="button"
                 onClick={() => setColor(c)}
-                className="w-6 h-6 rounded-full transition-transform duration-100 relative"
+                aria-label={TAG_COLOR_NAMES[i]}
+                aria-pressed={color === c}
+                className="w-6 h-6 rounded-full transition-transform duration-100 relative cursor-pointer"
                 style={{ background: c, transform: color === c ? 'scale(1.2)' : 'scale(1)' }}
               >
                 {color === c && (
-                  <span className="absolute inset-0 flex items-center justify-center text-[#0c0b0a]">
+                  <span className="absolute inset-0 flex items-center justify-center text-[#0c0b0a]" aria-hidden="true">
                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round">
                       <polyline points="20 6 9 17 4 12" />
                     </svg>
@@ -476,12 +559,13 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
             </code>
             <button
               onClick={copy}
-              className="px-3 py-2 rounded-lg text-xs font-medium transition-all duration-150"
+              className="px-3 py-2 rounded-lg text-xs font-medium transition-all duration-150 cursor-pointer"
               style={{
                 background: copied ? 'var(--accent-dim)' : 'var(--bg-elevated)',
                 border: '1px solid var(--border-mid)',
                 color: copied ? 'var(--accent)' : 'var(--text-secondary)',
               }}
+              aria-live="polite"
             >
               {copied ? 'Copied!' : 'Copy'}
             </button>
@@ -496,7 +580,7 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
           </p>
           <button
             onClick={handleExport}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-150"
+            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-150 cursor-pointer"
             style={{
               background: 'var(--bg-elevated)',
               border: '1px solid var(--border-mid)',
@@ -527,15 +611,19 @@ interface SidebarProps {
   onAddTag: () => void
   onDeleteTag: (id: string) => void
   onOpenSettings: () => void
+  onFolderContext: (e: React.MouseEvent, folder: Folder) => void
+  onTagContext: (e: React.MouseEvent, tag: Tag) => void
 }
 
-function SidebarItem({ active, onClick, icon, label, count, onDelete }: {
+function SidebarItem({ active, onClick, onContext, icon, label, count, onDelete, ariaLabel }: {
   active: boolean
   onClick: () => void
+  onContext?: (e: React.MouseEvent) => void
   icon?: React.ReactNode
   label: string
   count?: number
   onDelete?: () => void
+  ariaLabel?: string
 }) {
   const [hovered, setHovered] = useState(false)
   const [deleteHovered, setDeleteHovered] = useState(false)
@@ -543,32 +631,36 @@ function SidebarItem({ active, onClick, icon, label, count, onDelete }: {
   return (
     <button
       onClick={onClick}
+      onContextMenu={onContext}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => { setHovered(false); setDeleteHovered(false) }}
-      className="relative flex items-center gap-2 w-full px-3 py-1.5 rounded-lg text-sm transition-all duration-150 text-left group"
+      className="relative flex items-center gap-2 w-full px-3 py-1.5 rounded-lg text-sm transition-all duration-150 text-left group cursor-pointer"
       style={{
         background: active ? 'var(--accent-dim)' : hovered ? 'rgba(255,255,255,0.035)' : 'transparent',
         color: active ? 'var(--accent)' : hovered ? 'var(--text-primary)' : 'var(--text-secondary)',
         borderLeft: active ? '2px solid var(--accent)' : '2px solid transparent',
         paddingLeft: active ? '10px' : '12px',
       }}
+      aria-current={active ? 'page' : undefined}
+      aria-label={ariaLabel}
     >
-      {icon && <span className="flex-none">{icon}</span>}
+      {icon && <span className="flex-none" aria-hidden="true">{icon}</span>}
       <span className="flex-1 truncate font-medium">{label}</span>
       {count !== undefined && (
-        <span className="text-xs flex-none" style={{ color: 'var(--text-muted)' }}>{count}</span>
+        <span className="text-xs flex-none" style={{ color: 'var(--text-muted)' }} aria-label={`${count} bookmarks`}>{count}</span>
       )}
       {onDelete && (hovered || deleteHovered) && (
-        <span
-          role="button"
+        <button
+          type="button"
           onClick={(e) => { e.stopPropagation(); onDelete() }}
           onMouseEnter={() => setDeleteHovered(true)}
           onMouseLeave={() => setDeleteHovered(false)}
-          className="flex-none transition-colors duration-100"
+          className="flex-none transition-colors duration-100 p-0.5 rounded cursor-pointer"
           style={{ color: deleteHovered ? 'var(--red)' : 'var(--text-muted)' }}
+          aria-label={`Delete ${label}`}
         >
           <IconClose size={11} />
-        </span>
+        </button>
       )}
     </button>
   )
@@ -585,9 +677,9 @@ function SidebarSection({ label, onAdd }: { label: string; onAdd: () => void }) 
         onClick={onAdd}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
-        className="rounded p-0.5 transition-colors duration-150"
+        className="rounded p-0.5 transition-colors duration-150 cursor-pointer"
         style={{ color: hovered ? 'var(--text-primary)' : 'var(--text-muted)' }}
-        title={`New ${label.toLowerCase()}`}
+        aria-label={`New ${label.toLowerCase()}`}
       >
         <IconPlus size={12} />
       </button>
@@ -595,7 +687,7 @@ function SidebarSection({ label, onAdd }: { label: string; onAdd: () => void }) 
   )
 }
 
-function Sidebar({ folders, tags, selection, bookmarkCount, onSelect, onAddFolder, onDeleteFolder, onAddTag, onDeleteTag, onOpenSettings }: SidebarProps) {
+function Sidebar({ folders, tags, selection, bookmarkCount, onSelect, onAddFolder, onDeleteFolder, onAddTag, onDeleteTag, onOpenSettings, onFolderContext, onTagContext }: SidebarProps) {
   const isActive = (s: Selection): boolean => {
     if (s.type !== selection.type) return false
     if (s.type === 'all') return true
@@ -614,7 +706,7 @@ function Sidebar({ folders, tags, selection, bookmarkCount, onSelect, onAddFolde
       {/* Logo */}
       <div className="px-4 py-5 flex-none" style={{ borderBottom: '1px solid var(--border-dim)' }}>
         <div className="flex items-center gap-2.5">
-          <span style={{ color: 'var(--accent)', lineHeight: 1 }}>
+          <span style={{ color: 'var(--accent)', lineHeight: 1 }} aria-hidden="true">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="none">
               <path d="M5 2a2 2 0 0 0-2 2v17.586a.5.5 0 0 0 .854.353L12 13.914l8.146 8.025A.5.5 0 0 0 21 21.586V4a2 2 0 0 0-2-2H5z"/>
             </svg>
@@ -629,13 +721,14 @@ function Sidebar({ folders, tags, selection, bookmarkCount, onSelect, onAddFolde
       </div>
 
       {/* Nav */}
-      <nav className="flex-1 overflow-y-auto px-2 py-3">
+      <nav className="flex-1 overflow-y-auto px-2 py-3" aria-label="Library navigation">
         <SidebarItem
           active={isActive({ type: 'all' })}
           onClick={() => onSelect({ type: 'all' })}
           icon={<IconAll />}
           label="All Bookmarks"
           count={bookmarkCount}
+          ariaLabel={`All Bookmarks, ${bookmarkCount} total`}
         />
 
         <SidebarSection label="Folders" onAdd={onAddFolder} />
@@ -646,6 +739,7 @@ function Sidebar({ folders, tags, selection, bookmarkCount, onSelect, onAddFolde
               key={folder.id}
               active={isActive({ type: 'folder', id: folder.id })}
               onClick={() => onSelect({ type: 'folder', id: folder.id })}
+              onContext={(e) => onFolderContext(e, folder)}
               icon={<IconFolder />}
               label={folder.name}
               onDelete={() => onDeleteFolder(folder.id)}
@@ -661,7 +755,8 @@ function Sidebar({ folders, tags, selection, bookmarkCount, onSelect, onAddFolde
               key={tag.id}
               active={isActive({ type: 'tag', id: tag.id })}
               onClick={() => onSelect({ type: 'tag', id: tag.id })}
-              icon={<span className="w-2 h-2 rounded-full flex-none block" style={{ background: tag.color }} />}
+              onContext={(e) => onTagContext(e, tag)}
+              icon={<span className="w-2 h-2 rounded-full flex-none block" style={{ background: tag.color }} aria-hidden="true" />}
               label={tag.name}
               onDelete={() => onDeleteTag(tag.id)}
             />
@@ -675,11 +770,12 @@ function Sidebar({ folders, tags, selection, bookmarkCount, onSelect, onAddFolde
           onClick={onOpenSettings}
           onMouseEnter={() => setSettingsHovered(true)}
           onMouseLeave={() => setSettingsHovered(false)}
-          className="flex items-center gap-2 w-full px-3 py-1.5 rounded-lg text-sm transition-colors duration-150"
+          className="flex items-center gap-2 w-full px-3 py-1.5 rounded-lg text-sm transition-colors duration-150 cursor-pointer"
           style={{
             color: settingsHovered ? 'var(--text-primary)' : 'var(--text-muted)',
             background: settingsHovered ? 'rgba(255,255,255,0.035)' : 'transparent',
           }}
+          aria-label="Open settings"
         >
           <IconSettings />
           <span className="font-medium">Settings</span>
@@ -699,6 +795,7 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
       <div
         className="w-16 h-16 rounded-2xl flex items-center justify-center"
         style={{ background: 'var(--accent-dim)', border: '1px solid var(--border-mid)' }}
+        aria-hidden="true"
       >
         <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.25} strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--accent)' }}>
           <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
@@ -714,7 +811,7 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
         onClick={onAdd}
         onMouseEnter={() => setBtnHovered(true)}
         onMouseLeave={() => setBtnHovered(false)}
-        className="flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-semibold transition-opacity duration-150"
+        className="flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-semibold transition-opacity duration-150 cursor-pointer"
         style={{ background: 'var(--accent)', color: '#0c0b0a', opacity: btnHovered ? 0.88 : 1 }}
       >
         <IconPlus size={14} />
@@ -740,6 +837,8 @@ export default function App() {
   const [error, setError] = useState<string | null>(null)
   const [addHovered, setAddHovered] = useState(false)
   const [searchFocused, setSearchFocused] = useState(false)
+  const [ctxMenu, setCtxMenu] = useState<CtxMenuState | null>(null)
+  const searchRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     const t = setTimeout(() => setSearch(searchInput), 300)
@@ -769,6 +868,20 @@ export default function App() {
   }, [selection, search])
 
   useEffect(() => { loadAll() }, [loadAll])
+
+  // Global keyboard shortcuts
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const mod = e.metaKey || e.ctrlKey
+      if (modal) return // modal handles its own Escape
+      if (mod && e.key === 'n') { e.preventDefault(); setModal('add-bookmark') }
+      if (mod && e.key === 'f') { e.preventDefault(); searchRef.current?.focus() }
+      if (mod && e.key === ',') { e.preventDefault(); setModal('settings') }
+      if (e.key === 'Escape' && searchInput) { setSearchInput('') }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [modal, searchInput])
 
   async function handleAddBookmark(data: { url: string; title: string; description: string; folder_id: string | null; tag_ids: string[]; feed_url: string | null }) {
     try {
@@ -835,6 +948,43 @@ export default function App() {
     return tags.find((t) => t.id === selection.id)?.name ?? 'Tag'
   }
 
+  function openBookmarkContext(e: React.MouseEvent, bookmark: Bookmark) {
+    e.preventDefault()
+    setCtxMenu({
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        { label: 'Open in Browser', action: () => invoke('open_url', { url: bookmark.url }).catch(() => {}) },
+        { label: 'Copy URL', action: () => navigator.clipboard.writeText(bookmark.url) },
+        { label: 'Copy Title', action: () => navigator.clipboard.writeText(bookmark.title) },
+        { sep: true, label: '', action: () => {} },
+        { label: 'Delete', danger: true, action: () => handleDeleteBookmark(bookmark.id) },
+      ],
+    })
+  }
+
+  function openFolderContext(e: React.MouseEvent, folder: Folder) {
+    e.preventDefault()
+    setCtxMenu({
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        { label: 'Delete Folder', danger: true, action: () => handleDeleteFolder(folder.id) },
+      ],
+    })
+  }
+
+  function openTagContext(e: React.MouseEvent, tag: Tag) {
+    e.preventDefault()
+    setCtxMenu({
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        { label: 'Delete Tag', danger: true, action: () => handleDeleteTag(tag.id) },
+      ],
+    })
+  }
+
   return (
     <div className="flex h-screen overflow-hidden" style={{ background: 'var(--bg-base)', color: 'var(--text-primary)' }}>
       <Sidebar
@@ -848,17 +998,20 @@ export default function App() {
         onAddTag={() => setModal('add-tag')}
         onDeleteTag={handleDeleteTag}
         onOpenSettings={() => setModal('settings')}
+        onFolderContext={openFolderContext}
+        onTagContext={openTagContext}
       />
 
       <div className="flex-1 flex flex-col min-w-0">
         {/* Error banner */}
         {error && (
           <div
+            role="alert"
             className="flex items-center justify-between px-6 py-2 gap-4 flex-none text-sm"
             style={{ background: 'rgba(224,82,82,0.1)', borderBottom: '1px solid rgba(224,82,82,0.2)', color: '#e07070' }}
           >
             <p className="truncate">{error}</p>
-            <button onClick={() => setError(null)} className="text-xs flex-none hover:opacity-70 transition-opacity">Dismiss</button>
+            <button onClick={() => setError(null)} className="text-xs flex-none hover:opacity-70 transition-opacity cursor-pointer" aria-label="Dismiss error">Dismiss</button>
           </div>
         )}
 
@@ -867,14 +1020,13 @@ export default function App() {
           className="flex items-center gap-4 px-6 py-3.5 flex-none"
           style={{ borderBottom: '1px solid var(--border-dim)', background: 'var(--bg-base)' }}
         >
-          {/* Title */}
           <h1 className="font-semibold text-sm flex-none" style={{ color: 'var(--text-primary)' }}>
             {selectionTitle()}
           </h1>
 
           <div className="flex-1" />
 
-          {/* Search */}
+          {/* Search — Cmd/Ctrl+F */}
           <div
             className="flex items-center gap-2 px-3 py-2 rounded-lg transition-all duration-200 w-56"
             style={{
@@ -883,39 +1035,44 @@ export default function App() {
               boxShadow: searchFocused ? '0 0 0 2px var(--accent-glow)' : 'none',
             }}
           >
-            <span className="flex-none" style={{ color: searchFocused ? 'var(--accent)' : 'var(--text-muted)' }}>
+            <span className="flex-none" style={{ color: searchFocused ? 'var(--accent)' : 'var(--text-muted)' }} aria-hidden="true">
               <IconSearch size={13} />
             </span>
             <input
-              type="text"
+              ref={searchRef}
+              type="search"
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
               onFocus={() => setSearchFocused(true)}
               onBlur={() => setSearchFocused(false)}
               placeholder="Search…"
+              aria-label="Search bookmarks"
               className="bg-transparent text-sm flex-1 min-w-0 outline-none"
               style={{ color: 'var(--text-primary)' }}
             />
             {searchInput && (
               <button
                 onClick={() => setSearchInput('')}
-                className="flex-none transition-colors duration-150"
+                className="flex-none transition-colors duration-150 cursor-pointer"
                 style={{ color: 'var(--text-muted)' }}
                 onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--text-secondary)')}
                 onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
+                aria-label="Clear search"
               >
                 <IconClose size={11} />
               </button>
             )}
           </div>
 
-          {/* Add button */}
+          {/* Add button — Cmd/Ctrl+N */}
           <button
             onClick={() => setModal('add-bookmark')}
             onMouseEnter={() => setAddHovered(true)}
             onMouseLeave={() => setAddHovered(false)}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-semibold transition-opacity duration-150 flex-none"
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-semibold transition-opacity duration-150 flex-none cursor-pointer"
             style={{ background: 'var(--accent)', color: '#0c0b0a', opacity: addHovered ? 0.88 : 1 }}
+            aria-label="Add bookmark"
+            aria-keyshortcuts="Control+N Meta+N"
           >
             <IconPlus size={13} />
             Add
@@ -927,6 +1084,7 @@ export default function App() {
           <div
             className="flex items-center gap-4 px-6 py-2 flex-none"
             style={{ borderBottom: '1px solid var(--border-dim)' }}
+            aria-hidden="true"
           >
             <div className="w-7 flex-none" />
             <span className="flex-1 text-xs uppercase tracking-widest font-medium" style={{ color: 'var(--text-muted)' }}>Title</span>
@@ -943,7 +1101,13 @@ export default function App() {
           ) : (
             <div>
               {bookmarks.map((b, i) => (
-                <BookmarkRow key={b.id} bookmark={b} onDelete={handleDeleteBookmark} index={i} />
+                <BookmarkRow
+                  key={b.id}
+                  bookmark={b}
+                  onDelete={handleDeleteBookmark}
+                  onContext={openBookmarkContext}
+                  index={i}
+                />
               ))}
             </div>
           )}
@@ -963,6 +1127,9 @@ export default function App() {
       {modal === 'settings' && (
         <SettingsModal onClose={() => setModal(null)} />
       )}
+
+      {/* Context menu */}
+      {ctxMenu && <ContextMenu state={ctxMenu} onClose={() => setCtxMenu(null)} />}
     </div>
   )
 }
