@@ -2,6 +2,14 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { Bookmark, Folder, Tag, Selection } from './types'
 
+// ─── Error ────────────────────────────────────────────────────────────────────
+
+function extractErrorMessage(e: unknown): string {
+  if (typeof e === 'string') return e
+  if (e && typeof e === 'object' && 'message' in e) return String((e as { message: unknown }).message)
+  return String(e)
+}
+
 // ─── Utils ────────────────────────────────────────────────────────────────────
 
 function duckduckgoFavicon(url: string): string {
@@ -797,7 +805,7 @@ export default function App() {
       setTotalCount(count)
       setError(null)
     } catch (e) {
-      setError(String(e))
+      setError(extractErrorMessage(e))
     }
   }, [selection, search])
 
@@ -809,7 +817,7 @@ export default function App() {
       setModal(null)
       loadAll()
     } catch (e) {
-      setError(String(e))
+      setError(extractErrorMessage(e))
     }
   }
 
@@ -818,7 +826,7 @@ export default function App() {
       await invoke('delete_bookmark', { id })
       loadAll()
     } catch (e) {
-      setError(String(e))
+      setError(extractErrorMessage(e))
     }
   }
 
@@ -828,7 +836,7 @@ export default function App() {
       setModal(null)
       loadAll()
     } catch (e) {
-      setError(String(e))
+      setError(extractErrorMessage(e))
     }
   }
 
@@ -838,7 +846,7 @@ export default function App() {
       if (selection.type === 'folder' && selection.id === id) setSelection({ type: 'all' })
       loadAll()
     } catch (e) {
-      setError(String(e))
+      setError(extractErrorMessage(e))
     }
   }
 
@@ -848,7 +856,7 @@ export default function App() {
       setModal(null)
       loadAll()
     } catch (e) {
-      setError(String(e))
+      setError(extractErrorMessage(e))
     }
   }
 
@@ -858,7 +866,7 @@ export default function App() {
       if (selection.type === 'tag' && selection.id === id) setSelection({ type: 'all' })
       loadAll()
     } catch (e) {
-      setError(String(e))
+      setError(extractErrorMessage(e))
     }
   }
 

@@ -1,0 +1,1027 @@
+use rusqlite::{params, params_from_iter, Connection};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use uuid::Uuid;
+
+use crate::error::AppError;
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Bookmark {
+    pub id: String,
+    pub url: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub favicon_url: Option<String>,
+    pub feed_url: Option<String>,
+    pub folder_id: Option<String>,
+    pub tags: Vec<Tag>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Folder {
+    pub id: String,
+    pub name: String,
+    pub parent_id: Option<String>,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Tag {
+    pub id: String,
+    pub name: String,
+    pub color: String,
+    pub created_at: i64,
+}
+
+#[derive(Deserialize)]
+pub struct CreateBookmarkInput {
+    pub url: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub favicon_url: Option<String>,
+    pub feed_url: Option<String>,
+    pub folder_id: Option<String>,
+    pub tag_ids: Option<Vec<String>>,
+}
+
+pub(crate) struct RawBookmark {
+    pub id: String,
+    pub url: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub favicon_url: Option<String>,
+    pub feed_url: Option<String>,
+    pub folder_id: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+// ─── Schema ───────────────────────────────────────────────────────────────────
+
+pub fn init_schema(conn: &Connection) -> Result<(), AppError> {
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         PRAGMA foreign_keys = ON;
+
+         CREATE TABLE IF NOT EXISTS folders (
+           id         TEXT PRIMARY KEY,
+           name       TEXT NOT NULL,
+           parent_id  TEXT REFERENCES folders(id) ON DELETE CASCADE,
+           created_at INTEGER NOT NULL
+         );
+
+         CREATE TABLE IF NOT EXISTS bookmarks (
+           id          TEXT PRIMARY KEY,
+           url         TEXT NOT NULL,
+           title       TEXT NOT NULL,
+           description TEXT,
+           favicon_url TEXT,
+           feed_url    TEXT,
+           folder_id   TEXT REFERENCES folders(id) ON DELETE SET NULL,
+           created_at  INTEGER NOT NULL,
+           updated_at  INTEGER NOT NULL
+         );
+
+         CREATE TABLE IF NOT EXISTS tags (
+           id         TEXT PRIMARY KEY,
+           name       TEXT NOT NULL UNIQUE,
+           color      TEXT NOT NULL DEFAULT '#6366f1',
+           created_at INTEGER NOT NULL
+         );
+
+         CREATE TABLE IF NOT EXISTS bookmark_tags (
+           bookmark_id TEXT NOT NULL REFERENCES bookmarks(id) ON DELETE CASCADE,
+           tag_id      TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+           PRIMARY KEY (bookmark_id, tag_id)
+         );",
+    )?;
+    Ok(())
+}
+
+pub fn open_db(data_dir: &PathBuf) -> Result<Connection, AppError> {
+    let conn = Connection::open(data_dir.join("ferrico.db"))?;
+    init_schema(&conn)?;
+    Ok(conn)
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+pub(crate) fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
+fn row_to_raw(row: &rusqlite::Row) -> rusqlite::Result<RawBookmark> {
+    Ok(RawBookmark {
+        id: row.get(0)?,
+        url: row.get(1)?,
+        title: row.get(2)?,
+        description: row.get(3)?,
+        favicon_url: row.get(4)?,
+        feed_url: row.get(5)?,
+        folder_id: row.get(6)?,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
+    })
+}
+
+fn get_tags_batch(
+    conn: &Connection,
+    bookmark_ids: &[String],
+) -> Result<HashMap<String, Vec<Tag>>, AppError> {
+    let mut map: HashMap<String, Vec<Tag>> = HashMap::new();
+    if bookmark_ids.is_empty() {
+        return Ok(map);
+    }
+    let placeholders = (1..=bookmark_ids.len())
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT bt.bookmark_id, t.id, t.name, t.color, t.created_at \
+         FROM tags t JOIN bookmark_tags bt ON bt.tag_id = t.id \
+         WHERE bt.bookmark_id IN ({placeholders}) ORDER BY t.name"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(bookmark_ids.iter()), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            Tag {
+                id: row.get(1)?,
+                name: row.get(2)?,
+                color: row.get(3)?,
+                created_at: row.get(4)?,
+            },
+        ))
+    })?;
+    for row in rows.flatten() {
+        map.entry(row.0).or_default().push(row.1);
+    }
+    Ok(map)
+}
+
+fn enrich_batch(raws: Vec<RawBookmark>, conn: &Connection) -> Result<Vec<Bookmark>, AppError> {
+    let ids: Vec<String> = raws.iter().map(|r| r.id.clone()).collect();
+    let mut tags_map = get_tags_batch(conn, &ids)?;
+    Ok(raws
+        .into_iter()
+        .map(|r| {
+            let tags = tags_map.remove(&r.id).unwrap_or_default();
+            Bookmark {
+                id: r.id,
+                url: r.url,
+                title: r.title,
+                description: r.description,
+                favicon_url: r.favicon_url,
+                feed_url: r.feed_url,
+                folder_id: r.folder_id,
+                tags,
+                created_at: r.created_at,
+                updated_at: r.updated_at,
+            }
+        })
+        .collect())
+}
+
+// ─── OPML Helpers ─────────────────────────────────────────────────────────────
+
+pub(crate) fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+pub(crate) fn append_folder_tree(
+    xml: &mut String,
+    folders: &[Folder],
+    bookmarks: &[RawBookmark],
+    parent_id: Option<&str>,
+    indent: usize,
+) {
+    let pad = " ".repeat(indent);
+    for folder in folders
+        .iter()
+        .filter(|f| f.parent_id.as_deref() == parent_id)
+    {
+        xml.push_str(&format!(
+            "{}<outline text=\"{}\">\n",
+            pad,
+            xml_escape(&folder.name)
+        ));
+        for b in bookmarks
+            .iter()
+            .filter(|b| b.folder_id.as_deref() == Some(&folder.id))
+        {
+            append_outline(xml, b, indent + 2);
+        }
+        append_folder_tree(xml, folders, bookmarks, Some(&folder.id), indent + 2);
+        xml.push_str(&format!("{}</outline>\n", pad));
+    }
+    if parent_id.is_none() {
+        for b in bookmarks.iter().filter(|b| b.folder_id.is_none()) {
+            append_outline(xml, b, indent);
+        }
+    }
+}
+
+fn append_outline(xml: &mut String, b: &RawBookmark, indent: usize) {
+    let pad = " ".repeat(indent);
+    xml.push_str(&format!(
+        "{}<outline type=\"link\" text=\"{}\" url=\"{}\"",
+        pad,
+        xml_escape(&b.title),
+        xml_escape(&b.url)
+    ));
+    if let Some(d) = &b.description {
+        xml.push_str(&format!(" description=\"{}\"", xml_escape(d)));
+    }
+    if let Some(f) = &b.feed_url {
+        xml.push_str(&format!(" xmlUrl=\"{}\"", xml_escape(f)));
+    }
+    xml.push_str("/>\n");
+}
+
+// ─── DB Operations ────────────────────────────────────────────────────────────
+
+pub fn db_get_bookmarks(
+    conn: &Connection,
+    folder_id: Option<&str>,
+    tag_id: Option<&str>,
+    search: Option<&str>,
+) -> Result<Vec<Bookmark>, AppError> {
+    let raws: Vec<RawBookmark> = match (folder_id, tag_id) {
+        (_, Some(tid)) => {
+            let mut stmt = conn.prepare(
+                "SELECT b.id, b.url, b.title, b.description, b.favicon_url, b.feed_url, \
+                 b.folder_id, b.created_at, b.updated_at \
+                 FROM bookmarks b JOIN bookmark_tags bt ON bt.bookmark_id = b.id \
+                 WHERE bt.tag_id = ?1 ORDER BY b.created_at DESC",
+            )?;
+            let rows: Vec<RawBookmark> = stmt.query_map(params![tid], row_to_raw)?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows
+        }
+        (Some(fid), None) => {
+            let mut stmt = conn.prepare(
+                "SELECT id, url, title, description, favicon_url, feed_url, folder_id, \
+                 created_at, updated_at FROM bookmarks WHERE folder_id = ?1 \
+                 ORDER BY created_at DESC",
+            )?;
+            let rows: Vec<RawBookmark> = stmt.query_map(params![fid], row_to_raw)?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows
+        }
+        (None, None) => {
+            let mut stmt = conn.prepare(
+                "SELECT id, url, title, description, favicon_url, feed_url, folder_id, \
+                 created_at, updated_at FROM bookmarks ORDER BY created_at DESC",
+            )?;
+            let rows: Vec<RawBookmark> = stmt.query_map([], row_to_raw)?
+                .filter_map(|r| r.ok())
+                .collect();
+            rows
+        }
+    };
+
+    let mut bookmarks = enrich_batch(raws, conn)?;
+
+    if let Some(q) = search {
+        let q = q.to_lowercase();
+        bookmarks.retain(|b| {
+            b.title.to_lowercase().contains(&q)
+                || b.url.to_lowercase().contains(&q)
+                || b.description
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(&q)
+        });
+    }
+
+    Ok(bookmarks)
+}
+
+pub fn db_get_bookmark_count(conn: &Connection) -> Result<i64, AppError> {
+    Ok(conn.query_row("SELECT COUNT(*) FROM bookmarks", [], |r| r.get(0))?)
+}
+
+pub fn db_add_bookmark(
+    conn: &Connection,
+    input: CreateBookmarkInput,
+) -> Result<Bookmark, AppError> {
+    if input.url.trim().is_empty() {
+        return Err(AppError::Validation { message: "url is required".into() });
+    }
+    if input.title.trim().is_empty() {
+        return Err(AppError::Validation { message: "title is required".into() });
+    }
+
+    let id = Uuid::new_v4().to_string();
+    let ts = now();
+
+    conn.execute(
+        "INSERT INTO bookmarks \
+         (id, url, title, description, favicon_url, feed_url, folder_id, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            id, input.url, input.title, input.description,
+            input.favicon_url, input.feed_url, input.folder_id, ts, ts
+        ],
+    )?;
+
+    if let Some(tag_ids) = &input.tag_ids {
+        for tid in tag_ids {
+            conn.execute(
+                "INSERT OR IGNORE INTO bookmark_tags (bookmark_id, tag_id) VALUES (?1, ?2)",
+                params![id, tid],
+            )?;
+        }
+    }
+
+    let tags = get_tags_batch(conn, &[id.clone()])?.remove(&id).unwrap_or_default();
+
+    Ok(Bookmark {
+        id,
+        url: input.url,
+        title: input.title,
+        description: input.description,
+        favicon_url: input.favicon_url,
+        feed_url: input.feed_url,
+        folder_id: input.folder_id,
+        tags,
+        created_at: ts,
+        updated_at: ts,
+    })
+}
+
+pub fn db_delete_bookmark(conn: &Connection, id: &str) -> Result<(), AppError> {
+    let n = conn.execute("DELETE FROM bookmarks WHERE id = ?1", params![id])?;
+    if n == 0 {
+        return Err(AppError::NotFound { message: format!("bookmark {id}") });
+    }
+    Ok(())
+}
+
+pub fn db_get_folders(conn: &Connection) -> Result<Vec<Folder>, AppError> {
+    let mut stmt =
+        conn.prepare("SELECT id, name, parent_id, created_at FROM folders ORDER BY name")?;
+    let folders = stmt
+        .query_map([], |row| {
+            Ok(Folder {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                parent_id: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(folders)
+}
+
+pub fn db_add_folder(
+    conn: &Connection,
+    name: String,
+    parent_id: Option<String>,
+) -> Result<Folder, AppError> {
+    if name.trim().is_empty() {
+        return Err(AppError::Validation { message: "folder name is required".into() });
+    }
+    let id = Uuid::new_v4().to_string();
+    let ts = now();
+    conn.execute(
+        "INSERT INTO folders (id, name, parent_id, created_at) VALUES (?1, ?2, ?3, ?4)",
+        params![id, name, parent_id, ts],
+    )?;
+    Ok(Folder { id, name, parent_id, created_at: ts })
+}
+
+pub fn db_delete_folder(conn: &Connection, id: &str) -> Result<(), AppError> {
+    let n = conn.execute("DELETE FROM folders WHERE id = ?1", params![id])?;
+    if n == 0 {
+        return Err(AppError::NotFound { message: format!("folder {id}") });
+    }
+    Ok(())
+}
+
+pub fn db_get_tags(conn: &Connection) -> Result<Vec<Tag>, AppError> {
+    let mut stmt =
+        conn.prepare("SELECT id, name, color, created_at FROM tags ORDER BY name")?;
+    let tags = stmt
+        .query_map([], |row| {
+            Ok(Tag {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                color: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(tags)
+}
+
+pub fn db_add_tag(
+    conn: &Connection,
+    name: String,
+    color: String,
+) -> Result<Tag, AppError> {
+    if name.trim().is_empty() {
+        return Err(AppError::Validation { message: "tag name is required".into() });
+    }
+    let id = Uuid::new_v4().to_string();
+    let ts = now();
+    conn.execute(
+        "INSERT OR IGNORE INTO tags (id, name, color, created_at) VALUES (?1, ?2, ?3, ?4)",
+        params![id, name, color, ts],
+    )?;
+    // SELECT after INSERT OR IGNORE so we always return the actual record (handles name conflict)
+    Ok(conn.query_row(
+        "SELECT id, name, color, created_at FROM tags WHERE name = ?1",
+        params![name],
+        |row| {
+            Ok(Tag {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                color: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        },
+    )?)
+}
+
+pub fn db_delete_tag(conn: &Connection, id: &str) -> Result<(), AppError> {
+    let n = conn.execute("DELETE FROM tags WHERE id = ?1", params![id])?;
+    if n == 0 {
+        return Err(AppError::NotFound { message: format!("tag {id}") });
+    }
+    Ok(())
+}
+
+pub fn db_export_opml(conn: &Connection) -> Result<String, AppError> {
+    let folders: Vec<Folder> = {
+        let mut stmt =
+            conn.prepare("SELECT id, name, parent_id, created_at FROM folders ORDER BY name")?;
+        let rows: Vec<Folder> = stmt.query_map([], |row| {
+            Ok(Folder {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                parent_id: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+        rows
+    };
+
+    let bookmarks: Vec<RawBookmark> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, url, title, description, favicon_url, feed_url, folder_id, \
+             created_at, updated_at FROM bookmarks ORDER BY created_at",
+        )?;
+        let rows: Vec<RawBookmark> = stmt.query_map([], row_to_raw)?
+            .filter_map(|r| r.ok())
+            .collect();
+        rows
+    };
+
+    let mut xml = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <opml version=\"2.0\">\n\
+         <head><title>Ferrico Bookmarks</title></head>\n\
+         <body>\n",
+    );
+    append_folder_tree(&mut xml, &folders, &bookmarks, None, 2);
+    xml.push_str("</body>\n</opml>");
+    Ok(xml)
+}
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn mem() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn
+    }
+
+    fn mk_bookmark(conn: &Connection, url: &str, title: &str) -> Bookmark {
+        db_add_bookmark(
+            conn,
+            CreateBookmarkInput {
+                url: url.to_string(),
+                title: title.to_string(),
+                description: None,
+                favicon_url: None,
+                feed_url: None,
+                folder_id: None,
+                tag_ids: None,
+            },
+        )
+        .unwrap()
+    }
+
+    fn mk_folder(conn: &Connection, name: &str) -> Folder {
+        db_add_folder(conn, name.to_string(), None).unwrap()
+    }
+
+    fn mk_tag(conn: &Connection, name: &str) -> Tag {
+        db_add_tag(conn, name.to_string(), "#ff0000".to_string()).unwrap()
+    }
+
+    // ── Schema ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn schema_initializes_cleanly() {
+        mem();
+    }
+
+    #[test]
+    fn schema_is_idempotent() {
+        let conn = mem();
+        // Running init_schema twice must not fail (CREATE TABLE IF NOT EXISTS)
+        init_schema(&conn).unwrap();
+    }
+
+    // ── Bookmarks ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn add_bookmark_roundtrip() {
+        let conn = mem();
+        let b = mk_bookmark(&conn, "https://example.com", "Example");
+        assert_eq!(b.url, "https://example.com");
+        assert_eq!(b.title, "Example");
+        assert!(b.tags.is_empty());
+        assert!(b.created_at > 0);
+    }
+
+    #[test]
+    fn add_bookmark_with_all_fields() {
+        let conn = mem();
+        let folder = mk_folder(&conn, "Work");
+        let tag = mk_tag(&conn, "rust");
+        let b = db_add_bookmark(
+            &conn,
+            CreateBookmarkInput {
+                url: "https://rust-lang.org".to_string(),
+                title: "Rust".to_string(),
+                description: Some("A systems language".to_string()),
+                favicon_url: Some("https://rust-lang.org/favicon.ico".to_string()),
+                feed_url: None,
+                folder_id: Some(folder.id.clone()),
+                tag_ids: Some(vec![tag.id.clone()]),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(b.description.as_deref(), Some("A systems language"));
+        assert_eq!(b.folder_id.as_deref(), Some(folder.id.as_str()));
+        assert_eq!(b.tags.len(), 1);
+        assert_eq!(b.tags[0].id, tag.id);
+    }
+
+    #[test]
+    fn add_bookmark_empty_url_is_validation_error() {
+        let conn = mem();
+        let err = db_add_bookmark(
+            &conn,
+            CreateBookmarkInput {
+                url: "  ".to_string(),
+                title: "Title".to_string(),
+                description: None,
+                favicon_url: None,
+                feed_url: None,
+                folder_id: None,
+                tag_ids: None,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, AppError::Validation { .. }));
+    }
+
+    #[test]
+    fn add_bookmark_empty_title_is_validation_error() {
+        let conn = mem();
+        let err = db_add_bookmark(
+            &conn,
+            CreateBookmarkInput {
+                url: "https://example.com".to_string(),
+                title: "".to_string(),
+                description: None,
+                favicon_url: None,
+                feed_url: None,
+                folder_id: None,
+                tag_ids: None,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, AppError::Validation { .. }));
+    }
+
+    #[test]
+    fn get_bookmarks_all() {
+        let conn = mem();
+        mk_bookmark(&conn, "https://a.com", "A");
+        mk_bookmark(&conn, "https://b.com", "B");
+        let all = db_get_bookmarks(&conn, None, None, None).unwrap();
+        assert_eq!(all.len(), 2);
+        let titles: std::collections::HashSet<&str> = all.iter().map(|b| b.title.as_str()).collect();
+        assert!(titles.contains("A"));
+        assert!(titles.contains("B"));
+    }
+
+    #[test]
+    fn get_bookmarks_by_folder() {
+        let conn = mem();
+        let folder = mk_folder(&conn, "Work");
+        db_add_bookmark(
+            &conn,
+            CreateBookmarkInput {
+                url: "https://work.com".to_string(),
+                title: "Work".to_string(),
+                description: None,
+                favicon_url: None,
+                feed_url: None,
+                folder_id: Some(folder.id.clone()),
+                tag_ids: None,
+            },
+        )
+        .unwrap();
+        mk_bookmark(&conn, "https://other.com", "Other");
+
+        let results = db_get_bookmarks(&conn, Some(&folder.id), None, None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Work");
+    }
+
+    #[test]
+    fn get_bookmarks_by_tag() {
+        let conn = mem();
+        let tag = mk_tag(&conn, "rust");
+        let b1 = mk_bookmark(&conn, "https://rust-lang.org", "Rust");
+        mk_bookmark(&conn, "https://python.org", "Python");
+
+        conn.execute(
+            "INSERT INTO bookmark_tags (bookmark_id, tag_id) VALUES (?1, ?2)",
+            params![b1.id, tag.id],
+        )
+        .unwrap();
+
+        let results = db_get_bookmarks(&conn, None, Some(&tag.id), None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Rust");
+    }
+
+    #[test]
+    fn get_bookmarks_search_title() {
+        let conn = mem();
+        mk_bookmark(&conn, "https://rust-lang.org", "The Rust Programming Language");
+        mk_bookmark(&conn, "https://python.org", "Python");
+
+        let results = db_get_bookmarks(&conn, None, None, Some("rust")).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "The Rust Programming Language");
+    }
+
+    #[test]
+    fn get_bookmarks_search_url() {
+        let conn = mem();
+        mk_bookmark(&conn, "https://docs.rs/tokio", "Tokio docs");
+        mk_bookmark(&conn, "https://crates.io", "Crates");
+
+        let results = db_get_bookmarks(&conn, None, None, Some("docs.rs")).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].url, "https://docs.rs/tokio");
+    }
+
+    #[test]
+    fn get_bookmarks_search_description() {
+        let conn = mem();
+        db_add_bookmark(
+            &conn,
+            CreateBookmarkInput {
+                url: "https://example.com".to_string(),
+                title: "Example".to_string(),
+                description: Some("async runtime notes".to_string()),
+                favicon_url: None,
+                feed_url: None,
+                folder_id: None,
+                tag_ids: None,
+            },
+        )
+        .unwrap();
+        mk_bookmark(&conn, "https://other.com", "Other");
+
+        let results = db_get_bookmarks(&conn, None, None, Some("async runtime")).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn get_bookmarks_search_case_insensitive() {
+        let conn = mem();
+        mk_bookmark(&conn, "https://rust-lang.org", "The Rust Language");
+        let results = db_get_bookmarks(&conn, None, None, Some("RUST")).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn get_bookmark_count() {
+        let conn = mem();
+        assert_eq!(db_get_bookmark_count(&conn).unwrap(), 0);
+        mk_bookmark(&conn, "https://a.com", "A");
+        mk_bookmark(&conn, "https://b.com", "B");
+        assert_eq!(db_get_bookmark_count(&conn).unwrap(), 2);
+    }
+
+    #[test]
+    fn delete_bookmark_removes_it() {
+        let conn = mem();
+        let b = mk_bookmark(&conn, "https://example.com", "Example");
+        db_delete_bookmark(&conn, &b.id).unwrap();
+        assert_eq!(db_get_bookmark_count(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn delete_bookmark_cascades_bookmark_tags() {
+        let conn = mem();
+        let tag = mk_tag(&conn, "rust");
+        let b = db_add_bookmark(
+            &conn,
+            CreateBookmarkInput {
+                url: "https://rust-lang.org".to_string(),
+                title: "Rust".to_string(),
+                description: None,
+                favicon_url: None,
+                feed_url: None,
+                folder_id: None,
+                tag_ids: Some(vec![tag.id.clone()]),
+            },
+        )
+        .unwrap();
+
+        db_delete_bookmark(&conn, &b.id).unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM bookmark_tags", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn delete_bookmark_not_found_returns_error() {
+        let conn = mem();
+        let err = db_delete_bookmark(&conn, "nonexistent-id").unwrap_err();
+        assert!(matches!(err, AppError::NotFound { .. }));
+    }
+
+    // ── Folders ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn add_and_get_folder() {
+        let conn = mem();
+        let f = mk_folder(&conn, "Reading List");
+        assert_eq!(f.name, "Reading List");
+        assert!(f.parent_id.is_none());
+
+        let folders = db_get_folders(&conn).unwrap();
+        assert_eq!(folders.len(), 1);
+        assert_eq!(folders[0].id, f.id);
+    }
+
+    #[test]
+    fn add_nested_folder() {
+        let conn = mem();
+        let parent = mk_folder(&conn, "Work");
+        let child =
+            db_add_folder(&conn, "Projects".to_string(), Some(parent.id.clone())).unwrap();
+
+        assert_eq!(child.parent_id.as_deref(), Some(parent.id.as_str()));
+    }
+
+    #[test]
+    fn add_folder_empty_name_is_validation_error() {
+        let conn = mem();
+        let err = db_add_folder(&conn, "".to_string(), None).unwrap_err();
+        assert!(matches!(err, AppError::Validation { .. }));
+    }
+
+    #[test]
+    fn delete_folder_sets_bookmark_folder_null() {
+        let conn = mem();
+        let folder = mk_folder(&conn, "Work");
+        db_add_bookmark(
+            &conn,
+            CreateBookmarkInput {
+                url: "https://work.com".to_string(),
+                title: "Work".to_string(),
+                description: None,
+                favicon_url: None,
+                feed_url: None,
+                folder_id: Some(folder.id.clone()),
+                tag_ids: None,
+            },
+        )
+        .unwrap();
+
+        db_delete_folder(&conn, &folder.id).unwrap();
+
+        let bookmarks = db_get_bookmarks(&conn, None, None, None).unwrap();
+        assert_eq!(bookmarks.len(), 1);
+        // folder_id SET NULL on folder delete
+        assert!(bookmarks[0].folder_id.is_none());
+    }
+
+    #[test]
+    fn delete_folder_not_found_returns_error() {
+        let conn = mem();
+        let err = db_delete_folder(&conn, "nonexistent").unwrap_err();
+        assert!(matches!(err, AppError::NotFound { .. }));
+    }
+
+    // ── Tags ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn add_and_get_tag() {
+        let conn = mem();
+        let t = mk_tag(&conn, "design");
+        assert_eq!(t.name, "design");
+        assert_eq!(t.color, "#ff0000");
+
+        let tags = db_get_tags(&conn).unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].id, t.id);
+    }
+
+    #[test]
+    fn add_tag_duplicate_name_returns_existing() {
+        let conn = mem();
+        let t1 = mk_tag(&conn, "rust");
+        let t2 = db_add_tag(&conn, "rust".to_string(), "#00ff00".to_string()).unwrap();
+        // Same id — INSERT OR IGNORE kept the first one
+        assert_eq!(t1.id, t2.id);
+        // Original color preserved
+        assert_eq!(t2.color, "#ff0000");
+    }
+
+    #[test]
+    fn add_tag_empty_name_is_validation_error() {
+        let conn = mem();
+        let err = db_add_tag(&conn, "".to_string(), "#ff0000".to_string()).unwrap_err();
+        assert!(matches!(err, AppError::Validation { .. }));
+    }
+
+    #[test]
+    fn delete_tag_removes_it() {
+        let conn = mem();
+        let t = mk_tag(&conn, "rust");
+        db_delete_tag(&conn, &t.id).unwrap();
+        assert_eq!(db_get_tags(&conn).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn delete_tag_cascades_bookmark_tags() {
+        let conn = mem();
+        let tag = mk_tag(&conn, "rust");
+        db_add_bookmark(
+            &conn,
+            CreateBookmarkInput {
+                url: "https://rust-lang.org".to_string(),
+                title: "Rust".to_string(),
+                description: None,
+                favicon_url: None,
+                feed_url: None,
+                folder_id: None,
+                tag_ids: Some(vec![tag.id.clone()]),
+            },
+        )
+        .unwrap();
+
+        db_delete_tag(&conn, &tag.id).unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM bookmark_tags", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn delete_tag_not_found_returns_error() {
+        let conn = mem();
+        let err = db_delete_tag(&conn, "nonexistent").unwrap_err();
+        assert!(matches!(err, AppError::NotFound { .. }));
+    }
+
+    // ── OPML ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn xml_escape_special_chars() {
+        assert_eq!(xml_escape("a & b"), "a &amp; b");
+        assert_eq!(xml_escape("say \"hi\""), "say &quot;hi&quot;");
+        assert_eq!(xml_escape("<tag>"), "&lt;tag&gt;");
+        assert_eq!(xml_escape("plain text"), "plain text");
+    }
+
+    #[test]
+    fn export_opml_empty_db() {
+        let conn = mem();
+        let opml = db_export_opml(&conn).unwrap();
+        assert!(opml.contains("<?xml"));
+        assert!(opml.contains("<opml version=\"2.0\">"));
+        assert!(opml.contains("<body>"));
+        assert!(opml.contains("</body>"));
+    }
+
+    #[test]
+    fn export_opml_flat_bookmarks() {
+        let conn = mem();
+        mk_bookmark(&conn, "https://example.com", "Example");
+        let opml = db_export_opml(&conn).unwrap();
+        assert!(opml.contains("url=\"https://example.com\""));
+        assert!(opml.contains("text=\"Example\""));
+    }
+
+    #[test]
+    fn export_opml_with_folder() {
+        let conn = mem();
+        let folder = mk_folder(&conn, "Work");
+        db_add_bookmark(
+            &conn,
+            CreateBookmarkInput {
+                url: "https://work.com".to_string(),
+                title: "Work Site".to_string(),
+                description: None,
+                favicon_url: None,
+                feed_url: None,
+                folder_id: Some(folder.id.clone()),
+                tag_ids: None,
+            },
+        )
+        .unwrap();
+
+        let opml = db_export_opml(&conn).unwrap();
+        assert!(opml.contains("<outline text=\"Work\">"));
+        assert!(opml.contains("url=\"https://work.com\""));
+    }
+
+    #[test]
+    fn export_opml_escapes_special_chars_in_title() {
+        let conn = mem();
+        mk_bookmark(&conn, "https://example.com", "A & B <test>");
+        let opml = db_export_opml(&conn).unwrap();
+        assert!(opml.contains("text=\"A &amp; B &lt;test&gt;\""));
+        assert!(!opml.contains("text=\"A & B <test>\""));
+    }
+
+    #[test]
+    fn export_opml_includes_description_and_feed_url() {
+        let conn = mem();
+        db_add_bookmark(
+            &conn,
+            CreateBookmarkInput {
+                url: "https://blog.example.com".to_string(),
+                title: "Blog".to_string(),
+                description: Some("A great blog".to_string()),
+                favicon_url: None,
+                feed_url: Some("https://blog.example.com/feed.xml".to_string()),
+                folder_id: None,
+                tag_ids: None,
+            },
+        )
+        .unwrap();
+
+        let opml = db_export_opml(&conn).unwrap();
+        assert!(opml.contains("description=\"A great blog\""));
+        assert!(opml.contains("xmlUrl=\"https://blog.example.com/feed.xml\""));
+    }
+
+    // ── Error type ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn app_error_display_messages() {
+        assert!(AppError::Db { message: "oops".into() }.to_string().contains("oops"));
+        assert!(AppError::Lock { message: "poisoned".into() }.to_string().contains("lock"));
+        assert!(AppError::NotFound { message: "x".into() }.to_string().contains("not found"));
+        assert!(AppError::Validation { message: "bad".into() }.to_string().contains("bad"));
+    }
+
+    #[test]
+    fn rusqlite_error_converts_to_app_error() {
+        let err: AppError = rusqlite::Error::QueryReturnedNoRows.into();
+        assert!(matches!(err, AppError::Db { .. }));
+    }
+}

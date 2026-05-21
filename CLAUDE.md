@@ -56,6 +56,34 @@ Blocked on this machine — requires macOS 13+ and Xcode 15.3. Current OS is mac
 
 ## Rust backend
 
-- State lives in `AppState` with a `Mutex<Vec<Todo>>` and a `data_dir: PathBuf`
-- `save_todos` takes `(data_dir, todos)` directly — do NOT pass `&State` to avoid mutex deadlock
-- Data persisted to `~/Library/Application Support/ferrico/todos.json` (via `dirs::data_dir()`)
+- State lives in `AppState` with `Arc<Mutex<Connection>>` (SQLite via rusqlite)
+- Data persisted to `~/.local/share/ferrico/ferrico.db` (via `dirs::data_dir()`)
+- All DB logic lives in `src-tauri/src/db.rs` — pure functions taking `&Connection`
+- Tauri commands in `main.rs` are thin wrappers: lock mutex → call `db::*` function → return
+- Error type: `AppError` in `src-tauri/src/error.rs` — discriminated union `#[serde(tag = "name")]`
+  serializes as `{ name: "Db" | "Lock" | "NotFound" | "Validation", message: "..." }` to frontend
+
+## Testing
+
+The Rust test suite lives in `src-tauri/src/db.rs` (`#[cfg(test)]` module). All tests use
+in-memory SQLite — no fixtures, no disk state.
+
+```bash
+# System `cargo` may be old (snap). Use the rustup one:
+~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test
+```
+
+Current coverage: 36 tests, all DB operations covered (CRUD, cascade deletes, validation,
+search, OPML export, error types).
+
+To measure coverage with llvm-cov:
+```bash
+cargo install cargo-llvm-cov
+cargo llvm-cov --html   # opens htmlcov/index.html
+```
+
+### Adding new commands
+
+1. Add a pure `db_*` function in `db.rs` taking `&Connection` + write tests there
+2. Add a thin Tauri command wrapper in `main.rs` using the `lock_db!` macro
+3. Register it in `invoke_handler!` in `main()`
