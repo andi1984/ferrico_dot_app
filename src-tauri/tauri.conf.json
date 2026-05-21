@@ -14,8 +14,10 @@
         "fullscreen": false,
         "resizable": true,
         "title": "Ferrico",
-        "width": 800,
-        "height": 600
+        "width": 1280,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600
       }
     ],
     "security": {

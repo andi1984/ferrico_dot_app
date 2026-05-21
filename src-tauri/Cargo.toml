@@ -1,5 +1,5 @@
 [package]
-name = "todo-app"
+name = "ferrico"
 version = "0.1.0"
 edition = "2021"
 
@@ -12,6 +12,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 dirs = "5"
+rusqlite = { version = "0.31", features = ["bundled"] }
+axum = "0.7"
+tower-http = { version = "0.5", features = ["cors"] }
+uuid = { version = "1", features = ["v4"] }
+rand = "0.8"
+quick-xml = "0.36"
 
 [profile.release]
 opt-level = "z"
