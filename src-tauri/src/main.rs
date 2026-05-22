@@ -28,7 +28,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use rusqlite::Connection;
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 use tower_http::cors::{Any, CorsLayer};
 use uuid::Uuid;
 
@@ -39,10 +39,25 @@ pub struct AppState {
     pub api_token: String,
 }
 
+// ─── Notifier ─────────────────────────────────────────────────────────────────
+
+pub(crate) trait BookmarkNotifier: Send + Sync {
+    fn notify(&self);
+}
+
+struct TauriNotifier(AppHandle);
+
+impl BookmarkNotifier for TauriNotifier {
+    fn notify(&self) {
+        self.0.emit("bookmark-added", ()).ok();
+    }
+}
+
 #[derive(Clone)]
 struct HttpState {
     db: Arc<Mutex<Connection>>,
     token: String,
+    notifier: Arc<dyn BookmarkNotifier>,
 }
 
 // ─── Lock Helper ──────────────────────────────────────────────────────────────
@@ -193,11 +208,15 @@ async fn http_add_bookmark(
     )
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
+    drop(db);
+    state.notifier.notify();
+
     Ok(Json(serde_json::json!({ "id": id, "created_at": ts })))
 }
 
-async fn start_http_server(db: Arc<Mutex<Connection>>, token: String) {
-    let state = HttpState { db, token };
+async fn start_http_server(db: Arc<Mutex<Connection>>, token: String, app_handle: AppHandle) {
+    let notifier = Arc::new(TauriNotifier(app_handle)) as Arc<dyn BookmarkNotifier>;
+    let state = HttpState { db, token, notifier };
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
@@ -257,8 +276,9 @@ fn main() {
             db: db.clone(),
             api_token: api_token.clone(),
         })
-        .setup(move |_app| {
-            tauri::async_runtime::spawn(start_http_server(db.clone(), api_token.clone()));
+        .setup(move |app| {
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(start_http_server(db.clone(), api_token.clone(), handle));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -278,4 +298,75 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod http_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::routing::post;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tower::ServiceExt;
+
+    struct MockNotifier {
+        called: Arc<AtomicBool>,
+    }
+
+    impl BookmarkNotifier for MockNotifier {
+        fn notify(&self) {
+            self.called.store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn make_state(token: &str) -> (HttpState, Arc<AtomicBool>) {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        db::init_schema(&conn).unwrap();
+        let db = Arc::new(Mutex::new(conn));
+        let called = Arc::new(AtomicBool::new(false));
+        let notifier = Arc::new(MockNotifier { called: called.clone() }) as Arc<dyn BookmarkNotifier>;
+        (HttpState { db, token: token.to_string(), notifier }, called)
+    }
+
+    #[tokio::test]
+    async fn notifies_frontend_after_successful_bookmark_add() {
+        let (state, called) = make_state("secret");
+        let app = axum::Router::new()
+            .route("/bookmarks", post(http_add_bookmark))
+            .with_state(state);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/bookmarks")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer secret")
+            .body(Body::from(r#"{"url":"https://example.com","title":"Test"}"#))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(called.load(Ordering::Relaxed), "notifier must be called on success");
+    }
+
+    #[tokio::test]
+    async fn does_not_notify_on_auth_failure() {
+        let (state, called) = make_state("secret");
+        let app = axum::Router::new()
+            .route("/bookmarks", post(http_add_bookmark))
+            .with_state(state);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/bookmarks")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer wrong-token")
+            .body(Body::from(r#"{"url":"https://example.com","title":"Test"}"#))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert!(!called.load(Ordering::Relaxed), "notifier must not be called on auth failure");
+    }
 }
