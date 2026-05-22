@@ -169,6 +169,11 @@ async fn http_add_bookmark(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
+    if body.url == "__ping__" && body.title == "__ping__" {
+        let ts = now();
+        return Ok(Json(serde_json::json!({ "id": "ping", "created_at": ts })));
+    }
+
     let db = state
         .db
         .lock()
