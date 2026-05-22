@@ -14,6 +14,8 @@
       color: #f1f5f9;
     }
 
+    /* ── Header ───────────────────────────────────────────── */
+
     .header {
       display: flex;
       align-items: center;
@@ -41,6 +43,8 @@
       color: #f1f5f9;
     }
 
+    /* ── Form layout ──────────────────────────────────────── */
+
     .form {
       padding: 16px;
       display: flex;
@@ -48,17 +52,21 @@
       gap: 12px;
     }
 
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
     label {
-      display: block;
       font-size: 11px;
       font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.05em;
       color: #64748b;
-      margin-bottom: 5px;
     }
 
-    input, textarea {
+    input, textarea, select {
       width: 100%;
       background: #1e293b;
       border: 1px solid #334155;
@@ -71,23 +79,251 @@
       transition: border-color 0.15s;
     }
 
-    input:focus, textarea:focus {
-      border-color: #6366f1;
+    input:focus, textarea:focus, select:focus { border-color: #6366f1; }
+
+    textarea { resize: none; height: 56px; }
+
+    select {
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+      padding-right: 28px;
+      cursor: pointer;
     }
 
-    textarea {
-      resize: none;
-      height: 56px;
-    }
+    select option { background: #1e293b; color: #f1f5f9; }
 
     ::placeholder { color: #475569; }
+
+    /* ── Creation panels ──────────────────────────────────── */
+
+    .creation-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 12px;
+      background: #0a1628;
+      border: 1px solid #1e3a5f;
+      border-left: 2px solid #6366f1;
+      border-radius: 8px;
+      animation: panel-in 0.14s ease;
+    }
+
+    @keyframes panel-in {
+      from { opacity: 0; transform: translateY(-4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Inputs inside creation panels — need contrast against the darker bg */
+    .creation-panel input {
+      background: #1e293b;
+      border-color: #334155;
+      border-radius: 6px;
+      padding: 7px 10px;
+      font-size: 13px;
+    }
+
+    .creation-panel input:focus { border-color: #6366f1; }
+
+    /* Folder: back + input + create all in one line */
+    .panel-input-row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .panel-input-row input {
+      flex: 1;
+      min-width: 0;
+      width: auto;
+    }
+
+    /* Back arrow button */
+    .btn-back {
+      width: 30px;
+      height: 30px;
+      flex: none;
+      padding: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      color: #64748b;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
+    }
+
+    .btn-back:hover {
+      background: #1e293b;
+      border-color: #475569;
+      color: #94a3b8;
+    }
+
+    /* Compact create button inside panel rows */
+    .btn-create-sm {
+      flex: none;
+      padding: 0 13px;
+      height: 30px;
+      border: none;
+      border-radius: 6px;
+      background: #6366f1;
+      color: white;
+      font-size: 12px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.15s;
+    }
+
+    .btn-create-sm:hover { background: #5254cc; }
+
+    /* Panel footer actions (tag form) */
+    .panel-actions {
+      display: flex;
+      gap: 6px;
+      justify-content: flex-end;
+    }
+
+    .btn-ghost-sm {
+      flex: none;
+      padding: 5px 12px;
+      border-radius: 6px;
+      background: transparent;
+      border: 1px solid #334155;
+      color: #94a3b8;
+      font-size: 12px;
+      font-weight: 500;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .btn-ghost-sm:hover { background: #1e293b; }
+
+    .btn-filled-sm {
+      flex: none;
+      padding: 5px 14px;
+      border-radius: 6px;
+      background: #6366f1;
+      color: white;
+      border: none;
+      font-size: 12px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .btn-filled-sm:hover { background: #5254cc; }
+
+    /* ── Tag chips ─────────────────────────────────────────── */
+
+    .tags-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .tag-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 10px 4px 7px;
+      border-radius: 20px;
+      background: #1e293b;
+      border: 1px solid #334155;
+      color: #94a3b8;
+      font-size: 12px;
+      font-weight: 500;
+      font-family: inherit;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s, color 0.15s;
+      flex: none;
+    }
+
+    .tag-chip:hover { border-color: #475569; color: #cbd5e1; }
+
+    .tag-chip.selected {
+      border-color: var(--tag-color);
+      background: color-mix(in srgb, var(--tag-color) 12%, #1e293b);
+      color: #f1f5f9;
+    }
+
+    .tag-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--tag-color, #6366f1);
+      flex-shrink: 0;
+    }
+
+    .btn-add-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 10px;
+      border-radius: 20px;
+      background: transparent;
+      border: 1px dashed #334155;
+      color: #64748b;
+      font-size: 12px;
+      font-family: inherit;
+      cursor: pointer;
+      flex: none;
+      transition: border-color 0.15s, color 0.15s;
+    }
+
+    .btn-add-tag:hover { border-color: #6366f1; color: #6366f1; }
+
+    /* ── Color swatches ────────────────────────────────────── */
+
+    .swatch-grid {
+      display: flex;
+      gap: 7px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .swatch {
+      width: 22px;
+      height: 22px;
+      min-width: 22px; /* prevent flex shrink */
+      border-radius: 50%;
+      border: none;
+      padding: 0;
+      cursor: pointer;
+      flex: none;
+      position: relative;
+      transition: transform 0.12s;
+      outline: none;
+    }
+
+    .swatch::after {
+      content: '';
+      position: absolute;
+      inset: -3px;
+      border-radius: 50%;
+      border: 2px solid transparent;
+      transition: border-color 0.15s;
+    }
+
+    .swatch.selected::after { border-color: #f1f5f9; }
+    .swatch:hover { transform: scale(1.18); }
+    .swatch.selected { transform: scale(1.08); }
+
+    /* ── Main footer buttons ───────────────────────────────── */
 
     .btn-row {
       display: flex;
       gap: 8px;
     }
 
-    button {
+    .btn-row button {
       flex: 1;
       padding: 9px 16px;
       border-radius: 8px;
@@ -101,48 +337,33 @@
 
     .btn-cancel {
       background: transparent;
-      border: 1px solid #334155;
+      border: 1px solid #334155!important;
       color: #94a3b8;
     }
 
     .btn-cancel:hover { background: #1e293b; }
 
-    .btn-save {
-      background: #6366f1;
-      color: white;
-    }
-
+    .btn-save { background: #6366f1; color: white; }
     .btn-save:hover { background: #5254cc; }
     .btn-save:disabled { background: #3730a3; opacity: 0.6; cursor: not-allowed; }
 
+    /* ── Status ────────────────────────────────────────────── */
+
     .status {
-      padding: 10px 16px;
+      padding: 6px 0;
       font-size: 13px;
       text-align: center;
+      min-height: 22px;
     }
 
     .status.success { color: #10b981; }
-    .status.error { color: #ef4444; }
+    .status.error   { color: #ef4444; }
 
-    .no-token {
-      padding: 20px 16px;
-      text-align: center;
-    }
+    /* ── No token ──────────────────────────────────────────── */
 
-    .no-token p {
-      color: #94a3b8;
-      font-size: 13px;
-      line-height: 1.5;
-      margin-bottom: 12px;
-    }
-
-    .no-token a {
-      color: #6366f1;
-      text-decoration: none;
-      font-size: 13px;
-      font-weight: 500;
-    }
-
+    .no-token { padding: 20px 16px; text-align: center; }
+    .no-token p { color: #94a3b8; font-size: 13px; line-height: 1.5; margin-bottom: 12px; }
+    .no-token a { color: #6366f1; text-decoration: none; font-size: 13px; font-weight: 500; }
     .no-token a:hover { text-decoration: underline; }
   </style>
 </head>

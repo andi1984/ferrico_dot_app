@@ -9,7 +9,7 @@ mod error;
 use axum::{
     extract::State as AxumState,
     http::{HeaderMap, StatusCode},
-    routing::post,
+    routing::{get, post},
     Json, Router,
 };
 use db::{
@@ -30,7 +30,6 @@ use std::sync::{Arc, Mutex};
 use rusqlite::Connection;
 use tauri::{AppHandle, Emitter, State};
 use tower_http::cors::{Any, CorsLayer};
-use uuid::Uuid;
 
 // ─── App State ────────────────────────────────────────────────────────────────
 
@@ -168,6 +167,77 @@ struct ExtPayload {
     favicon_url: Option<String>,
     feed_url: Option<String>,
     folder_id: Option<String>,
+    tag_ids: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+struct ExtFolderPayload {
+    name: String,
+    parent_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ExtTagPayload {
+    name: String,
+    color: String,
+}
+
+fn auth_ok(headers: &HeaderMap, token: &str) -> bool {
+    headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        == Some(token)
+}
+
+async fn http_get_folders(
+    AxumState(state): AxumState<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<Folder>>, StatusCode> {
+    if !auth_ok(&headers, &state.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    db_get_folders(&db).map(Json).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+async fn http_get_tags(
+    AxumState(state): AxumState<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<Tag>>, StatusCode> {
+    if !auth_ok(&headers, &state.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    db_get_tags(&db).map(Json).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+async fn http_add_folder(
+    AxumState(state): AxumState<HttpState>,
+    headers: HeaderMap,
+    Json(body): Json<ExtFolderPayload>,
+) -> Result<Json<Folder>, StatusCode> {
+    if !auth_ok(&headers, &state.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    db_add_folder(&db, body.name, body.parent_id)
+        .map(Json)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+async fn http_add_tag(
+    AxumState(state): AxumState<HttpState>,
+    headers: HeaderMap,
+    Json(body): Json<ExtTagPayload>,
+) -> Result<Json<Tag>, StatusCode> {
+    if !auth_ok(&headers, &state.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    db_add_tag(&db, body.name, body.color)
+        .map(Json)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 async fn http_add_bookmark(
@@ -175,12 +245,7 @@ async fn http_add_bookmark(
     headers: HeaderMap,
     Json(body): Json<ExtPayload>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let auth = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-
-    if auth != Some(state.token.as_str()) {
+    if !auth_ok(&headers, &state.token) {
         return Err(StatusCode::UNAUTHORIZED);
     }
 
@@ -189,29 +254,23 @@ async fn http_add_bookmark(
         return Ok(Json(serde_json::json!({ "id": "ping", "created_at": ts })));
     }
 
-    let db = state
-        .db
-        .lock()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let id = Uuid::new_v4().to_string();
-    let ts = now();
-
-    db.execute(
-        "INSERT INTO bookmarks \
-         (id, url, title, description, favicon_url, feed_url, folder_id, created_at, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        rusqlite::params![
-            id, body.url, body.title, body.description,
-            body.favicon_url, body.feed_url, body.folder_id, ts, ts
-        ],
-    )
+    let bookmark = db_add_bookmark(&db, CreateBookmarkInput {
+        url: body.url,
+        title: body.title,
+        description: body.description,
+        favicon_url: body.favicon_url,
+        feed_url: body.feed_url,
+        folder_id: body.folder_id,
+        tag_ids: body.tag_ids,
+    })
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     drop(db);
     state.notifier.notify();
 
-    Ok(Json(serde_json::json!({ "id": id, "created_at": ts })))
+    Ok(Json(serde_json::json!({ "id": bookmark.id, "created_at": bookmark.created_at })))
 }
 
 async fn start_http_server(db: Arc<Mutex<Connection>>, token: String, app_handle: AppHandle) {
@@ -224,6 +283,8 @@ async fn start_http_server(db: Arc<Mutex<Connection>>, token: String, app_handle
 
     let app = Router::new()
         .route("/bookmarks", post(http_add_bookmark))
+        .route("/folders", get(http_get_folders).post(http_add_folder))
+        .route("/tags", get(http_get_tags).post(http_add_tag))
         .with_state(state)
         .layer(cors);
 
