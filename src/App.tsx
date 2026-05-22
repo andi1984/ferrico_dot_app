@@ -874,10 +874,12 @@ export default function App() {
   useEffect(() => {
     let active = true
     let unlisten: UnlistenFn | undefined
-    subscribeToBookmarkAdded(loadAll).then((fn) => {
-      if (active) unlisten = fn
-      else fn()
-    })
+    subscribeToBookmarkAdded(loadAll)
+      .then((fn) => {
+        if (active) unlisten = fn
+        else fn()
+      })
+      .catch((e) => console.error('[ferrico] bookmark-added listener failed:', e))
     return () => {
       active = false
       unlisten?.()
