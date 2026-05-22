@@ -16,7 +16,7 @@ describe('BookmarkRow', () => {
         bookmark={makeBookmark({ url: 'https://example.com', title: 'Example' })}
         onDelete={() => {}}
         onContext={() => {}}
-        index={0}
+
       />,
     )
     expect(screen.getByText('Example')).toBeInTheDocument()
@@ -29,7 +29,7 @@ describe('BookmarkRow', () => {
         bookmark={makeBookmark({ description: 'A test note' })}
         onDelete={() => {}}
         onContext={() => {}}
-        index={0}
+
       />,
     )
     expect(screen.getByText('A test note')).toBeInTheDocument()
@@ -41,7 +41,7 @@ describe('BookmarkRow', () => {
         bookmark={makeBookmark({ description: null })}
         onDelete={() => {}}
         onContext={() => {}}
-        index={0}
+
       />,
     )
     expect(screen.queryByRole('paragraph')).not.toBeInTheDocument()
@@ -58,7 +58,7 @@ describe('BookmarkRow', () => {
         bookmark={makeBookmark({ tags })}
         onDelete={() => {}}
         onContext={() => {}}
-        index={0}
+
       />,
     )
     expect(screen.getByText('Alpha')).toBeInTheDocument()
@@ -74,7 +74,7 @@ describe('BookmarkRow', () => {
         bookmark={makeBookmark({ id: 'bm-42', title: 'Example' })}
         onDelete={onDelete}
         onContext={() => {}}
-        index={0}
+
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'Delete Example' }))
@@ -89,7 +89,7 @@ describe('BookmarkRow', () => {
         bookmark={bm}
         onDelete={() => {}}
         onContext={onContext}
-        index={0}
+
       />,
     )
     fireEvent.contextMenu(screen.getByRole('link', { name: 'Example' }))
@@ -102,7 +102,7 @@ describe('BookmarkRow', () => {
         bookmark={makeBookmark({ url: 'https://example.com', title: 'Example' })}
         onDelete={() => {}}
         onContext={() => {}}
-        index={0}
+
       />,
     )
     fireEvent.click(screen.getByRole('link', { name: 'Example' }))

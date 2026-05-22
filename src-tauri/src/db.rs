@@ -1,4 +1,4 @@
-use rusqlite::{params, params_from_iter, Connection};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -47,6 +47,27 @@ pub struct CreateBookmarkInput {
     pub feed_url: Option<String>,
     pub folder_id: Option<String>,
     pub tag_ids: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ImportResult {
+    pub imported: usize,
+    pub errors: Vec<String>,
+}
+
+/// Input type for bulk CSV import. Unlike CreateBookmarkInput, this carries
+/// raw folder/tag *names* which are resolved to IDs inside the transaction.
+#[derive(Deserialize)]
+pub struct ImportRowInput {
+    pub url: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub favicon_url: Option<String>,
+    pub feed_url: Option<String>,
+    /// Raw folder name (top-level). Found or created once per unique name.
+    pub folder_name: Option<String>,
+    /// Comma- or semicolon-separated tag names. Each is found or created.
+    pub tag_names: Option<String>,
 }
 
 pub(crate) struct RawBookmark {
@@ -372,6 +393,100 @@ pub fn db_delete_bookmark(conn: &Connection, id: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Look up a top-level folder by name, or create it. Caches results so the
+/// same name only hits the DB once per import call.
+fn find_or_create_folder(
+    conn: &Connection,
+    name: &str,
+    cache: &mut HashMap<String, String>,
+) -> Result<String, AppError> {
+    if let Some(id) = cache.get(name) {
+        return Ok(id.clone());
+    }
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT id FROM folders WHERE name = ?1 AND parent_id IS NULL LIMIT 1",
+            params![name],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let id = match existing {
+        Some(id) => id,
+        None => db_add_folder(conn, name.to_string(), None)?.id,
+    };
+    cache.insert(name.to_string(), id.clone());
+    Ok(id)
+}
+
+/// Parse and resolve tag names from a raw CSV cell ("rust, systems, tools").
+/// Splits on commas or semicolons, trims whitespace, finds or creates each tag.
+fn find_or_create_tags(
+    conn: &Connection,
+    raw: &str,
+    cache: &mut HashMap<String, String>,
+) -> Result<Vec<String>, AppError> {
+    let mut ids = Vec::new();
+    for name in raw.split([',', ';']).map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(id) = cache.get(name) {
+            ids.push(id.clone());
+        } else {
+            // db_add_tag uses INSERT OR IGNORE — safe to call even if name exists
+            let tag = db_add_tag(conn, name.to_string(), "#6366f1".to_string())?;
+            cache.insert(name.to_string(), tag.id.clone());
+            ids.push(tag.id);
+        }
+    }
+    Ok(ids)
+}
+
+pub fn db_import_bookmarks(
+    conn: &Connection,
+    inputs: Vec<ImportRowInput>,
+) -> Result<ImportResult, AppError> {
+    // One transaction for the whole batch — orders of magnitude faster than per-row auto-commits
+    let tx = conn.unchecked_transaction()?;
+    let mut imported = 0usize;
+    let mut errors = Vec::new();
+    let mut folder_cache: HashMap<String, String> = HashMap::new();
+    let mut tag_cache: HashMap<String, String> = HashMap::new();
+
+    for (i, input) in inputs.into_iter().enumerate() {
+        let folder_id = match input.folder_name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(name) => match find_or_create_folder(&tx, name, &mut folder_cache) {
+                Ok(id) => Some(id),
+                Err(e) => { errors.push(format!("Row {}: folder: {e}", i + 1)); continue; }
+            },
+            None => None,
+        };
+
+        let tag_ids = match input.tag_names.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(raw) => match find_or_create_tags(&tx, raw, &mut tag_cache) {
+                Ok(ids) => if ids.is_empty() { None } else { Some(ids) },
+                Err(e) => { errors.push(format!("Row {}: tags: {e}", i + 1)); continue; }
+            },
+            None => None,
+        };
+
+        let create_input = CreateBookmarkInput {
+            url: input.url,
+            title: input.title,
+            description: input.description,
+            favicon_url: input.favicon_url,
+            feed_url: input.feed_url,
+            folder_id,
+            tag_ids,
+        };
+
+        match db_add_bookmark(&tx, create_input) {
+            Ok(_) => imported += 1,
+            Err(e) => errors.push(format!("Row {}: {e}", i + 1)),
+        }
+    }
+
+    tx.commit()?;
+    Ok(ImportResult { imported, errors })
+}
+
 pub fn db_get_folders(conn: &Connection) -> Result<Vec<Folder>, AppError> {
     let mut stmt =
         conn.prepare("SELECT id, name, parent_id, created_at FROM folders ORDER BY name")?;
@@ -465,6 +580,17 @@ pub fn db_delete_tag(conn: &Connection, id: &str) -> Result<(), AppError> {
     if n == 0 {
         return Err(AppError::NotFound { message: format!("tag {id}") });
     }
+    Ok(())
+}
+
+pub fn db_clear_all_data(conn: &Connection) -> Result<(), AppError> {
+    // Delete junction table first, then leaf tables, then folders
+    conn.execute_batch(
+        "DELETE FROM bookmark_tags;
+         DELETE FROM bookmarks;
+         DELETE FROM tags;
+         DELETE FROM folders;",
+    )?;
     Ok(())
 }
 
@@ -1023,5 +1149,179 @@ mod tests {
     fn rusqlite_error_converts_to_app_error() {
         let err: AppError = rusqlite::Error::QueryReturnedNoRows.into();
         assert!(matches!(err, AppError::Db { .. }));
+    }
+
+    // ── db_import_bookmarks ───────────────────────────────────────────────────
+
+    fn mk_input(url: &str, title: &str) -> ImportRowInput {
+        ImportRowInput {
+            url: url.to_string(),
+            title: title.to_string(),
+            description: None,
+            favicon_url: None,
+            feed_url: None,
+            folder_name: None,
+            tag_names: None,
+        }
+    }
+
+    #[test]
+    fn import_bookmarks_inserts_all_valid_rows() {
+        let conn = mem();
+        let inputs = vec![
+            mk_input("https://a.com", "A"),
+            mk_input("https://b.com", "B"),
+            mk_input("https://c.com", "C"),
+        ];
+        let result = db_import_bookmarks(&conn, inputs).unwrap();
+        assert_eq!(result.imported, 3);
+        assert!(result.errors.is_empty());
+        assert_eq!(db_get_bookmark_count(&conn).unwrap(), 3);
+    }
+
+    #[test]
+    fn import_bookmarks_skips_rows_with_empty_url() {
+        let conn = mem();
+        let inputs = vec![
+            mk_input("https://a.com", "A"),
+            mk_input("", "Empty URL"),
+            mk_input("https://b.com", "B"),
+        ];
+        let result = db_import_bookmarks(&conn, inputs).unwrap();
+        assert_eq!(result.imported, 2);
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].contains("Row 2"));
+        assert_eq!(db_get_bookmark_count(&conn).unwrap(), 2);
+    }
+
+    #[test]
+    fn import_bookmarks_skips_rows_with_empty_title() {
+        let conn = mem();
+        let inputs = vec![
+            mk_input("https://a.com", "A"),
+            mk_input("https://b.com", ""),
+        ];
+        let result = db_import_bookmarks(&conn, inputs).unwrap();
+        assert_eq!(result.imported, 1);
+        assert_eq!(result.errors.len(), 1);
+    }
+
+    #[test]
+    fn import_bookmarks_all_invalid_produces_zero_imported() {
+        let conn = mem();
+        let inputs = vec![
+            mk_input("", "No URL"),
+            mk_input("https://b.com", ""),
+        ];
+        let result = db_import_bookmarks(&conn, inputs).unwrap();
+        assert_eq!(result.imported, 0);
+        assert_eq!(result.errors.len(), 2);
+        assert_eq!(db_get_bookmark_count(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn import_bookmarks_empty_list_returns_zero() {
+        let conn = mem();
+        let result = db_import_bookmarks(&conn, vec![]).unwrap();
+        assert_eq!(result.imported, 0);
+        assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn import_bookmarks_creates_folder_by_name() {
+        let conn = mem();
+        let inputs = vec![ImportRowInput {
+            url: "https://a.com".to_string(),
+            title: "A".to_string(),
+            folder_name: Some("Work".to_string()),
+            ..mk_input("", "")
+        }];
+        let result = db_import_bookmarks(&conn, inputs).unwrap();
+        assert_eq!(result.imported, 1);
+        let folders = db_get_folders(&conn).unwrap();
+        assert_eq!(folders.len(), 1);
+        assert_eq!(folders[0].name, "Work");
+        let bookmarks = db_get_bookmarks(&conn, None, None, None).unwrap();
+        assert_eq!(bookmarks[0].folder_id.as_deref(), Some(folders[0].id.as_str()));
+    }
+
+    #[test]
+    fn import_bookmarks_reuses_existing_folder() {
+        let conn = mem();
+        let existing = mk_folder(&conn, "Work");
+        let inputs = vec![
+            ImportRowInput { url: "https://a.com".to_string(), title: "A".to_string(), folder_name: Some("Work".to_string()), ..mk_input("", "") },
+            ImportRowInput { url: "https://b.com".to_string(), title: "B".to_string(), folder_name: Some("Work".to_string()), ..mk_input("", "") },
+        ];
+        db_import_bookmarks(&conn, inputs).unwrap();
+        // Still only one folder
+        assert_eq!(db_get_folders(&conn).unwrap().len(), 1);
+        let bookmarks = db_get_bookmarks(&conn, None, None, None).unwrap();
+        assert!(bookmarks.iter().all(|b| b.folder_id.as_deref() == Some(existing.id.as_str())));
+    }
+
+    #[test]
+    fn import_bookmarks_creates_tags_by_name() {
+        let conn = mem();
+        let inputs = vec![ImportRowInput {
+            url: "https://a.com".to_string(),
+            title: "A".to_string(),
+            tag_names: Some("rust, systems".to_string()),
+            ..mk_input("", "")
+        }];
+        let result = db_import_bookmarks(&conn, inputs).unwrap();
+        assert_eq!(result.imported, 1);
+        let tags = db_get_tags(&conn).unwrap();
+        let names: std::collections::HashSet<&str> = tags.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains("rust"));
+        assert!(names.contains("systems"));
+        let bookmarks = db_get_bookmarks(&conn, None, None, None).unwrap();
+        assert_eq!(bookmarks[0].tags.len(), 2);
+    }
+
+    #[test]
+    fn import_bookmarks_semicolon_separated_tags() {
+        let conn = mem();
+        let inputs = vec![ImportRowInput {
+            url: "https://a.com".to_string(),
+            title: "A".to_string(),
+            tag_names: Some("design;ux;css".to_string()),
+            ..mk_input("", "")
+        }];
+        db_import_bookmarks(&conn, inputs).unwrap();
+        assert_eq!(db_get_tags(&conn).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn import_bookmarks_reuses_existing_tags() {
+        let conn = mem();
+        mk_tag(&conn, "rust");
+        let inputs = vec![
+            ImportRowInput { url: "https://a.com".to_string(), title: "A".to_string(), tag_names: Some("rust, systems".to_string()), ..mk_input("", "") },
+            ImportRowInput { url: "https://b.com".to_string(), title: "B".to_string(), tag_names: Some("rust".to_string()), ..mk_input("", "") },
+        ];
+        db_import_bookmarks(&conn, inputs).unwrap();
+        // Only 2 unique tags total ("rust" pre-existed, "systems" is new)
+        assert_eq!(db_get_tags(&conn).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn import_bookmarks_1000_rows_completes_quickly() {
+        // Verifies the transaction path: 1000 inserts should take well under 5s
+        // even in debug mode. Without a transaction each auto-commit can take
+        // milliseconds (fsync), so 1000 rows could take 10-30s without this fix.
+        let conn = mem();
+        let inputs: Vec<_> = (0..1000)
+            .map(|i| mk_input(&format!("https://example.com/{i}"), &format!("Bookmark {i}")))
+            .collect();
+
+        let start = std::time::Instant::now();
+        let result = db_import_bookmarks(&conn, inputs).unwrap();
+        let elapsed = start.elapsed();
+
+        assert_eq!(result.imported, 1000);
+        assert!(result.errors.is_empty());
+        assert_eq!(db_get_bookmark_count(&conn).unwrap(), 1000);
+        assert!(elapsed.as_secs() < 5, "1000-row import took {elapsed:?}, expected < 5s");
     }
 }

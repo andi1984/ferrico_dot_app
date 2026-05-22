@@ -1,18 +1,17 @@
-import { useState } from 'react'
+import { memo } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { Bookmark } from '../types'
 import { domainOf, formatDate } from '../utils'
 import { Favicon } from './Favicon'
 import { IconClose } from './icons'
 
-export function BookmarkRow({ bookmark, onDelete, onContext, index }: {
+interface BookmarkRowProps {
   bookmark: Bookmark
   onDelete: (id: string) => void
   onContext: (e: React.MouseEvent, bookmark: Bookmark) => void
-  index: number
-}) {
-  const [hovered, setHovered] = useState(false)
+}
 
+export const BookmarkRow = memo(function BookmarkRow({ bookmark, onDelete, onContext }: BookmarkRowProps) {
   function openUrl(e: React.MouseEvent | React.KeyboardEvent) {
     e.preventDefault()
     invoke('open_url', { url: bookmark.url }).catch(() => {})
@@ -20,20 +19,14 @@ export function BookmarkRow({ bookmark, onDelete, onContext, index }: {
 
   return (
     <div
-      className="anim-fade-up relative flex items-center gap-4 px-6 py-3 border-b transition-colors duration-150"
-      style={{
-        borderColor: 'var(--border-dim)',
-        background: hovered ? 'var(--bg-elevated)' : 'transparent',
-        animationDelay: `${Math.min(index * 22, 350)}ms`,
-      }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      className="group relative flex items-center gap-4 px-6 py-3 border-b transition-colors duration-150 hover:bg-[var(--bg-elevated)]"
+      style={{ borderColor: 'var(--border-dim)' }}
       onContextMenu={(e) => onContext(e, bookmark)}
     >
-      {/* Left accent bar */}
+      {/* Left accent bar — CSS-driven, no useState */}
       <div
-        className="absolute left-0 top-2 bottom-2 w-0.5 rounded-full transition-opacity duration-200"
-        style={{ background: 'var(--accent)', opacity: hovered ? 1 : 0 }}
+        className="absolute left-0 top-2 bottom-2 w-0.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-200"
+        style={{ background: 'var(--accent)' }}
         aria-hidden="true"
       />
 
@@ -94,18 +87,14 @@ export function BookmarkRow({ bookmark, onDelete, onContext, index }: {
 
       <button
         onClick={() => onDelete(bookmark.id)}
-        className="p-1 rounded flex-none transition-all duration-150 cursor-pointer"
-        style={{
-          color: 'var(--text-muted)',
-          opacity: hovered ? 1 : 0,
-        }}
+        className="p-1 rounded flex-none opacity-0 group-hover:opacity-100 transition-all duration-150 cursor-pointer"
+        style={{ color: 'var(--text-muted)' }}
         onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--red)')}
         onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
         aria-label={`Delete ${bookmark.title}`}
-        tabIndex={hovered ? 0 : -1}
       >
         <IconClose size={13} />
       </button>
     </div>
   )
-}
+})

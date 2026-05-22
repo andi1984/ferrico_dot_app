@@ -13,10 +13,11 @@ use axum::{
     Json, Router,
 };
 use db::{
-    Bookmark, CreateBookmarkInput, Folder, Tag,
+    Bookmark, CreateBookmarkInput, Folder, ImportResult, ImportRowInput, Tag,
     db_add_bookmark, db_add_folder, db_add_tag,
+    db_clear_all_data,
     db_delete_bookmark, db_delete_folder, db_delete_tag,
-    db_export_opml,
+    db_export_opml, db_import_bookmarks,
     db_get_bookmark_count, db_get_bookmarks, db_get_folders, db_get_tags,
     now, open_db,
 };
@@ -155,6 +156,121 @@ fn export_opml(state: State<'_, AppState>) -> Result<String, AppError> {
 #[tauri::command]
 fn open_url(url: String) -> Result<(), AppError> {
     open::that(url).map_err(|e| AppError::Validation { message: e.to_string() })
+}
+
+#[tauri::command]
+fn clear_all_data(state: State<'_, AppState>) -> Result<(), AppError> {
+    let db = lock_db!(state);
+    db_clear_all_data(&db)
+}
+
+// ─── CSV Import ───────────────────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+struct CsvFieldMapping {
+    url: Option<String>,
+    title: Option<String>,
+    description: Option<String>,
+    favicon_url: Option<String>,
+    feed_url: Option<String>,
+    folder_name: Option<String>,
+    tag_names: Option<String>,
+}
+
+fn extract_json(text: &str) -> &str {
+    let trimmed = text.trim();
+    if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}')) {
+        if end >= start {
+            return &trimmed[start..=end];
+        }
+    }
+    trimmed
+}
+
+#[tauri::command]
+async fn suggest_csv_mapping(
+    headers: Vec<String>,
+    sample_rows: Vec<Vec<String>>,
+) -> Result<CsvFieldMapping, AppError> {
+    let headers_list = headers.join(", ");
+    let mut sample_text = String::new();
+    for (i, row) in sample_rows.iter().take(5).enumerate() {
+        let pairs: Vec<String> = headers
+            .iter()
+            .zip(row.iter())
+            .map(|(h, v)| format!("{h}: {v:?}"))
+            .collect();
+        sample_text.push_str(&format!("Row {}: {{{}}}\n", i + 1, pairs.join(", ")));
+    }
+
+    let prompt = format!(
+        "Map CSV columns to bookmark fields.\n\n\
+         Bookmark fields:\n\
+         - url (required): Web URL\n\
+         - title (required): Display title\n\
+         - description (optional): Notes or summary\n\
+         - favicon_url (optional): Favicon/icon URL\n\
+         - feed_url (optional): RSS/Atom feed URL\n\
+         - folder_name (optional): Folder or category name (single value)\n\
+         - tag_names (optional): Tags, possibly comma-separated in one cell\n\n\
+         CSV columns: {headers_list}\n\n\
+         Sample data:\n{sample_text}\n\
+         Respond ONLY with a JSON object mapping each field to the best matching \
+         CSV column name, or null if no match:\n\
+         {{\"url\": \"col_or_null\", \"title\": \"col_or_null\", \
+         \"description\": null, \"favicon_url\": null, \"feed_url\": null, \
+         \"folder_name\": null, \"tag_names\": null}}"
+    );
+
+    let home = std::env::var("HOME").unwrap_or_default();
+    let existing_path = std::env::var("PATH").unwrap_or_default();
+    let extended_path =
+        format!("{home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:{existing_path}");
+
+    let output = tokio::process::Command::new("claude")
+        .arg("-p")
+        .arg(&prompt)
+        .env("PATH", &extended_path)
+        .output()
+        .await
+        .map_err(|e| AppError::Validation {
+            message: format!("claude CLI unavailable: {e}"),
+        })?;
+
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let json_str = extract_json(&raw);
+
+    let value: serde_json::Value =
+        serde_json::from_str(json_str).map_err(|e| AppError::Validation {
+            message: format!("Could not parse Claude response: {e}"),
+        })?;
+
+    // Only accept values that are actual CSV header names; discard anything else
+    let pick = |key: &str| -> Option<String> {
+        value[key]
+            .as_str()
+            .filter(|v| headers.iter().any(|h| h == v))
+            .map(String::from)
+    };
+
+    Ok(CsvFieldMapping {
+        url: pick("url"),
+        title: pick("title"),
+        description: pick("description"),
+        favicon_url: pick("favicon_url"),
+        feed_url: pick("feed_url"),
+        folder_name: pick("folder_name"),
+        tag_names: pick("tag_names"),
+    })
+}
+
+#[tauri::command]
+fn import_bookmarks(
+    inputs: Vec<ImportRowInput>,
+    state: State<'_, AppState>,
+) -> Result<ImportResult, AppError> {
+    let db = lock_db!(state);
+    db_import_bookmarks(&db, inputs)
 }
 
 // ─── HTTP Server (browser extension endpoint) ─────────────────────────────────
@@ -356,6 +472,9 @@ fn main() {
             get_api_token,
             export_opml,
             open_url,
+            clear_all_data,
+            suggest_csv_mapping,
+            import_bookmarks,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

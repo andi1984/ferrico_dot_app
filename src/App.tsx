@@ -4,19 +4,48 @@ import { subscribeToBookmarkAdded, type UnlistenFn } from './events'
 import type { Bookmark, Folder, Tag, Selection } from './types'
 import { extractErrorMessage, duckduckgoFavicon } from './utils'
 import { ContextMenu, type CtxMenuState } from './components/ContextMenu'
-import { BookmarkRow } from './components/BookmarkRow'
+import { BookmarkList } from './components/BookmarkList'
 import { AddBookmarkModal } from './components/AddBookmarkModal'
 import { AddFolderModal } from './components/AddFolderModal'
 import { AddTagModal } from './components/AddTagModal'
 import { SettingsModal } from './components/SettingsModal'
+import { ImportCsvModal } from './components/ImportCsvModal'
 import { Sidebar } from './components/Sidebar'
 import { EmptyState } from './components/EmptyState'
 import { IconClose, IconPlus, IconSearch } from './components/icons'
 
-type Modal = 'add-bookmark' | 'add-folder' | 'add-tag' | 'settings' | null
+type Modal = 'add-bookmark' | 'add-folder' | 'add-tag' | 'settings' | 'import-csv' | null
+
+// ─── Loading skeleton ─────────────────────────────────────────────────────────
+
+function RowSkeleton() {
+  return (
+    <div className="flex items-center gap-4 px-6 py-3 border-b" style={{ borderColor: 'var(--border-dim)' }}>
+      <div className="w-7 h-7 rounded flex-none" style={{ background: 'var(--bg-elevated)' }} />
+      <div className="flex-1 flex flex-col gap-2">
+        <div className="h-3.5 rounded w-2/5" style={{ background: 'var(--bg-elevated)' }} />
+      </div>
+      <div className="h-3 rounded w-14 hidden md:block" style={{ background: 'var(--bg-elevated)' }} />
+      <div className="w-5 flex-none" />
+    </div>
+  )
+}
+
+function LoadingSkeleton() {
+  return (
+    <div className="h-full overflow-hidden" aria-busy="true" aria-label="Loading bookmarks">
+      {Array.from({ length: 14 }, (_, i) => (
+        <RowSkeleton key={i} />
+      ))}
+    </div>
+  )
+}
+
+// ─── App ──────────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const [bookmarks, setBookmarks] = useState<Bookmark[]>([])
+  // null = first load not yet complete; [] = loaded, no results
+  const [bookmarks, setBookmarks] = useState<Bookmark[] | null>(null)
   const [folders, setFolders] = useState<Folder[]>([])
   const [tags, setTags] = useState<Tag[]>([])
   const [selection, setSelection] = useState<Selection>({ type: 'all' })
@@ -54,6 +83,8 @@ export default function App() {
       setError(null)
     } catch (e) {
       setError(extractErrorMessage(e))
+      // Ensure we exit the loading state even on error
+      setBookmarks((prev) => prev ?? [])
     }
   }, [selection, search])
 
@@ -89,7 +120,10 @@ export default function App() {
     return () => document.removeEventListener('keydown', onKey)
   }, [modal, searchInput])
 
-  async function handleAddBookmark(data: { url: string; title: string; description: string; folder_id: string | null; tag_ids: string[]; feed_url: string | null }) {
+  const handleAddBookmark = useCallback(async (data: {
+    url: string; title: string; description: string
+    folder_id: string | null; tag_ids: string[]; feed_url: string | null
+  }) => {
     try {
       await invoke('add_bookmark', { input: { ...data, favicon_url: duckduckgoFavicon(data.url) || null } })
       setModal(null)
@@ -97,18 +131,18 @@ export default function App() {
     } catch (e) {
       setError(extractErrorMessage(e))
     }
-  }
+  }, [loadAll])
 
-  async function handleDeleteBookmark(id: string) {
+  const handleDeleteBookmark = useCallback(async (id: string) => {
     try {
       await invoke('delete_bookmark', { id })
       loadAll()
     } catch (e) {
       setError(extractErrorMessage(e))
     }
-  }
+  }, [loadAll])
 
-  async function handleAddFolder(name: string) {
+  const handleAddFolder = useCallback(async (name: string) => {
     try {
       await invoke('add_folder', { name, parentId: null })
       setModal(null)
@@ -116,9 +150,9 @@ export default function App() {
     } catch (e) {
       setError(extractErrorMessage(e))
     }
-  }
+  }, [loadAll])
 
-  async function handleDeleteFolder(id: string) {
+  const handleDeleteFolder = useCallback(async (id: string) => {
     try {
       await invoke('delete_folder', { id })
       if (selection.type === 'folder' && selection.id === id) setSelection({ type: 'all' })
@@ -126,9 +160,9 @@ export default function App() {
     } catch (e) {
       setError(extractErrorMessage(e))
     }
-  }
+  }, [loadAll, selection])
 
-  async function handleAddTag(name: string, color: string) {
+  const handleAddTag = useCallback(async (name: string, color: string) => {
     try {
       await invoke('add_tag', { name, color })
       setModal(null)
@@ -136,9 +170,9 @@ export default function App() {
     } catch (e) {
       setError(extractErrorMessage(e))
     }
-  }
+  }, [loadAll])
 
-  async function handleDeleteTag(id: string) {
+  const handleDeleteTag = useCallback(async (id: string) => {
     try {
       await invoke('delete_tag', { id })
       if (selection.type === 'tag' && selection.id === id) setSelection({ type: 'all' })
@@ -146,15 +180,9 @@ export default function App() {
     } catch (e) {
       setError(extractErrorMessage(e))
     }
-  }
+  }, [loadAll, selection])
 
-  function selectionTitle(): string {
-    if (selection.type === 'all') return 'All Bookmarks'
-    if (selection.type === 'folder') return folders.find((f) => f.id === selection.id)?.name ?? 'Folder'
-    return tags.find((t) => t.id === selection.id)?.name ?? 'Tag'
-  }
-
-  function openBookmarkContext(e: React.MouseEvent, bookmark: Bookmark) {
+  const openBookmarkContext = useCallback((e: React.MouseEvent, bookmark: Bookmark) => {
     e.preventDefault()
     setCtxMenu({
       x: e.clientX,
@@ -167,29 +195,26 @@ export default function App() {
         { label: 'Delete', danger: true, action: () => handleDeleteBookmark(bookmark.id) },
       ],
     })
+  }, [handleDeleteBookmark])
+
+  const openFolderContext = useCallback((e: React.MouseEvent, folder: Folder) => {
+    e.preventDefault()
+    setCtxMenu({ x: e.clientX, y: e.clientY, items: [{ label: 'Delete Folder', danger: true, action: () => handleDeleteFolder(folder.id) }] })
+  }, [handleDeleteFolder])
+
+  const openTagContext = useCallback((e: React.MouseEvent, tag: Tag) => {
+    e.preventDefault()
+    setCtxMenu({ x: e.clientX, y: e.clientY, items: [{ label: 'Delete Tag', danger: true, action: () => handleDeleteTag(tag.id) }] })
+  }, [handleDeleteTag])
+
+  function selectionTitle(): string {
+    if (selection.type === 'all') return 'All Bookmarks'
+    if (selection.type === 'folder') return folders.find((f) => f.id === selection.id)?.name ?? 'Folder'
+    return tags.find((t) => t.id === selection.id)?.name ?? 'Tag'
   }
 
-  function openFolderContext(e: React.MouseEvent, folder: Folder) {
-    e.preventDefault()
-    setCtxMenu({
-      x: e.clientX,
-      y: e.clientY,
-      items: [
-        { label: 'Delete Folder', danger: true, action: () => handleDeleteFolder(folder.id) },
-      ],
-    })
-  }
-
-  function openTagContext(e: React.MouseEvent, tag: Tag) {
-    e.preventDefault()
-    setCtxMenu({
-      x: e.clientX,
-      y: e.clientY,
-      items: [
-        { label: 'Delete Tag', danger: true, action: () => handleDeleteTag(tag.id) },
-      ],
-    })
-  }
+  const loading = bookmarks === null
+  const hasBookmarks = !loading && bookmarks.length > 0
 
   return (
     <div className="flex h-screen overflow-hidden" style={{ background: 'var(--bg-base)', color: 'var(--text-primary)' }}>
@@ -208,7 +233,7 @@ export default function App() {
         onTagContext={openTagContext}
       />
 
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {error && (
           <div
             role="alert"
@@ -268,6 +293,17 @@ export default function App() {
           </div>
 
           <button
+            onClick={() => setModal('import-csv')}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors duration-150 flex-none cursor-pointer"
+            style={{ border: '1px solid var(--border-mid)', color: 'var(--text-secondary)' }}
+            onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--border-bright)')}
+            onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--border-mid)')}
+            aria-label="Import CSV"
+          >
+            Import CSV
+          </button>
+
+          <button
             onClick={() => setModal('add-bookmark')}
             onMouseEnter={() => setAddHovered(true)}
             onMouseLeave={() => setAddHovered(false)}
@@ -281,7 +317,8 @@ export default function App() {
           </button>
         </header>
 
-        {bookmarks.length > 0 && (
+        {/* Column headers — only when there's data to show */}
+        {hasBookmarks && (
           <div
             className="flex items-center gap-4 px-6 py-2 flex-none"
             style={{ borderBottom: '1px solid var(--border-dim)' }}
@@ -295,21 +332,18 @@ export default function App() {
           </div>
         )}
 
-        <main className="flex-1 overflow-y-auto">
-          {bookmarks.length === 0 ? (
+        {/* Main content — flex-1 + min-h-0 gives BookmarkList a bounded, scrollable height */}
+        <main className="flex-1 min-h-0">
+          {loading ? (
+            <LoadingSkeleton />
+          ) : bookmarks.length === 0 ? (
             <EmptyState onAdd={() => setModal('add-bookmark')} />
           ) : (
-            <div>
-              {bookmarks.map((b, i) => (
-                <BookmarkRow
-                  key={b.id}
-                  bookmark={b}
-                  onDelete={handleDeleteBookmark}
-                  onContext={openBookmarkContext}
-                  index={i}
-                />
-              ))}
-            </div>
+            <BookmarkList
+              bookmarks={bookmarks}
+              onDelete={handleDeleteBookmark}
+              onContext={openBookmarkContext}
+            />
           )}
         </main>
       </div>
@@ -324,7 +358,10 @@ export default function App() {
         <AddTagModal onAdd={handleAddTag} onClose={() => setModal(null)} />
       )}
       {modal === 'settings' && (
-        <SettingsModal onClose={() => setModal(null)} />
+        <SettingsModal onClose={() => setModal(null)} onClear={() => { setModal(null); loadAll() }} />
+      )}
+      {modal === 'import-csv' && (
+        <ImportCsvModal onClose={() => setModal(null)} onDone={loadAll} />
       )}
 
       {ctxMenu && <ContextMenu state={ctxMenu} onClose={() => setCtxMenu(null)} />}
