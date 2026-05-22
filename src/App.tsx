@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { subscribeToBookmarkAdded, type UnlistenFn } from './events'
 import type { Bookmark, Folder, Tag, Selection } from './types'
 import { duckduckgoFavicon, domainOf, initials, formatDate, extractErrorMessage } from './utils'
 
@@ -868,6 +869,20 @@ export default function App() {
   }, [selection, search])
 
   useEffect(() => { loadAll() }, [loadAll])
+
+  // Reload when browser extension adds a bookmark via the HTTP API
+  useEffect(() => {
+    let active = true
+    let unlisten: UnlistenFn | undefined
+    subscribeToBookmarkAdded(loadAll).then((fn) => {
+      if (active) unlisten = fn
+      else fn()
+    })
+    return () => {
+      active = false
+      unlisten?.()
+    }
+  }, [loadAll])
 
   // Global keyboard shortcuts
   useEffect(() => {
