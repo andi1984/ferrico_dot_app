@@ -70,6 +70,27 @@ export function useDragDrop<T>({
   }, [])
 
   useEffect(() => {
+    // rAF-batched pointer position. setState fires at most once per frame,
+    // which keeps the App / Sidebar / drag ghost re-render rate at ~60fps
+    // even when the OS streams hundreds of pointermove events per second.
+    let rafId = 0
+    let pendingX = 0
+    let pendingY = 0
+
+    function flush() {
+      rafId = 0
+      const pending = pendingRef.current
+      if (!pending) return
+      const hoverTargetId = findDropTargetId(pendingX, pendingY)
+      setState({
+        active: true,
+        payload: pending.payload,
+        pointerX: pendingX,
+        pointerY: pendingY,
+        hoverTargetId,
+      })
+    }
+
     function onPointerMove(e: PointerEvent) {
       const pending = pendingRef.current
       if (!pending || e.pointerId !== pending.pointerId) return
@@ -81,14 +102,9 @@ export function useDragDrop<T>({
         document.body.style.cursor = 'grabbing'
         document.body.style.userSelect = 'none'
       }
-      const hoverTargetId = findDropTargetId(e.clientX, e.clientY)
-      setState({
-        active: true,
-        payload: pending.payload,
-        pointerX: e.clientX,
-        pointerY: e.clientY,
-        hoverTargetId,
-      })
+      pendingX = e.clientX
+      pendingY = e.clientY
+      if (rafId === 0) rafId = requestAnimationFrame(flush)
     }
 
     function onPointerUp(e: PointerEvent) {
@@ -128,6 +144,7 @@ export function useDragDrop<T>({
     document.addEventListener('pointercancel', onPointerCancel)
     document.addEventListener('click', onClickCapture, true)
     return () => {
+      if (rafId !== 0) cancelAnimationFrame(rafId)
       document.removeEventListener('pointermove', onPointerMove)
       document.removeEventListener('pointerup', onPointerUp)
       document.removeEventListener('pointercancel', onPointerCancel)

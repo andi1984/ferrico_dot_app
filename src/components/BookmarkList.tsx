@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { memo, useRef } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import type { Bookmark } from '../types'
 import { BookmarkRow } from './BookmarkRow'
@@ -12,7 +12,7 @@ interface BookmarkListProps {
   onDragPointerDown?: (e: React.PointerEvent, bookmark: Bookmark) => void
 }
 
-export function BookmarkList({ bookmarks, onDelete, onContext, isBinView, onRestore, onDragPointerDown }: BookmarkListProps) {
+export const BookmarkList = memo(function BookmarkList({ bookmarks, onDelete, onContext, isBinView, onRestore, onDragPointerDown }: BookmarkListProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
 
   const virtualizer = useVirtualizer({
@@ -52,4 +52,4 @@ export function BookmarkList({ bookmarks, onDelete, onContext, isBinView, onRest
       </div>
     </div>
   )
-}
+})
