@@ -19,7 +19,7 @@ use db::{
     db_apply_inbox_sort, db_clear_all_data,
     db_delete_bookmark, db_delete_folder, db_delete_tag,
     db_empty_bin, db_export_opml, db_get_bin_bookmarks, db_get_bin_count,
-    db_get_inbox_count, db_import_bookmarks, db_permanently_delete_bookmark,
+    db_get_inbox_count, db_import_bookmarks, db_move_bookmark, db_permanently_delete_bookmark,
     db_purge_expired_bin, db_restore_bookmark,
     db_get_bookmark_count, db_get_bookmarks, db_get_folders, db_get_tags,
     now, open_db,
@@ -143,6 +143,12 @@ fn get_bin_count(state: State<'_, AppState>) -> Result<i64, AppError> {
 fn restore_bookmark(id: String, state: State<'_, AppState>) -> Result<(), AppError> {
     let db = lock_db!(state);
     db_restore_bookmark(&db, &id)
+}
+
+#[tauri::command]
+fn move_bookmark(id: String, folder_id: Option<String>, state: State<'_, AppState>) -> Result<(), AppError> {
+    let db = lock_db!(state);
+    db_move_bookmark(&db, &id, folder_id.as_deref())
 }
 
 #[tauri::command]
@@ -626,6 +632,7 @@ fn main() {
             get_bin_bookmarks,
             get_bin_count,
             restore_bookmark,
+            move_bookmark,
             permanently_delete_bookmark,
             empty_bin,
             purge_expired_bin,

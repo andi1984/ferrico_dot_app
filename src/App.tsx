@@ -356,6 +356,20 @@ export default function App() {
     }
   }, [loadAll])
 
+  const handleBookmarkDragStart = useCallback((e: React.DragEvent, bookmark: Bookmark) => {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('application/x-ferrico-bookmark', bookmark.id)
+  }, [])
+
+  const handleDropBookmark = useCallback(async (bookmarkId: string, folderId: string | null) => {
+    try {
+      await invoke('move_bookmark', { id: bookmarkId, folder_id: folderId })
+      loadAll()
+    } catch (e) {
+      setError(extractErrorMessage(e))
+    }
+  }, [loadAll])
+
   const openBookmarkContext = useCallback((e: React.MouseEvent, bookmark: Bookmark) => {
     e.preventDefault()
     setCtxMenu({
@@ -425,6 +439,7 @@ export default function App() {
         onOpenSettings={() => setModal('settings')}
         onFolderContext={openFolderContext}
         onTagContext={openTagContext}
+        onDropBookmark={handleDropBookmark}
       />
 
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
@@ -578,6 +593,7 @@ export default function App() {
               bookmarks={sortedBookmarks}
               onDelete={isBinView ? handleDeleteBookmarkForever : handleDeleteBookmark}
               onContext={isBinView ? openBinBookmarkContext : openBookmarkContext}
+              onDragStart={!isBinView ? handleBookmarkDragStart : undefined}
             />
           ) : (
             <BookmarkList
@@ -586,6 +602,7 @@ export default function App() {
               onContext={isBinView ? openBinBookmarkContext : openBookmarkContext}
               isBinView={isBinView}
               onRestore={handleRestoreBookmark}
+              onDragStart={!isBinView ? handleBookmarkDragStart : undefined}
             />
           )}
         </main>

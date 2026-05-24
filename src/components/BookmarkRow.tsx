@@ -11,9 +11,10 @@ interface BookmarkRowProps {
   onContext: (e: React.MouseEvent, bookmark: Bookmark) => void
   isBinView?: boolean
   onRestore?: (id: string) => void
+  onDragStart?: (e: React.DragEvent, bookmark: Bookmark) => void
 }
 
-export const BookmarkRow = memo(function BookmarkRow({ bookmark, onDelete, onContext, isBinView, onRestore }: BookmarkRowProps) {
+export const BookmarkRow = memo(function BookmarkRow({ bookmark, onDelete, onContext, isBinView, onRestore, onDragStart }: BookmarkRowProps) {
   function openUrl(e: React.MouseEvent | React.KeyboardEvent) {
     e.preventDefault()
     invoke('open_url', { url: bookmark.url }).catch(() => {})
@@ -21,9 +22,11 @@ export const BookmarkRow = memo(function BookmarkRow({ bookmark, onDelete, onCon
 
   return (
     <div
-      className="group relative flex items-center gap-4 px-6 py-3 border-b transition-colors duration-150 hover:bg-[var(--bg-elevated)]"
+      draggable
+      className="group relative flex items-center gap-4 px-6 py-3 border-b transition-colors duration-150 hover:bg-[var(--bg-elevated)] cursor-move"
       style={{ borderColor: 'var(--border-dim)' }}
       onContextMenu={(e) => onContext(e, bookmark)}
+      onDragStart={(e) => onDragStart?.(e, bookmark)}
     >
       {/* Left accent bar — CSS-driven, no useState */}
       <div

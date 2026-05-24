@@ -9,9 +9,10 @@ interface BookmarkCardProps {
   bookmark: Bookmark
   onDelete: (id: string) => void
   onContext: (e: React.MouseEvent, bookmark: Bookmark) => void
+  onDragStart?: (e: React.DragEvent, bookmark: Bookmark) => void
 }
 
-export const BookmarkCard = memo(function BookmarkCard({ bookmark, onDelete, onContext }: BookmarkCardProps) {
+export const BookmarkCard = memo(function BookmarkCard({ bookmark, onDelete, onContext, onDragStart }: BookmarkCardProps) {
   function openUrl(e: React.MouseEvent | React.KeyboardEvent) {
     e.preventDefault()
     invoke('open_url', { url: bookmark.url }).catch(() => {})
@@ -19,7 +20,8 @@ export const BookmarkCard = memo(function BookmarkCard({ bookmark, onDelete, onC
 
   return (
     <div
-      className="group relative rounded-xl p-4 mb-3 break-inside-avoid transition-shadow duration-150"
+      draggable
+      className="group relative rounded-xl p-4 mb-3 break-inside-avoid transition-shadow duration-150 cursor-move"
       style={{
         background: 'var(--bg-elevated)',
         border: '1px solid var(--border-dim)',
@@ -36,6 +38,7 @@ export const BookmarkCard = memo(function BookmarkCard({ bookmark, onDelete, onC
         el.style.boxShadow = '0 1px 3px rgba(0,0,0,0.12)'
       }}
       onContextMenu={(e) => onContext(e, bookmark)}
+      onDragStart={(e) => onDragStart?.(e, bookmark)}
     >
       <button
         onClick={() => onDelete(bookmark.id)}
