@@ -12,7 +12,12 @@ interface BookmarkCardProps {
   onDragPointerDown?: (e: React.PointerEvent, bookmark: Bookmark) => void
 }
 
-export const BookmarkCard = memo(function BookmarkCard({ bookmark, onDelete, onContext, onDragPointerDown }: BookmarkCardProps) {
+export const BookmarkCard = memo(function BookmarkCard({
+  bookmark,
+  onDelete,
+  onContext,
+  onDragPointerDown,
+}: BookmarkCardProps) {
   function openUrl(e: React.MouseEvent | React.KeyboardEvent) {
     e.preventDefault()
     invoke('open_url', { url: bookmark.url }).catch(() => {})
@@ -28,32 +33,13 @@ export const BookmarkCard = memo(function BookmarkCard({ bookmark, onDelete, onC
 
   return (
     <div
-      className="group relative rounded-xl p-4 mb-3 break-inside-avoid transition-shadow duration-150 cursor-grab select-none"
-      style={{
-        background: 'var(--bg-elevated)',
-        border: '1px solid var(--border-dim)',
-        boxShadow: '0 1px 3px rgba(0,0,0,0.12)',
-        touchAction: 'none',
-      }}
-      onMouseEnter={(e) => {
-        const el = e.currentTarget as HTMLDivElement
-        el.style.borderColor = 'var(--border-mid)'
-        el.style.boxShadow = '0 4px 20px rgba(0,0,0,0.22)'
-      }}
-      onMouseLeave={(e) => {
-        const el = e.currentTarget as HTMLDivElement
-        el.style.borderColor = 'var(--border-dim)'
-        el.style.boxShadow = '0 1px 3px rgba(0,0,0,0.12)'
-      }}
+      className="bm-card group relative rounded-xl p-4 cursor-grab select-none overflow-hidden"
       onContextMenu={(e) => onContext(e, bookmark)}
       onPointerDown={handlePointerDown}
     >
       <button
         onClick={() => onDelete(bookmark.id)}
-        className="absolute top-3 right-3 p-1 rounded opacity-0 group-hover:opacity-100 transition-all duration-150 cursor-pointer"
-        style={{ color: 'var(--text-muted)' }}
-        onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--red)')}
-        onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
+        className="bm-card-close absolute top-3 right-3 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity duration-150 cursor-pointer"
         aria-label={`Delete ${bookmark.title}`}
       >
         <IconClose size={12} />
@@ -69,16 +55,13 @@ export const BookmarkCard = memo(function BookmarkCard({ bookmark, onDelete, onC
       <a
         href={bookmark.url}
         onClick={openUrl}
-        className="block text-sm font-medium leading-snug mb-2 cursor-pointer transition-colors duration-100"
+        className="bm-card-title block text-sm font-medium leading-snug mb-2 cursor-pointer"
         style={{
-          color: 'var(--text-primary)',
           display: '-webkit-box',
           WebkitLineClamp: 3,
           WebkitBoxOrient: 'vertical',
           overflow: 'hidden',
         } as React.CSSProperties}
-        onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--accent-bright)')}
-        onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-primary)')}
       >
         {bookmark.title}
       </a>
@@ -89,7 +72,7 @@ export const BookmarkCard = memo(function BookmarkCard({ bookmark, onDelete, onC
           style={{
             color: 'var(--text-secondary)',
             display: '-webkit-box',
-            WebkitLineClamp: 4,
+            WebkitLineClamp: 3,
             WebkitBoxOrient: 'vertical',
             overflow: 'hidden',
           } as React.CSSProperties}
@@ -100,7 +83,7 @@ export const BookmarkCard = memo(function BookmarkCard({ bookmark, onDelete, onC
 
       {bookmark.tags.length > 0 && (
         <div className="flex flex-wrap gap-1 mb-3">
-          {bookmark.tags.map((tag) => (
+          {bookmark.tags.slice(0, 4).map((tag) => (
             <span
               key={tag.id}
               data-no-drag
@@ -113,7 +96,10 @@ export const BookmarkCard = memo(function BookmarkCard({ bookmark, onDelete, onC
         </div>
       )}
 
-      <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+      <span
+        className="absolute left-4 bottom-3 text-xs"
+        style={{ color: 'var(--text-muted)' }}
+      >
         {formatDate(bookmark.created_at)}
       </span>
     </div>

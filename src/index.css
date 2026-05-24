@@ -102,6 +102,36 @@ select option {
   }
 }
 
+/* Bookmark card — CSS-driven hover keeps it off the JS hot path */
+.bm-card {
+  height: 100%;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-dim);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+  touch-action: none;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+  /* Hint to the compositor that we want our own layer — keeps hover paints local. */
+  will-change: transform;
+}
+.bm-card:hover {
+  border-color: var(--border-mid);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.22);
+}
+.bm-card-title {
+  color: var(--text-primary);
+  transition: color 100ms ease;
+}
+.bm-card-title:hover {
+  color: var(--accent-bright);
+}
+.bm-card-close {
+  color: var(--text-muted);
+  transition: color 100ms ease, opacity 150ms ease;
+}
+.bm-card-close:hover {
+  color: var(--red);
+}
+
 /* Context menu */
 .ctx-menu {
   position: fixed;
