@@ -3,15 +3,17 @@ import { invoke } from '@tauri-apps/api/core'
 import type { Bookmark } from '../types'
 import { domainOf, formatDate } from '../utils'
 import { Favicon } from './Favicon'
-import { IconClose } from './icons'
+import { IconClose, IconRestore } from './icons'
 
 interface BookmarkRowProps {
   bookmark: Bookmark
   onDelete: (id: string) => void
   onContext: (e: React.MouseEvent, bookmark: Bookmark) => void
+  isBinView?: boolean
+  onRestore?: (id: string) => void
 }
 
-export const BookmarkRow = memo(function BookmarkRow({ bookmark, onDelete, onContext }: BookmarkRowProps) {
+export const BookmarkRow = memo(function BookmarkRow({ bookmark, onDelete, onContext, isBinView, onRestore }: BookmarkRowProps) {
   function openUrl(e: React.MouseEvent | React.KeyboardEvent) {
     e.preventDefault()
     invoke('open_url', { url: bookmark.url }).catch(() => {})
@@ -82,19 +84,44 @@ export const BookmarkRow = memo(function BookmarkRow({ bookmark, onDelete, onCon
         className="text-xs hidden md:block flex-none w-20 text-right"
         style={{ color: 'var(--text-muted)' }}
       >
-        {formatDate(bookmark.created_at)}
+        {formatDate(isBinView && bookmark.deleted_at ? bookmark.deleted_at : bookmark.created_at)}
       </span>
 
-      <button
-        onClick={() => onDelete(bookmark.id)}
-        className="p-1 rounded flex-none opacity-0 group-hover:opacity-100 transition-all duration-150 cursor-pointer"
-        style={{ color: 'var(--text-muted)' }}
-        onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--red)')}
-        onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
-        aria-label={`Delete ${bookmark.title}`}
-      >
-        <IconClose size={13} />
-      </button>
+      {isBinView ? (
+        <div className="flex items-center gap-1 flex-none opacity-0 group-hover:opacity-100 transition-all duration-150">
+          <button
+            onClick={() => onRestore?.(bookmark.id)}
+            className="p-1 rounded cursor-pointer transition-colors duration-100"
+            style={{ color: 'var(--text-muted)' }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--accent)')}
+            onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
+            aria-label={`Restore ${bookmark.title}`}
+          >
+            <IconRestore size={13} />
+          </button>
+          <button
+            onClick={() => onDelete(bookmark.id)}
+            className="p-1 rounded cursor-pointer transition-colors duration-100"
+            style={{ color: 'var(--text-muted)' }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--red)')}
+            onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
+            aria-label={`Delete ${bookmark.title} permanently`}
+          >
+            <IconClose size={13} />
+          </button>
+        </div>
+      ) : (
+        <button
+          onClick={() => onDelete(bookmark.id)}
+          className="p-1 rounded flex-none opacity-0 group-hover:opacity-100 transition-all duration-150 cursor-pointer"
+          style={{ color: 'var(--text-muted)' }}
+          onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--red)')}
+          onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
+          aria-label={`Delete ${bookmark.title}`}
+        >
+          <IconClose size={13} />
+        </button>
+      )}
     </div>
   )
 })
