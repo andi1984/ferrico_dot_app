@@ -43,8 +43,11 @@ export function SidebarItem({ active, onClick, onContext, icon, label, count, on
     setDragOver(true)
   }
 
-  const handleDragLeave = () => {
-    setDragOver(false)
+  const handleDragLeave = (e: React.DragEvent) => {
+    // Only clear when the cursor actually leaves the button, not when entering a child
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setDragOver(false)
+    }
   }
 
   const handleDrop = (e: React.DragEvent) => {

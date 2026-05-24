@@ -363,7 +363,7 @@ export default function App() {
 
   const handleDropBookmark = useCallback(async (bookmarkId: string, folderId: string | null) => {
     try {
-      await invoke('move_bookmark', { id: bookmarkId, folder_id: folderId })
+      await invoke('move_bookmark', { id: bookmarkId, folderId: folderId })
       loadAll()
     } catch (e) {
       setError(extractErrorMessage(e))
