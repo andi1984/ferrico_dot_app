@@ -7,7 +7,7 @@ export interface SidebarProps {
   tags: Tag[]
   selection: Selection
   bookmarkCount: number
-  inboxCount: number
+  inboxCount?: number
   onSelect: (s: Selection) => void
   onAddFolder: () => void
   onDeleteFolder: (id: string) => void
@@ -90,7 +90,7 @@ export function SidebarSection({ label, onAdd }: { label: string; onAdd: () => v
   )
 }
 
-export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount, onSelect, onAddFolder, onDeleteFolder, onAddTag, onDeleteTag, onOpenSettings, onFolderContext, onTagContext }: SidebarProps) {
+export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount = 0, onSelect, onAddFolder, onDeleteFolder, onAddTag, onDeleteTag, onOpenSettings, onFolderContext, onTagContext }: SidebarProps) {
   const isActive = (s: Selection): boolean => {
     if (s.type !== selection.type) return false
     if (s.type === 'all') return true
