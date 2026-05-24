@@ -5,6 +5,8 @@
 
 mod db;
 mod error;
+mod io;
+mod io_validate;
 
 use axum::{
     extract::State as AxumState,
@@ -18,7 +20,7 @@ use db::{
     db_add_bookmark, db_add_folder, db_add_tag,
     db_apply_inbox_sort, db_clear_all_data,
     db_delete_bookmark, db_delete_folder, db_delete_tag,
-    db_empty_bin, db_export_opml, db_get_bin_bookmarks, db_get_bin_count,
+    db_empty_bin, db_get_bin_bookmarks, db_get_bin_count,
     db_get_inbox_count, db_import_bookmarks, db_move_bookmark, db_permanently_delete_bookmark,
     db_purge_expired_bin, db_restore_bookmark,
     db_get_bookmark_count, db_get_bookmarks, db_get_folders, db_get_tags,
@@ -217,7 +219,40 @@ fn get_api_token(state: State<'_, AppState>) -> String {
 #[tauri::command]
 fn export_opml(state: State<'_, AppState>) -> Result<String, AppError> {
     let db = lock_db!(state);
-    db_export_opml(&db)
+    // Delegate to io.rs so all format logic lives in one place.
+    io::export_opml(&db)
+}
+
+// ─── Import / Export (JSON, Netscape HTML, OPML) ─────────────────────────────
+
+#[tauri::command]
+fn export_json(state: State<'_, AppState>) -> Result<String, AppError> {
+    let db = lock_db!(state);
+    io::export_json(&db)
+}
+
+#[tauri::command]
+fn import_json(json: String, state: State<'_, AppState>) -> Result<ImportResult, AppError> {
+    let db = lock_db!(state);
+    io::import_json(&db, &json)
+}
+
+#[tauri::command]
+fn export_netscape_html(state: State<'_, AppState>) -> Result<String, AppError> {
+    let db = lock_db!(state);
+    io::export_netscape_html(&db)
+}
+
+#[tauri::command]
+fn import_netscape_html(html: String, state: State<'_, AppState>) -> Result<ImportResult, AppError> {
+    let db = lock_db!(state);
+    io::import_netscape_html(&db, &html)
+}
+
+#[tauri::command]
+fn import_opml(xml: String, state: State<'_, AppState>) -> Result<ImportResult, AppError> {
+    let db = lock_db!(state);
+    io::import_opml(&db, &xml)
 }
 
 #[tauri::command]
@@ -633,6 +668,11 @@ fn main() {
             delete_tag,
             get_api_token,
             export_opml,
+            export_json,
+            import_json,
+            export_netscape_html,
+            import_netscape_html,
+            import_opml,
             open_url,
             clear_all_data,
             suggest_csv_mapping,

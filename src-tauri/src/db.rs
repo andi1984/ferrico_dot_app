@@ -186,7 +186,7 @@ fn validate_url(url: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-fn row_to_raw(row: &rusqlite::Row) -> rusqlite::Result<RawBookmark> {
+pub(crate) fn row_to_raw(row: &rusqlite::Row) -> rusqlite::Result<RawBookmark> {
     Ok(RawBookmark {
         id: row.get(0)?,
         url: row.get(1)?,
@@ -506,7 +506,7 @@ pub fn db_purge_expired_bin(conn: &Connection, days: i64) -> Result<(), AppError
 
 /// Look up a top-level folder by name, or create it. Caches results so the
 /// same name only hits the DB once per import call.
-fn find_or_create_folder(
+pub(crate) fn find_or_create_folder(
     conn: &Connection,
     name: &str,
     cache: &mut HashMap<String, String>,
@@ -531,7 +531,7 @@ fn find_or_create_folder(
 
 /// Parse and resolve tag names from a raw CSV cell ("rust, systems, tools").
 /// Splits on commas or semicolons, trims whitespace, finds or creates each tag.
-fn find_or_create_tags(
+pub(crate) fn find_or_create_tags(
     conn: &Connection,
     raw: &str,
     cache: &mut HashMap<String, String>,
@@ -722,6 +722,18 @@ pub fn db_add_tag(
     )?)
 }
 
+/// Like `db_add_tag` but uses the supplied `color` for *new* tags.
+/// If the tag already exists by name, the existing record (including its color)
+/// is returned unchanged — same semantics as `db_add_tag`.
+/// Used by JSON import to preserve exported tag colours.
+pub(crate) fn db_add_tag_with_color(
+    conn: &Connection,
+    name: &str,
+    color: &str,
+) -> Result<Tag, AppError> {
+    db_add_tag(conn, name.to_string(), color.to_string())
+}
+
 pub fn db_delete_tag(conn: &Connection, id: &str) -> Result<(), AppError> {
     let n = conn.execute("DELETE FROM tags WHERE id = ?1", params![id])?;
     if n == 0 {
@@ -739,44 +751,6 @@ pub fn db_clear_all_data(conn: &Connection) -> Result<(), AppError> {
          DELETE FROM folders;",
     )?;
     Ok(())
-}
-
-pub fn db_export_opml(conn: &Connection) -> Result<String, AppError> {
-    let folders: Vec<Folder> = {
-        let mut stmt =
-            conn.prepare("SELECT id, name, parent_id, created_at FROM folders ORDER BY name")?;
-        let rows = stmt.query_map([], |row| {
-            Ok(Folder {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                parent_id: row.get(2)?,
-                created_at: row.get(3)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-        rows
-    };
-
-    let bookmarks: Vec<RawBookmark> = {
-        let mut stmt = conn.prepare(
-            "SELECT id, url, title, description, favicon_url, feed_url, folder_id, \
-             created_at, updated_at, deleted_at FROM bookmarks \
-             WHERE deleted_at IS NULL ORDER BY created_at",
-        )?;
-        let rows = stmt.query_map([], row_to_raw)?
-            .collect::<Result<Vec<_>, _>>()?;
-        rows
-    };
-
-    let mut xml = String::from(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-         <opml version=\"2.0\">\n\
-         <head><title>Ferrico Bookmarks</title></head>\n\
-         <body>\n",
-    );
-    append_folder_tree(&mut xml, &folders, &bookmarks, None, 2);
-    xml.push_str("</body>\n</opml>");
-    Ok(xml)
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -1324,7 +1298,7 @@ mod tests {
     #[test]
     fn export_opml_empty_db() {
         let conn = mem();
-        let opml = db_export_opml(&conn).unwrap();
+        let opml = crate::io::export_opml(&conn).unwrap();
         assert!(opml.contains("<?xml"));
         assert!(opml.contains("<opml version=\"2.0\">"));
         assert!(opml.contains("<body>"));
@@ -1335,7 +1309,7 @@ mod tests {
     fn export_opml_flat_bookmarks() {
         let conn = mem();
         mk_bookmark(&conn, "https://example.com", "Example");
-        let opml = db_export_opml(&conn).unwrap();
+        let opml = crate::io::export_opml(&conn).unwrap();
         assert!(opml.contains("url=\"https://example.com\""));
         assert!(opml.contains("text=\"Example\""));
     }
@@ -1358,7 +1332,7 @@ mod tests {
         )
         .unwrap();
 
-        let opml = db_export_opml(&conn).unwrap();
+        let opml = crate::io::export_opml(&conn).unwrap();
         assert!(opml.contains("<outline text=\"Work\">"));
         assert!(opml.contains("url=\"https://work.com\""));
     }
@@ -1367,7 +1341,7 @@ mod tests {
     fn export_opml_escapes_special_chars_in_title() {
         let conn = mem();
         mk_bookmark(&conn, "https://example.com", "A & B <test>");
-        let opml = db_export_opml(&conn).unwrap();
+        let opml = crate::io::export_opml(&conn).unwrap();
         assert!(opml.contains("text=\"A &amp; B &lt;test&gt;\""));
         assert!(!opml.contains("text=\"A & B <test>\""));
     }
@@ -1389,7 +1363,7 @@ mod tests {
         )
         .unwrap();
 
-        let opml = db_export_opml(&conn).unwrap();
+        let opml = crate::io::export_opml(&conn).unwrap();
         assert!(opml.contains("description=\"A great blog\""));
         assert!(opml.contains("xmlUrl=\"https://blog.example.com/feed.xml\""));
     }
