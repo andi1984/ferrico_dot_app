@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { subscribeToBookmarkAdded, type UnlistenFn } from './events'
-import type { Bookmark, Folder, Tag, Selection } from './types'
-import { extractErrorMessage, duckduckgoFavicon } from './utils'
+import type { Bookmark, Folder, Tag, Selection, ViewMode, SortKey } from './types'
+import { extractErrorMessage, duckduckgoFavicon, domainOf } from './utils'
 import { ContextMenu, type CtxMenuState } from './components/ContextMenu'
 import { BookmarkList } from './components/BookmarkList'
+import { BookmarkGrid } from './components/BookmarkGrid'
 import { AddBookmarkModal } from './components/AddBookmarkModal'
 import { AddFolderModal } from './components/AddFolderModal'
 import { AddTagModal } from './components/AddTagModal'
@@ -12,7 +13,7 @@ import { SettingsModal } from './components/SettingsModal'
 import { ImportCsvModal } from './components/ImportCsvModal'
 import { Sidebar } from './components/Sidebar'
 import { EmptyState } from './components/EmptyState'
-import { IconClose, IconPlus, IconSearch } from './components/icons'
+import { IconClose, IconPlus, IconSearch, IconLayoutList, IconLayoutGrid, IconSort, IconChevronDown } from './components/icons'
 
 type Modal = 'add-bookmark' | 'add-folder' | 'add-tag' | 'settings' | 'import-csv' | null
 
@@ -41,6 +42,113 @@ function LoadingSkeleton() {
   )
 }
 
+// ─── Sort dropdown ────────────────────────────────────────────────────────────
+
+const SORT_OPTIONS: { key: SortKey; label: string }[] = [
+  { key: 'date-desc', label: 'Newest first' },
+  { key: 'date-asc', label: 'Oldest first' },
+  { key: 'title-asc', label: 'Title A → Z' },
+  { key: 'title-desc', label: 'Title Z → A' },
+  { key: 'domain-asc', label: 'Domain A → Z' },
+]
+
+function SortDropdown({ value, onChange }: { value: SortKey; onChange: (k: SortKey) => void }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    function onMouseDown(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onMouseDown)
+    return () => document.removeEventListener('mousedown', onMouseDown)
+  }, [open])
+
+  const current = SORT_OPTIONS.find((o) => o.key === value)!
+
+  return (
+    <div ref={ref} className="relative flex-none">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors duration-150 cursor-pointer"
+        style={{ border: '1px solid var(--border-mid)', color: 'var(--text-secondary)' }}
+        onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--border-bright)')}
+        onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--border-mid)')}
+        aria-label="Sort bookmarks"
+        aria-expanded={open}
+        aria-haspopup="listbox"
+      >
+        <IconSort size={13} />
+        <span className="hidden sm:inline">{current.label}</span>
+        <IconChevronDown size={11} />
+      </button>
+
+      {open && (
+        <div
+          role="listbox"
+          aria-label="Sort order"
+          className="absolute right-0 top-full mt-1 z-50 rounded-lg overflow-hidden py-1"
+          style={{
+            background: 'var(--bg-elevated)',
+            border: '1px solid var(--border-mid)',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
+            minWidth: '148px',
+          }}
+        >
+          {SORT_OPTIONS.map((o) => (
+            <button
+              key={o.key}
+              role="option"
+              aria-selected={o.key === value}
+              onClick={() => { onChange(o.key); setOpen(false) }}
+              className="w-full flex items-center gap-2 px-3 py-2 text-xs text-left transition-colors duration-100 cursor-pointer"
+              style={{ color: o.key === value ? 'var(--accent-bright)' : 'var(--text-secondary)' }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.05)')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+            >
+              <span
+                className="w-1.5 h-1.5 rounded-full flex-none"
+                style={{ background: o.key === value ? 'var(--accent)' : 'transparent' }}
+              />
+              {o.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── View mode toggle ─────────────────────────────────────────────────────────
+
+function ViewToggle({ value, onChange }: { value: ViewMode; onChange: (m: ViewMode) => void }) {
+  return (
+    <div
+      className="flex items-center rounded-lg overflow-hidden flex-none"
+      style={{ border: '1px solid var(--border-mid)' }}
+      role="group"
+      aria-label="View mode"
+    >
+      {(['list', 'grid'] as ViewMode[]).map((mode) => (
+        <button
+          key={mode}
+          onClick={() => onChange(mode)}
+          className="flex items-center justify-center px-2.5 py-2 transition-colors duration-150 cursor-pointer"
+          style={{
+            color: value === mode ? 'var(--accent-bright)' : 'var(--text-muted)',
+            background: value === mode ? 'rgba(255,255,255,0.07)' : 'transparent',
+          }}
+          aria-label={mode === 'list' ? 'List view' : 'Grid view'}
+          aria-pressed={value === mode}
+        >
+          {mode === 'list' ? <IconLayoutList size={14} /> : <IconLayoutGrid size={14} />}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 // ─── App ──────────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -58,6 +166,16 @@ export default function App() {
   const [searchFocused, setSearchFocused] = useState(false)
   const [ctxMenu, setCtxMenu] = useState<CtxMenuState | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
+
+  const [viewMode, setViewMode] = useState<ViewMode>(() =>
+    (localStorage.getItem('ferrico:viewMode') as ViewMode) ?? 'list'
+  )
+  const [sortKey, setSortKey] = useState<SortKey>(() =>
+    (localStorage.getItem('ferrico:sortKey') as SortKey) ?? 'date-desc'
+  )
+
+  useEffect(() => { localStorage.setItem('ferrico:viewMode', viewMode) }, [viewMode])
+  useEffect(() => { localStorage.setItem('ferrico:sortKey', sortKey) }, [sortKey])
 
   useEffect(() => {
     const t = setTimeout(() => setSearch(searchInput), 300)
@@ -119,6 +237,19 @@ export default function App() {
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [modal, searchInput])
+
+  const sortedBookmarks = useMemo(() => {
+    if (!bookmarks) return null
+    const arr = [...bookmarks]
+    switch (sortKey) {
+      case 'date-desc': return arr.sort((a, b) => b.created_at - a.created_at)
+      case 'date-asc':  return arr.sort((a, b) => a.created_at - b.created_at)
+      case 'title-asc': return arr.sort((a, b) => a.title.localeCompare(b.title))
+      case 'title-desc': return arr.sort((a, b) => b.title.localeCompare(a.title))
+      case 'domain-asc': return arr.sort((a, b) => domainOf(a.url).localeCompare(domainOf(b.url)))
+      default: return arr
+    }
+  }, [bookmarks, sortKey])
 
   const handleAddBookmark = useCallback(async (data: {
     url: string; title: string; description: string
@@ -213,8 +344,8 @@ export default function App() {
     return tags.find((t) => t.id === selection.id)?.name ?? 'Tag'
   }
 
-  const loading = bookmarks === null
-  const hasBookmarks = !loading && bookmarks.length > 0
+  const loading = sortedBookmarks === null
+  const hasBookmarks = !loading && sortedBookmarks.length > 0
 
   return (
     <div className="flex h-screen overflow-hidden" style={{ background: 'var(--bg-base)', color: 'var(--text-primary)' }}>
@@ -246,7 +377,7 @@ export default function App() {
         )}
 
         <header
-          className="flex items-center gap-4 px-6 py-3.5 flex-none"
+          className="flex items-center gap-3 px-6 py-3.5 flex-none"
           style={{ borderBottom: '1px solid var(--border-dim)', background: 'var(--bg-base)' }}
         >
           <h1 className="font-semibold text-sm flex-none" style={{ color: 'var(--text-primary)' }}>
@@ -254,6 +385,10 @@ export default function App() {
           </h1>
 
           <div className="flex-1" />
+
+          <SortDropdown value={sortKey} onChange={setSortKey} />
+
+          <ViewToggle value={viewMode} onChange={setViewMode} />
 
           <div
             className="flex items-center gap-2 px-3 py-2 rounded-lg transition-all duration-200 w-56"
@@ -317,8 +452,8 @@ export default function App() {
           </button>
         </header>
 
-        {/* Column headers — only when there's data to show */}
-        {hasBookmarks && (
+        {/* Column headers — list mode only */}
+        {hasBookmarks && viewMode === 'list' && (
           <div
             className="flex items-center gap-4 px-6 py-2 flex-none"
             style={{ borderBottom: '1px solid var(--border-dim)' }}
@@ -332,15 +467,21 @@ export default function App() {
           </div>
         )}
 
-        {/* Main content — flex-1 + min-h-0 gives BookmarkList a bounded, scrollable height */}
+        {/* Main content — flex-1 + min-h-0 gives the list/grid a bounded, scrollable height */}
         <main className="flex-1 min-h-0">
           {loading ? (
             <LoadingSkeleton />
-          ) : bookmarks.length === 0 ? (
+          ) : sortedBookmarks.length === 0 ? (
             <EmptyState onAdd={() => setModal('add-bookmark')} />
+          ) : viewMode === 'grid' ? (
+            <BookmarkGrid
+              bookmarks={sortedBookmarks}
+              onDelete={handleDeleteBookmark}
+              onContext={openBookmarkContext}
+            />
           ) : (
             <BookmarkList
-              bookmarks={bookmarks}
+              bookmarks={sortedBookmarks}
               onDelete={handleDeleteBookmark}
               onContext={openBookmarkContext}
             />

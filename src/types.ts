@@ -29,3 +29,7 @@ export type Selection =
   | { type: 'all' }
   | { type: 'folder'; id: string }
   | { type: 'tag'; id: string }
+
+export type ViewMode = 'list' | 'grid'
+
+export type SortKey = 'date-desc' | 'date-asc' | 'title-asc' | 'title-desc' | 'domain-asc'
