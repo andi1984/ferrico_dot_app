@@ -55,6 +55,17 @@ pub struct ImportResult {
     pub errors: Vec<String>,
 }
 
+#[derive(Deserialize)]
+pub struct InboxSortAssignment {
+    pub bookmark_id: String,
+    pub folder_name: String,
+}
+
+#[derive(Serialize)]
+pub struct InboxSortResult {
+    pub moved: usize,
+}
+
 /// Input type for bulk CSV import. Unlike CreateBookmarkInput, this carries
 /// raw folder/tag *names* which are resolved to IDs inside the transaction.
 #[derive(Deserialize)]
@@ -277,40 +288,45 @@ pub fn db_get_bookmarks(
     folder_id: Option<&str>,
     tag_id: Option<&str>,
     search: Option<&str>,
+    inbox_only: bool,
 ) -> Result<Vec<Bookmark>, AppError> {
-    let raws: Vec<RawBookmark> = match (folder_id, tag_id) {
-        (_, Some(tid)) => {
-            let mut stmt = conn.prepare(
-                "SELECT b.id, b.url, b.title, b.description, b.favicon_url, b.feed_url, \
-                 b.folder_id, b.created_at, b.updated_at \
-                 FROM bookmarks b JOIN bookmark_tags bt ON bt.bookmark_id = b.id \
-                 WHERE bt.tag_id = ?1 ORDER BY b.created_at DESC",
-            )?;
-            let rows: Vec<RawBookmark> = stmt.query_map(params![tid], row_to_raw)?
-                .filter_map(|r| r.ok())
-                .collect();
-            rows
-        }
-        (Some(fid), None) => {
-            let mut stmt = conn.prepare(
-                "SELECT id, url, title, description, favicon_url, feed_url, folder_id, \
-                 created_at, updated_at FROM bookmarks WHERE folder_id = ?1 \
-                 ORDER BY created_at DESC",
-            )?;
-            let rows: Vec<RawBookmark> = stmt.query_map(params![fid], row_to_raw)?
-                .filter_map(|r| r.ok())
-                .collect();
-            rows
-        }
-        (None, None) => {
-            let mut stmt = conn.prepare(
-                "SELECT id, url, title, description, favicon_url, feed_url, folder_id, \
-                 created_at, updated_at FROM bookmarks ORDER BY created_at DESC",
-            )?;
-            let rows: Vec<RawBookmark> = stmt.query_map([], row_to_raw)?
-                .filter_map(|r| r.ok())
-                .collect();
-            rows
+    let raws: Vec<RawBookmark> = if inbox_only {
+        let mut stmt = conn.prepare(
+            "SELECT id, url, title, description, favicon_url, feed_url, folder_id, \
+             created_at, updated_at FROM bookmarks WHERE folder_id IS NULL \
+             ORDER BY created_at DESC",
+        )?;
+        let rows: Vec<RawBookmark> = stmt.query_map([], row_to_raw)?.filter_map(|r| r.ok()).collect();
+        rows
+    } else {
+        match (folder_id, tag_id) {
+            (_, Some(tid)) => {
+                let mut stmt = conn.prepare(
+                    "SELECT b.id, b.url, b.title, b.description, b.favicon_url, b.feed_url, \
+                     b.folder_id, b.created_at, b.updated_at \
+                     FROM bookmarks b JOIN bookmark_tags bt ON bt.bookmark_id = b.id \
+                     WHERE bt.tag_id = ?1 ORDER BY b.created_at DESC",
+                )?;
+                let rows: Vec<RawBookmark> = stmt.query_map(params![tid], row_to_raw)?.filter_map(|r| r.ok()).collect();
+                rows
+            }
+            (Some(fid), None) => {
+                let mut stmt = conn.prepare(
+                    "SELECT id, url, title, description, favicon_url, feed_url, folder_id, \
+                     created_at, updated_at FROM bookmarks WHERE folder_id = ?1 \
+                     ORDER BY created_at DESC",
+                )?;
+                let rows: Vec<RawBookmark> = stmt.query_map(params![fid], row_to_raw)?.filter_map(|r| r.ok()).collect();
+                rows
+            }
+            (None, None) => {
+                let mut stmt = conn.prepare(
+                    "SELECT id, url, title, description, favicon_url, feed_url, folder_id, \
+                     created_at, updated_at FROM bookmarks ORDER BY created_at DESC",
+                )?;
+                let rows: Vec<RawBookmark> = stmt.query_map([], row_to_raw)?.filter_map(|r| r.ok()).collect();
+                rows
+            }
         }
     };
 
@@ -527,6 +543,35 @@ pub fn db_delete_folder(conn: &Connection, id: &str) -> Result<(), AppError> {
         return Err(AppError::NotFound { message: format!("folder {id}") });
     }
     Ok(())
+}
+
+pub fn db_get_inbox_count(conn: &Connection) -> Result<i64, AppError> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*) FROM bookmarks WHERE folder_id IS NULL",
+        [],
+        |r| r.get(0),
+    )?)
+}
+
+pub fn db_apply_inbox_sort(
+    conn: &Connection,
+    assignments: Vec<InboxSortAssignment>,
+) -> Result<InboxSortResult, AppError> {
+    let tx = conn.unchecked_transaction()?;
+    let mut folder_cache: HashMap<String, String> = HashMap::new();
+    let mut moved = 0usize;
+
+    for assignment in assignments {
+        let folder_id = find_or_create_folder(&tx, &assignment.folder_name, &mut folder_cache)?;
+        let n = tx.execute(
+            "UPDATE bookmarks SET folder_id = ?1, updated_at = ?2 WHERE id = ?3",
+            params![folder_id, now(), assignment.bookmark_id],
+        )?;
+        moved += n;
+    }
+
+    tx.commit()?;
+    Ok(InboxSortResult { moved })
 }
 
 pub fn db_get_tags(conn: &Connection) -> Result<Vec<Tag>, AppError> {
@@ -764,7 +809,7 @@ mod tests {
         let conn = mem();
         mk_bookmark(&conn, "https://a.com", "A");
         mk_bookmark(&conn, "https://b.com", "B");
-        let all = db_get_bookmarks(&conn, None, None, None).unwrap();
+        let all = db_get_bookmarks(&conn, None, None, None, false).unwrap();
         assert_eq!(all.len(), 2);
         let titles: std::collections::HashSet<&str> = all.iter().map(|b| b.title.as_str()).collect();
         assert!(titles.contains("A"));
@@ -790,7 +835,7 @@ mod tests {
         .unwrap();
         mk_bookmark(&conn, "https://other.com", "Other");
 
-        let results = db_get_bookmarks(&conn, Some(&folder.id), None, None).unwrap();
+        let results = db_get_bookmarks(&conn, Some(&folder.id), None, None, false).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "Work");
     }
@@ -808,7 +853,7 @@ mod tests {
         )
         .unwrap();
 
-        let results = db_get_bookmarks(&conn, None, Some(&tag.id), None).unwrap();
+        let results = db_get_bookmarks(&conn, None, Some(&tag.id), None, false).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "Rust");
     }
@@ -819,7 +864,7 @@ mod tests {
         mk_bookmark(&conn, "https://rust-lang.org", "The Rust Programming Language");
         mk_bookmark(&conn, "https://python.org", "Python");
 
-        let results = db_get_bookmarks(&conn, None, None, Some("rust")).unwrap();
+        let results = db_get_bookmarks(&conn, None, None, Some("rust"), false).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "The Rust Programming Language");
     }
@@ -830,7 +875,7 @@ mod tests {
         mk_bookmark(&conn, "https://docs.rs/tokio", "Tokio docs");
         mk_bookmark(&conn, "https://crates.io", "Crates");
 
-        let results = db_get_bookmarks(&conn, None, None, Some("docs.rs")).unwrap();
+        let results = db_get_bookmarks(&conn, None, None, Some("docs.rs"), false).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].url, "https://docs.rs/tokio");
     }
@@ -853,7 +898,7 @@ mod tests {
         .unwrap();
         mk_bookmark(&conn, "https://other.com", "Other");
 
-        let results = db_get_bookmarks(&conn, None, None, Some("async runtime")).unwrap();
+        let results = db_get_bookmarks(&conn, None, None, Some("async runtime"), false).unwrap();
         assert_eq!(results.len(), 1);
     }
 
@@ -861,7 +906,7 @@ mod tests {
     fn get_bookmarks_search_case_insensitive() {
         let conn = mem();
         mk_bookmark(&conn, "https://rust-lang.org", "The Rust Language");
-        let results = db_get_bookmarks(&conn, None, None, Some("RUST")).unwrap();
+        let results = db_get_bookmarks(&conn, None, None, Some("RUST"), false).unwrap();
         assert_eq!(results.len(), 1);
     }
 
@@ -966,7 +1011,7 @@ mod tests {
 
         db_delete_folder(&conn, &folder.id).unwrap();
 
-        let bookmarks = db_get_bookmarks(&conn, None, None, None).unwrap();
+        let bookmarks = db_get_bookmarks(&conn, None, None, None, false).unwrap();
         assert_eq!(bookmarks.len(), 1);
         // folder_id SET NULL on folder delete
         assert!(bookmarks[0].folder_id.is_none());
@@ -1241,7 +1286,7 @@ mod tests {
         let folders = db_get_folders(&conn).unwrap();
         assert_eq!(folders.len(), 1);
         assert_eq!(folders[0].name, "Work");
-        let bookmarks = db_get_bookmarks(&conn, None, None, None).unwrap();
+        let bookmarks = db_get_bookmarks(&conn, None, None, None, false).unwrap();
         assert_eq!(bookmarks[0].folder_id.as_deref(), Some(folders[0].id.as_str()));
     }
 
@@ -1256,7 +1301,7 @@ mod tests {
         db_import_bookmarks(&conn, inputs).unwrap();
         // Still only one folder
         assert_eq!(db_get_folders(&conn).unwrap().len(), 1);
-        let bookmarks = db_get_bookmarks(&conn, None, None, None).unwrap();
+        let bookmarks = db_get_bookmarks(&conn, None, None, None, false).unwrap();
         assert!(bookmarks.iter().all(|b| b.folder_id.as_deref() == Some(existing.id.as_str())));
     }
 
@@ -1275,7 +1320,7 @@ mod tests {
         let names: std::collections::HashSet<&str> = tags.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains("rust"));
         assert!(names.contains("systems"));
-        let bookmarks = db_get_bookmarks(&conn, None, None, None).unwrap();
+        let bookmarks = db_get_bookmarks(&conn, None, None, None, false).unwrap();
         assert_eq!(bookmarks[0].tags.len(), 2);
     }
 

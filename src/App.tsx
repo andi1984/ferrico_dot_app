@@ -10,11 +10,12 @@ import { AddFolderModal } from './components/AddFolderModal'
 import { AddTagModal } from './components/AddTagModal'
 import { SettingsModal } from './components/SettingsModal'
 import { ImportCsvModal } from './components/ImportCsvModal'
+import { InboxSortModal } from './components/InboxSortModal'
 import { Sidebar } from './components/Sidebar'
 import { EmptyState } from './components/EmptyState'
-import { IconClose, IconPlus, IconSearch } from './components/icons'
+import { IconClose, IconPlus, IconSearch, IconSparkles } from './components/icons'
 
-type Modal = 'add-bookmark' | 'add-folder' | 'add-tag' | 'settings' | 'import-csv' | null
+type Modal = 'add-bookmark' | 'add-folder' | 'add-tag' | 'settings' | 'import-csv' | 'inbox-sort' | null
 
 // ─── Loading skeleton ─────────────────────────────────────────────────────────
 
@@ -52,6 +53,7 @@ export default function App() {
   const [searchInput, setSearchInput] = useState('')
   const [search, setSearch] = useState('')
   const [totalCount, setTotalCount] = useState(0)
+  const [inboxCount, setInboxCount] = useState(0)
   const [modal, setModal] = useState<Modal>(null)
   const [error, setError] = useState<string | null>(null)
   const [addHovered, setAddHovered] = useState(false)
@@ -66,20 +68,23 @@ export default function App() {
 
   const loadAll = useCallback(async () => {
     try {
-      const [b, f, t, count] = await Promise.all([
+      const [b, f, t, count, inbox] = await Promise.all([
         invoke<Bookmark[]>('get_bookmarks', {
           folderId: selection.type === 'folder' ? selection.id : null,
           tagId: selection.type === 'tag' ? selection.id : null,
           search: search || null,
+          inboxOnly: selection.type === 'inbox',
         }),
         invoke<Folder[]>('get_folders'),
         invoke<Tag[]>('get_tags'),
         invoke<number>('get_bookmark_count'),
+        invoke<number>('get_inbox_count'),
       ])
       setBookmarks(b)
       setFolders(f)
       setTags(t)
       setTotalCount(count)
+      setInboxCount(inbox)
       setError(null)
     } catch (e) {
       setError(extractErrorMessage(e))
@@ -209,6 +214,7 @@ export default function App() {
 
   function selectionTitle(): string {
     if (selection.type === 'all') return 'All Bookmarks'
+    if (selection.type === 'inbox') return 'Inbox'
     if (selection.type === 'folder') return folders.find((f) => f.id === selection.id)?.name ?? 'Folder'
     return tags.find((t) => t.id === selection.id)?.name ?? 'Tag'
   }
@@ -223,6 +229,7 @@ export default function App() {
         tags={tags}
         selection={selection}
         bookmarkCount={totalCount}
+        inboxCount={inboxCount}
         onSelect={setSelection}
         onAddFolder={() => setModal('add-folder')}
         onDeleteFolder={handleDeleteFolder}
@@ -291,6 +298,20 @@ export default function App() {
               </button>
             )}
           </div>
+
+          {selection.type === 'inbox' && (bookmarks?.length ?? 0) > 0 && (
+            <button
+              onClick={() => setModal('inbox-sort')}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors duration-150 flex-none cursor-pointer"
+              style={{ border: '1px solid var(--accent)', color: 'var(--accent)' }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(200,160,90,0.08)')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+              aria-label="Sort inbox with AI"
+            >
+              <IconSparkles />
+              AI Sort
+            </button>
+          )}
 
           <button
             onClick={() => setModal('import-csv')}
@@ -362,6 +383,14 @@ export default function App() {
       )}
       {modal === 'import-csv' && (
         <ImportCsvModal onClose={() => setModal(null)} onDone={loadAll} />
+      )}
+      {modal === 'inbox-sort' && bookmarks && (
+        <InboxSortModal
+          bookmarks={bookmarks}
+          folders={folders}
+          onClose={() => setModal(null)}
+          onDone={loadAll}
+        />
       )}
 
       {ctxMenu && <ContextMenu state={ctxMenu} onClose={() => setCtxMenu(null)} />}

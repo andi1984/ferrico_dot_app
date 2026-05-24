@@ -27,5 +27,6 @@ export interface Bookmark {
 
 export type Selection =
   | { type: 'all' }
+  | { type: 'inbox' }
   | { type: 'folder'; id: string }
   | { type: 'tag'; id: string }

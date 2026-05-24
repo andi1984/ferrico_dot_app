@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import type { Folder, Tag, Selection } from '../types'
-import { IconClose, IconPlus, IconFolder, IconAll, IconSettings } from './icons'
+import { IconClose, IconPlus, IconFolder, IconAll, IconInbox, IconSettings } from './icons'
 
 export interface SidebarProps {
   folders: Folder[]
   tags: Tag[]
   selection: Selection
   bookmarkCount: number
+  inboxCount: number
   onSelect: (s: Selection) => void
   onAddFolder: () => void
   onDeleteFolder: (id: string) => void
@@ -89,10 +90,11 @@ export function SidebarSection({ label, onAdd }: { label: string; onAdd: () => v
   )
 }
 
-export function Sidebar({ folders, tags, selection, bookmarkCount, onSelect, onAddFolder, onDeleteFolder, onAddTag, onDeleteTag, onOpenSettings, onFolderContext, onTagContext }: SidebarProps) {
+export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount, onSelect, onAddFolder, onDeleteFolder, onAddTag, onDeleteTag, onOpenSettings, onFolderContext, onTagContext }: SidebarProps) {
   const isActive = (s: Selection): boolean => {
     if (s.type !== selection.type) return false
     if (s.type === 'all') return true
+    if (s.type === 'inbox') return true
     if (s.type === 'folder' && selection.type === 'folder') return s.id === selection.id
     if (s.type === 'tag' && selection.type === 'tag') return s.id === selection.id
     return false
@@ -122,6 +124,14 @@ export function Sidebar({ folders, tags, selection, bookmarkCount, onSelect, onA
       </div>
 
       <nav className="flex-1 overflow-y-auto px-2 py-3" aria-label="Library navigation">
+        <SidebarItem
+          active={isActive({ type: 'inbox' })}
+          onClick={() => onSelect({ type: 'inbox' })}
+          icon={<IconInbox />}
+          label="Inbox"
+          count={inboxCount}
+          ariaLabel={`Inbox, ${inboxCount} unsorted`}
+        />
         <SidebarItem
           active={isActive({ type: 'all' })}
           onClick={() => onSelect({ type: 'all' })}

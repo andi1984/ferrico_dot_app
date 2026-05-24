@@ -13,11 +13,12 @@ use axum::{
     Json, Router,
 };
 use db::{
-    Bookmark, CreateBookmarkInput, Folder, ImportResult, ImportRowInput, Tag,
+    Bookmark, CreateBookmarkInput, Folder, ImportResult, ImportRowInput,
+    InboxSortAssignment, InboxSortResult, Tag,
     db_add_bookmark, db_add_folder, db_add_tag,
-    db_clear_all_data,
+    db_apply_inbox_sort, db_clear_all_data,
     db_delete_bookmark, db_delete_folder, db_delete_tag,
-    db_export_opml, db_import_bookmarks,
+    db_export_opml, db_get_inbox_count, db_import_bookmarks,
     db_get_bookmark_count, db_get_bookmarks, db_get_folders, db_get_tags,
     now, open_db,
 };
@@ -78,10 +79,32 @@ fn get_bookmarks(
     folder_id: Option<String>,
     tag_id: Option<String>,
     search: Option<String>,
+    inbox_only: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<Vec<Bookmark>, AppError> {
     let db = lock_db!(state);
-    db_get_bookmarks(&db, folder_id.as_deref(), tag_id.as_deref(), search.as_deref())
+    db_get_bookmarks(
+        &db,
+        folder_id.as_deref(),
+        tag_id.as_deref(),
+        search.as_deref(),
+        inbox_only.unwrap_or(false),
+    )
+}
+
+#[tauri::command]
+fn get_inbox_count(state: State<'_, AppState>) -> Result<i64, AppError> {
+    let db = lock_db!(state);
+    db_get_inbox_count(&db)
+}
+
+#[tauri::command]
+fn apply_inbox_sort(
+    assignments: Vec<InboxSortAssignment>,
+    state: State<'_, AppState>,
+) -> Result<InboxSortResult, AppError> {
+    let db = lock_db!(state);
+    db_apply_inbox_sort(&db, assignments)
 }
 
 #[tauri::command]
@@ -162,6 +185,104 @@ fn open_url(url: String) -> Result<(), AppError> {
 fn clear_all_data(state: State<'_, AppState>) -> Result<(), AppError> {
     let db = lock_db!(state);
     db_clear_all_data(&db)
+}
+
+// ─── Inbox Sort ───────────────────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+struct InboxBookmarkInput {
+    id: String,
+    url: String,
+    title: String,
+    description: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct InboxSortSuggestion {
+    bookmark_id: String,
+    folder_name: String,
+}
+
+#[tauri::command]
+async fn suggest_inbox_sort(
+    bookmarks: Vec<InboxBookmarkInput>,
+    folder_names: Vec<String>,
+) -> Result<Vec<InboxSortSuggestion>, AppError> {
+    if bookmarks.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let folders_list = if folder_names.is_empty() {
+        "none yet — suggest new folders as needed".to_string()
+    } else {
+        folder_names.join(", ")
+    };
+
+    let bookmarks_text: String = bookmarks
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            let desc = b.description.as_deref().unwrap_or("");
+            format!("{}. id={} title={:?} url={:?} desc={:?}", i + 1, b.id, b.title, b.url, desc)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let prompt = format!(
+        "You are helping a user sort their inbox bookmarks into folders.\n\n\
+         Existing folders: {folders_list}\n\n\
+         Bookmarks to sort:\n{bookmarks_text}\n\n\
+         For each bookmark, suggest the best folder. Prefer existing folders when a good match \
+         exists. Suggest a new folder name only when no existing folder fits.\n\
+         Keep folder names short (1-3 words), title-cased.\n\n\
+         Respond ONLY with a JSON array, one object per bookmark:\n\
+         [{{\"bookmark_id\": \"<id>\", \"folder_name\": \"<folder>\"}}, ...]\n\
+         Include every bookmark exactly once."
+    );
+
+    let home = std::env::var("HOME").unwrap_or_default();
+    let existing_path = std::env::var("PATH").unwrap_or_default();
+    let extended_path =
+        format!("{home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:{existing_path}");
+
+    let output = tokio::process::Command::new("claude")
+        .arg("-p")
+        .arg(&prompt)
+        .env("PATH", &extended_path)
+        .output()
+        .await
+        .map_err(|e| AppError::Validation {
+            message: format!("claude CLI unavailable: {e}"),
+        })?;
+
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let trimmed = raw.trim();
+    let json_str = if let (Some(start), Some(end)) = (trimmed.find('['), trimmed.rfind(']')) {
+        &trimmed[start..=end]
+    } else {
+        return Err(AppError::Validation {
+            message: "Could not find JSON array in Claude response".into(),
+        });
+    };
+
+    let value: Vec<serde_json::Value> =
+        serde_json::from_str(json_str).map_err(|e| AppError::Validation {
+            message: format!("Could not parse Claude response: {e}"),
+        })?;
+
+    let suggestions: Vec<InboxSortSuggestion> = value
+        .into_iter()
+        .filter_map(|obj| {
+            let bookmark_id = obj["bookmark_id"].as_str()?.to_string();
+            let folder_name = obj["folder_name"].as_str()?.to_string();
+            if bookmark_id.is_empty() || folder_name.is_empty() {
+                return None;
+            }
+            Some(InboxSortSuggestion { bookmark_id, folder_name })
+        })
+        .collect();
+
+    Ok(suggestions)
 }
 
 // ─── CSV Import ───────────────────────────────────────────────────────────────
@@ -461,6 +582,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_bookmarks,
             get_bookmark_count,
+            get_inbox_count,
             add_bookmark,
             delete_bookmark,
             get_folders,
@@ -475,6 +597,8 @@ fn main() {
             clear_all_data,
             suggest_csv_mapping,
             import_bookmarks,
+            suggest_inbox_sort,
+            apply_inbox_sort,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
