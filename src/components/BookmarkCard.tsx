@@ -9,23 +9,31 @@ interface BookmarkCardProps {
   bookmark: Bookmark
   onDelete: (id: string) => void
   onContext: (e: React.MouseEvent, bookmark: Bookmark) => void
-  onDragStart?: (e: React.DragEvent, bookmark: Bookmark) => void
+  onDragPointerDown?: (e: React.PointerEvent, bookmark: Bookmark) => void
 }
 
-export const BookmarkCard = memo(function BookmarkCard({ bookmark, onDelete, onContext, onDragStart }: BookmarkCardProps) {
+export const BookmarkCard = memo(function BookmarkCard({ bookmark, onDelete, onContext, onDragPointerDown }: BookmarkCardProps) {
   function openUrl(e: React.MouseEvent | React.KeyboardEvent) {
     e.preventDefault()
     invoke('open_url', { url: bookmark.url }).catch(() => {})
   }
 
+  // Drag from anywhere on the card except interactive elements (link, buttons,
+  // tags) so those keep their normal click behavior without the 5px wiggle.
+  function handlePointerDown(e: React.PointerEvent) {
+    const target = e.target as HTMLElement
+    if (target.closest('a, button, [data-no-drag]')) return
+    onDragPointerDown?.(e, bookmark)
+  }
+
   return (
     <div
-      draggable
-      className="group relative rounded-xl p-4 mb-3 break-inside-avoid transition-shadow duration-150 cursor-move"
+      className="group relative rounded-xl p-4 mb-3 break-inside-avoid transition-shadow duration-150 cursor-grab select-none"
       style={{
         background: 'var(--bg-elevated)',
         border: '1px solid var(--border-dim)',
         boxShadow: '0 1px 3px rgba(0,0,0,0.12)',
+        touchAction: 'none',
       }}
       onMouseEnter={(e) => {
         const el = e.currentTarget as HTMLDivElement
@@ -38,7 +46,7 @@ export const BookmarkCard = memo(function BookmarkCard({ bookmark, onDelete, onC
         el.style.boxShadow = '0 1px 3px rgba(0,0,0,0.12)'
       }}
       onContextMenu={(e) => onContext(e, bookmark)}
-      onDragStart={(e) => onDragStart?.(e, bookmark)}
+      onPointerDown={handlePointerDown}
     >
       <button
         onClick={() => onDelete(bookmark.id)}
@@ -61,7 +69,6 @@ export const BookmarkCard = memo(function BookmarkCard({ bookmark, onDelete, onC
       <a
         href={bookmark.url}
         onClick={openUrl}
-        draggable={false}
         className="block text-sm font-medium leading-snug mb-2 cursor-pointer transition-colors duration-100"
         style={{
           color: 'var(--text-primary)',
@@ -96,7 +103,8 @@ export const BookmarkCard = memo(function BookmarkCard({ bookmark, onDelete, onC
           {bookmark.tags.map((tag) => (
             <span
               key={tag.id}
-              className="px-2 py-0.5 rounded text-xs font-medium"
+              data-no-drag
+              className="px-2 py-0.5 rounded text-xs font-medium cursor-default"
               style={{ background: tag.color + '1a', color: tag.color }}
             >
               {tag.name}

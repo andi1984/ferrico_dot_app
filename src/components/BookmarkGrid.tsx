@@ -5,10 +5,10 @@ interface BookmarkGridProps {
   bookmarks: Bookmark[]
   onDelete: (id: string) => void
   onContext: (e: React.MouseEvent, bookmark: Bookmark) => void
-  onDragStart?: (e: React.DragEvent, bookmark: Bookmark) => void
+  onDragPointerDown?: (e: React.PointerEvent, bookmark: Bookmark) => void
 }
 
-export function BookmarkGrid({ bookmarks, onDelete, onContext, onDragStart }: BookmarkGridProps) {
+export function BookmarkGrid({ bookmarks, onDelete, onContext, onDragPointerDown }: BookmarkGridProps) {
   return (
     <div className="h-full overflow-y-auto">
       <div className="p-5" style={{ columns: '260px', gap: '12px' }}>
@@ -18,7 +18,7 @@ export function BookmarkGrid({ bookmarks, onDelete, onContext, onDragStart }: Bo
             bookmark={bookmark}
             onDelete={onDelete}
             onContext={onContext}
-            onDragStart={onDragStart}
+            onDragPointerDown={onDragPointerDown}
           />
         ))}
       </div>

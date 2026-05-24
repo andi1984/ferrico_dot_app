@@ -2,6 +2,11 @@ import { useState } from 'react'
 import type { Folder, Tag, Selection } from '../types'
 import { IconClose, IconPlus, IconFolder, IconAll, IconInbox, IconSettings, IconTrash } from './icons'
 
+// Sentinel used in [data-drop-target-id] for the Inbox row, which corresponds
+// to "unsorted" (folderId === null). The App layer maps it back to null when
+// invoking the Tauri command.
+export const INBOX_DROP_TARGET = '__inbox__'
+
 export interface SidebarProps {
   folders: Folder[]
   tags: Tag[]
@@ -17,10 +22,12 @@ export interface SidebarProps {
   onOpenSettings: () => void
   onFolderContext: (e: React.MouseEvent, folder: Folder) => void
   onTagContext: (e: React.MouseEvent, tag: Tag) => void
-  onDropBookmark?: (bookmarkId: string, folderId: string | null) => void
+  // ID of the drop target currently hovered during a drag (or null). Used to
+  // paint a highlight on the matching SidebarItem.
+  dragHoverTargetId?: string | null
 }
 
-export function SidebarItem({ active, onClick, onContext, icon, label, count, onDelete, ariaLabel, folderId, onDropBookmark }: {
+export function SidebarItem({ active, onClick, onContext, icon, label, count, onDelete, ariaLabel, dropTargetId, isDragTarget }: {
   active: boolean
   onClick: () => void
   onContext?: (e: React.MouseEvent) => void
@@ -29,35 +36,11 @@ export function SidebarItem({ active, onClick, onContext, icon, label, count, on
   count?: number
   onDelete?: () => void
   ariaLabel?: string
-  folderId?: string | null
-  onDropBookmark?: (bookmarkId: string, folderId: string | null) => void
+  dropTargetId?: string
+  isDragTarget?: boolean
 }) {
   const [hovered, setHovered] = useState(false)
   const [deleteHovered, setDeleteHovered] = useState(false)
-  const [dragOver, setDragOver] = useState(false)
-
-  const handleDragOver = (e: React.DragEvent) => {
-    if (folderId === undefined) return
-    e.preventDefault()
-    e.dataTransfer.dropEffect = 'move'
-    setDragOver(true)
-  }
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    // Only clear when the cursor actually leaves the button, not when entering a child
-    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-      setDragOver(false)
-    }
-  }
-
-  const handleDrop = (e: React.DragEvent) => {
-    if (folderId === undefined) return
-    e.preventDefault()
-    setDragOver(false)
-    const bookmarkId = e.dataTransfer.getData('text/plain')
-    // Pass id (may be empty string); App's handleDropBookmark falls back to ref
-    onDropBookmark?.(bookmarkId, folderId)
-  }
 
   return (
     <button
@@ -65,17 +48,15 @@ export function SidebarItem({ active, onClick, onContext, icon, label, count, on
       onContextMenu={onContext}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => { setHovered(false); setDeleteHovered(false) }}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
+      data-drop-target-id={dropTargetId}
       className="relative flex items-center gap-2 w-full px-3 py-1.5 rounded-lg text-sm transition-all duration-75 text-left group cursor-pointer"
       style={{
-        background: dragOver ? 'var(--accent)' : active ? 'var(--accent-dim)' : hovered ? 'rgba(255,255,255,0.035)' : 'transparent',
-        color: dragOver ? '#0c0b0a' : active ? 'var(--accent)' : hovered ? 'var(--text-primary)' : 'var(--text-secondary)',
-        outline: dragOver ? '2px solid var(--accent-bright)' : 'none',
+        background: isDragTarget ? 'var(--accent)' : active ? 'var(--accent-dim)' : hovered ? 'rgba(255,255,255,0.035)' : 'transparent',
+        color: isDragTarget ? '#0c0b0a' : active ? 'var(--accent)' : hovered ? 'var(--text-primary)' : 'var(--text-secondary)',
+        outline: isDragTarget ? '2px solid var(--accent-bright)' : 'none',
         outlineOffset: '1px',
-        borderLeft: active && !dragOver ? '2px solid var(--accent)' : '2px solid transparent',
-        paddingLeft: active && !dragOver ? '10px' : '12px',
+        borderLeft: active && !isDragTarget ? '2px solid var(--accent)' : '2px solid transparent',
+        paddingLeft: active && !isDragTarget ? '10px' : '12px',
       }}
       aria-current={active ? 'page' : undefined}
       aria-label={ariaLabel}
@@ -85,7 +66,7 @@ export function SidebarItem({ active, onClick, onContext, icon, label, count, on
       {count !== undefined && (
         <span className="text-xs flex-none" style={{ color: 'var(--text-muted)' }} aria-label={`${count} bookmarks`}>{count}</span>
       )}
-      {onDelete && (hovered || deleteHovered) && (
+      {onDelete && !isDragTarget && (hovered || deleteHovered) && (
         <button
           type="button"
           onClick={(e) => { e.stopPropagation(); onDelete() }}
@@ -123,7 +104,7 @@ export function SidebarSection({ label, onAdd }: { label: string; onAdd: () => v
   )
 }
 
-export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount = 0, binCount, onSelect, onAddFolder, onDeleteFolder, onAddTag, onDeleteTag, onOpenSettings, onFolderContext, onTagContext, onDropBookmark }: SidebarProps) {
+export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount = 0, binCount, onSelect, onAddFolder, onDeleteFolder, onAddTag, onDeleteTag, onOpenSettings, onFolderContext, onTagContext, dragHoverTargetId }: SidebarProps) {
   const isActive = (s: Selection): boolean => {
     if (s.type !== selection.type) return false
     if (s.type === 'all') return true
@@ -164,8 +145,8 @@ export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount = 
           label="Inbox"
           count={inboxCount}
           ariaLabel={`Inbox, ${inboxCount} unsorted`}
-          folderId={null}
-          onDropBookmark={onDropBookmark}
+          dropTargetId={INBOX_DROP_TARGET}
+          isDragTarget={dragHoverTargetId === INBOX_DROP_TARGET}
         />
         <SidebarItem
           active={isActive({ type: 'all' })}
@@ -197,8 +178,8 @@ export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount = 
               icon={<IconFolder />}
               label={folder.name}
               onDelete={() => onDeleteFolder(folder.id)}
-              folderId={folder.id}
-              onDropBookmark={onDropBookmark}
+              dropTargetId={folder.id}
+              isDragTarget={dragHoverTargetId === folder.id}
             />
           ))
         }

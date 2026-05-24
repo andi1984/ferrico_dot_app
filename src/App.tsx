@@ -12,8 +12,9 @@ import { AddTagModal } from './components/AddTagModal'
 import { SettingsModal } from './components/SettingsModal'
 import { ImportCsvModal } from './components/ImportCsvModal'
 import { InboxSortModal } from './components/InboxSortModal'
-import { Sidebar } from './components/Sidebar'
+import { Sidebar, INBOX_DROP_TARGET } from './components/Sidebar'
 import { EmptyState } from './components/EmptyState'
+import { useDragDrop } from './useDragDrop'
 import { IconClose, IconPlus, IconSearch, IconLayoutList, IconLayoutGrid, IconSort, IconChevronDown, IconSparkles } from './components/icons'
 
 type Modal = 'add-bookmark' | 'add-folder' | 'add-tag' | 'settings' | 'import-csv' | 'inbox-sort' | null
@@ -356,26 +357,38 @@ export default function App() {
     }
   }, [loadAll])
 
-  // Ref-based fallback for WKWebView where getData() can return empty
-  const draggingIdRef = useRef<string | null>(null)
+  // Toast shown during/after a bookmark move. Auto-dismisses after 2s.
+  const [moveStatus, setMoveStatus] = useState<string | null>(null)
+  const moveStatusTimerRef = useRef<number | null>(null)
 
-  const handleBookmarkDragStart = useCallback((e: React.DragEvent, bookmark: Bookmark) => {
-    e.dataTransfer.effectAllowed = 'move'
-    e.dataTransfer.setData('text/plain', bookmark.id)
-    draggingIdRef.current = bookmark.id
+  const showMoveStatus = useCallback((msg: string, autoDismiss = false) => {
+    if (moveStatusTimerRef.current) {
+      window.clearTimeout(moveStatusTimerRef.current)
+      moveStatusTimerRef.current = null
+    }
+    setMoveStatus(msg)
+    if (autoDismiss) {
+      moveStatusTimerRef.current = window.setTimeout(() => setMoveStatus(null), 2000)
+    }
   }, [])
 
-  const handleDropBookmark = useCallback(async (bookmarkId: string, folderId: string | null) => {
-    const id = bookmarkId || draggingIdRef.current
-    draggingIdRef.current = null
-    if (!id) return
+  const handleMoveBookmark = useCallback(async (bookmark: Bookmark, targetId: string | null) => {
+    if (!targetId) return
+    const folderId = targetId === INBOX_DROP_TARGET ? null : targetId
+    const destinationName =
+      folderId === null ? 'Inbox' : (folders.find((f) => f.id === folderId)?.name ?? 'folder')
+    showMoveStatus(`Moving "${bookmark.title}" to ${destinationName}…`)
     try {
-      await invoke('move_bookmark', { id, folderId })
+      await invoke('move_bookmark', { id: bookmark.id, folderId })
+      showMoveStatus(`Moved "${bookmark.title}" to ${destinationName}`, true)
       loadAll()
     } catch (e) {
+      setMoveStatus(null)
       setError(extractErrorMessage(e))
     }
-  }, [loadAll])
+  }, [folders, loadAll, showMoveStatus])
+
+  const drag = useDragDrop<Bookmark>({ onDrop: handleMoveBookmark })
 
   const openBookmarkContext = useCallback((e: React.MouseEvent, bookmark: Bookmark) => {
     e.preventDefault()
@@ -446,7 +459,7 @@ export default function App() {
         onOpenSettings={() => setModal('settings')}
         onFolderContext={openFolderContext}
         onTagContext={openTagContext}
-        onDropBookmark={handleDropBookmark}
+        dragHoverTargetId={drag.state.active ? drag.state.hoverTargetId : null}
       />
 
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
@@ -600,7 +613,7 @@ export default function App() {
               bookmarks={sortedBookmarks}
               onDelete={isBinView ? handleDeleteBookmarkForever : handleDeleteBookmark}
               onContext={isBinView ? openBinBookmarkContext : openBookmarkContext}
-              onDragStart={!isBinView ? handleBookmarkDragStart : undefined}
+              onDragPointerDown={!isBinView ? drag.startDrag : undefined}
             />
           ) : (
             <BookmarkList
@@ -609,7 +622,7 @@ export default function App() {
               onContext={isBinView ? openBinBookmarkContext : openBookmarkContext}
               isBinView={isBinView}
               onRestore={handleRestoreBookmark}
-              onDragStart={!isBinView ? handleBookmarkDragStart : undefined}
+              onDragPointerDown={!isBinView ? drag.startDrag : undefined}
             />
           )}
         </main>
@@ -640,6 +653,45 @@ export default function App() {
       )}
 
       {ctxMenu && <ContextMenu state={ctxMenu} onClose={() => setCtxMenu(null)} />}
+
+      {/* Drag ghost — follows the pointer while dragging a bookmark. */}
+      {drag.state.active && drag.state.payload && (
+        <div
+          aria-hidden="true"
+          className="fixed z-[100] rounded-lg px-3 py-2 text-xs font-medium shadow-2xl"
+          style={{
+            top: drag.state.pointerY + 12,
+            left: drag.state.pointerX + 12,
+            pointerEvents: 'none',
+            background: 'var(--bg-elevated)',
+            color: 'var(--text-primary)',
+            border: '1px solid var(--accent)',
+            maxWidth: '240px',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            opacity: 0.95,
+          }}
+        >
+          {drag.state.payload.title}
+        </div>
+      )}
+
+      {/* Move-status toast — shown during and briefly after a move. */}
+      {moveStatus && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-5 left-1/2 -translate-x-1/2 z-[110] rounded-lg px-4 py-2.5 text-sm font-medium shadow-2xl"
+          style={{
+            background: 'var(--bg-elevated)',
+            color: 'var(--text-primary)',
+            border: '1px solid var(--border-mid)',
+          }}
+        >
+          {moveStatus}
+        </div>
+      )}
     </div>
   )
 }
