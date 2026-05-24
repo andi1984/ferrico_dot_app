@@ -20,6 +20,7 @@ pub struct Bookmark {
     pub tags: Vec<Tag>,
     pub created_at: i64,
     pub updated_at: i64,
+    pub deleted_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +92,7 @@ pub(crate) struct RawBookmark {
     pub folder_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    pub deleted_at: Option<i64>,
 }
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
@@ -116,7 +118,8 @@ pub fn init_schema(conn: &Connection) -> Result<(), AppError> {
            feed_url    TEXT,
            folder_id   TEXT REFERENCES folders(id) ON DELETE SET NULL,
            created_at  INTEGER NOT NULL,
-           updated_at  INTEGER NOT NULL
+           updated_at  INTEGER NOT NULL,
+           deleted_at  INTEGER
          );
 
          CREATE TABLE IF NOT EXISTS tags (
@@ -132,6 +135,20 @@ pub fn init_schema(conn: &Connection) -> Result<(), AppError> {
            PRIMARY KEY (bookmark_id, tag_id)
          );",
     )?;
+
+    // Migration: add deleted_at column to existing databases that predate the bin feature
+    let has_deleted_at: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('bookmarks') WHERE name='deleted_at'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+    if !has_deleted_at {
+        conn.execute("ALTER TABLE bookmarks ADD COLUMN deleted_at INTEGER", [])?;
+    }
+
     Ok(())
 }
 
@@ -161,6 +178,7 @@ fn row_to_raw(row: &rusqlite::Row) -> rusqlite::Result<RawBookmark> {
         folder_id: row.get(6)?,
         created_at: row.get(7)?,
         updated_at: row.get(8)?,
+        deleted_at: row.get(9)?,
     })
 }
 
@@ -217,6 +235,7 @@ fn enrich_batch(raws: Vec<RawBookmark>, conn: &Connection) -> Result<Vec<Bookmar
                 tags,
                 created_at: r.created_at,
                 updated_at: r.updated_at,
+                deleted_at: r.deleted_at,
             }
         })
         .collect())
@@ -293,8 +312,8 @@ pub fn db_get_bookmarks(
     let raws: Vec<RawBookmark> = if inbox_only {
         let mut stmt = conn.prepare(
             "SELECT id, url, title, description, favicon_url, feed_url, folder_id, \
-             created_at, updated_at FROM bookmarks WHERE folder_id IS NULL \
-             ORDER BY created_at DESC",
+             created_at, updated_at, deleted_at FROM bookmarks \
+             WHERE folder_id IS NULL AND deleted_at IS NULL ORDER BY created_at DESC",
         )?;
         let rows: Vec<RawBookmark> = stmt.query_map([], row_to_raw)?.filter_map(|r| r.ok()).collect();
         rows
@@ -303,28 +322,35 @@ pub fn db_get_bookmarks(
             (_, Some(tid)) => {
                 let mut stmt = conn.prepare(
                     "SELECT b.id, b.url, b.title, b.description, b.favicon_url, b.feed_url, \
-                     b.folder_id, b.created_at, b.updated_at \
+                     b.folder_id, b.created_at, b.updated_at, b.deleted_at \
                      FROM bookmarks b JOIN bookmark_tags bt ON bt.bookmark_id = b.id \
-                     WHERE bt.tag_id = ?1 ORDER BY b.created_at DESC",
+                     WHERE bt.tag_id = ?1 AND b.deleted_at IS NULL ORDER BY b.created_at DESC",
                 )?;
-                let rows: Vec<RawBookmark> = stmt.query_map(params![tid], row_to_raw)?.filter_map(|r| r.ok()).collect();
+                let rows: Vec<RawBookmark> = stmt.query_map(params![tid], row_to_raw)?
+                    .filter_map(|r| r.ok())
+                    .collect();
                 rows
             }
             (Some(fid), None) => {
                 let mut stmt = conn.prepare(
                     "SELECT id, url, title, description, favicon_url, feed_url, folder_id, \
-                     created_at, updated_at FROM bookmarks WHERE folder_id = ?1 \
-                     ORDER BY created_at DESC",
+                     created_at, updated_at, deleted_at FROM bookmarks \
+                     WHERE folder_id = ?1 AND deleted_at IS NULL ORDER BY created_at DESC",
                 )?;
-                let rows: Vec<RawBookmark> = stmt.query_map(params![fid], row_to_raw)?.filter_map(|r| r.ok()).collect();
+                let rows: Vec<RawBookmark> = stmt.query_map(params![fid], row_to_raw)?
+                    .filter_map(|r| r.ok())
+                    .collect();
                 rows
             }
             (None, None) => {
                 let mut stmt = conn.prepare(
                     "SELECT id, url, title, description, favicon_url, feed_url, folder_id, \
-                     created_at, updated_at FROM bookmarks ORDER BY created_at DESC",
+                     created_at, updated_at, deleted_at FROM bookmarks \
+                     WHERE deleted_at IS NULL ORDER BY created_at DESC",
                 )?;
-                let rows: Vec<RawBookmark> = stmt.query_map([], row_to_raw)?.filter_map(|r| r.ok()).collect();
+                let rows: Vec<RawBookmark> = stmt.query_map([], row_to_raw)?
+                    .filter_map(|r| r.ok())
+                    .collect();
                 rows
             }
         }
@@ -349,7 +375,7 @@ pub fn db_get_bookmarks(
 }
 
 pub fn db_get_bookmark_count(conn: &Connection) -> Result<i64, AppError> {
-    Ok(conn.query_row("SELECT COUNT(*) FROM bookmarks", [], |r| r.get(0))?)
+    Ok(conn.query_row("SELECT COUNT(*) FROM bookmarks WHERE deleted_at IS NULL", [], |r| r.get(0))?)
 }
 
 pub fn db_add_bookmark(
@@ -398,14 +424,74 @@ pub fn db_add_bookmark(
         tags,
         created_at: ts,
         updated_at: ts,
+        deleted_at: None,
     })
 }
 
 pub fn db_delete_bookmark(conn: &Connection, id: &str) -> Result<(), AppError> {
-    let n = conn.execute("DELETE FROM bookmarks WHERE id = ?1", params![id])?;
+    let n = conn.execute(
+        "UPDATE bookmarks SET deleted_at = ?1 WHERE id = ?2 AND deleted_at IS NULL",
+        params![now(), id],
+    )?;
     if n == 0 {
         return Err(AppError::NotFound { message: format!("bookmark {id}") });
     }
+    Ok(())
+}
+
+pub fn db_get_bin_bookmarks(conn: &Connection) -> Result<Vec<Bookmark>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, url, title, description, favicon_url, feed_url, folder_id, \
+         created_at, updated_at, deleted_at FROM bookmarks \
+         WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC",
+    )?;
+    let raws: Vec<RawBookmark> = stmt.query_map([], row_to_raw)?
+        .filter_map(|r| r.ok())
+        .collect();
+    enrich_batch(raws, conn)
+}
+
+pub fn db_get_bin_count(conn: &Connection) -> Result<i64, AppError> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*) FROM bookmarks WHERE deleted_at IS NOT NULL",
+        [],
+        |r| r.get(0),
+    )?)
+}
+
+pub fn db_restore_bookmark(conn: &Connection, id: &str) -> Result<(), AppError> {
+    let n = conn.execute(
+        "UPDATE bookmarks SET deleted_at = NULL WHERE id = ?1 AND deleted_at IS NOT NULL",
+        params![id],
+    )?;
+    if n == 0 {
+        return Err(AppError::NotFound { message: format!("bookmark {id}") });
+    }
+    Ok(())
+}
+
+pub fn db_permanently_delete_bookmark(conn: &Connection, id: &str) -> Result<(), AppError> {
+    let n = conn.execute(
+        "DELETE FROM bookmarks WHERE id = ?1 AND deleted_at IS NOT NULL",
+        params![id],
+    )?;
+    if n == 0 {
+        return Err(AppError::NotFound { message: format!("bookmark {id}") });
+    }
+    Ok(())
+}
+
+pub fn db_empty_bin(conn: &Connection) -> Result<(), AppError> {
+    conn.execute("DELETE FROM bookmarks WHERE deleted_at IS NOT NULL", [])?;
+    Ok(())
+}
+
+pub fn db_purge_expired_bin(conn: &Connection, days: i64) -> Result<(), AppError> {
+    let cutoff = now() - days * 86400;
+    conn.execute(
+        "DELETE FROM bookmarks WHERE deleted_at IS NOT NULL AND deleted_at < ?1",
+        params![cutoff],
+    )?;
     Ok(())
 }
 
@@ -659,7 +745,8 @@ pub fn db_export_opml(conn: &Connection) -> Result<String, AppError> {
     let bookmarks: Vec<RawBookmark> = {
         let mut stmt = conn.prepare(
             "SELECT id, url, title, description, favicon_url, feed_url, folder_id, \
-             created_at, updated_at FROM bookmarks ORDER BY created_at",
+             created_at, updated_at, deleted_at FROM bookmarks \
+             WHERE deleted_at IS NULL ORDER BY created_at",
         )?;
         let rows: Vec<RawBookmark> = stmt.query_map([], row_to_raw)?
             .filter_map(|r| r.ok())
@@ -928,7 +1015,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_bookmark_cascades_bookmark_tags() {
+    fn delete_bookmark_soft_delete_preserves_tags() {
         let conn = mem();
         let tag = mk_tag(&conn, "rust");
         let b = db_add_bookmark(
@@ -946,6 +1033,34 @@ mod tests {
         .unwrap();
 
         db_delete_bookmark(&conn, &b.id).unwrap();
+
+        // Soft delete — bookmark_tags survive so restore brings tags back
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM bookmark_tags", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn empty_bin_cascades_bookmark_tags() {
+        let conn = mem();
+        let tag = mk_tag(&conn, "rust");
+        let b = db_add_bookmark(
+            &conn,
+            CreateBookmarkInput {
+                url: "https://rust-lang.org".to_string(),
+                title: "Rust".to_string(),
+                description: None,
+                favicon_url: None,
+                feed_url: None,
+                folder_id: None,
+                tag_ids: Some(vec![tag.id.clone()]),
+            },
+        )
+        .unwrap();
+
+        db_delete_bookmark(&conn, &b.id).unwrap();
+        db_empty_bin(&conn).unwrap();
 
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM bookmark_tags", [], |r| r.get(0))
@@ -1194,6 +1309,109 @@ mod tests {
     fn rusqlite_error_converts_to_app_error() {
         let err: AppError = rusqlite::Error::QueryReturnedNoRows.into();
         assert!(matches!(err, AppError::Db { .. }));
+    }
+
+    // ── Bin ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn delete_bookmark_moves_to_bin() {
+        let conn = mem();
+        let b = mk_bookmark(&conn, "https://example.com", "Example");
+        db_delete_bookmark(&conn, &b.id).unwrap();
+
+        // Active list is empty
+        assert_eq!(db_get_bookmarks(&conn, None, None, None, false).unwrap().len(), 0);
+        // Bin has the item
+        let bin = db_get_bin_bookmarks(&conn).unwrap();
+        assert_eq!(bin.len(), 1);
+        assert_eq!(bin[0].id, b.id);
+        assert!(bin[0].deleted_at.is_some());
+    }
+
+    #[test]
+    fn delete_already_binned_bookmark_returns_not_found() {
+        let conn = mem();
+        let b = mk_bookmark(&conn, "https://example.com", "Example");
+        db_delete_bookmark(&conn, &b.id).unwrap();
+        let err = db_delete_bookmark(&conn, &b.id).unwrap_err();
+        assert!(matches!(err, AppError::NotFound { .. }));
+    }
+
+    #[test]
+    fn get_bin_count() {
+        let conn = mem();
+        assert_eq!(db_get_bin_count(&conn).unwrap(), 0);
+        let b1 = mk_bookmark(&conn, "https://a.com", "A");
+        let b2 = mk_bookmark(&conn, "https://b.com", "B");
+        db_delete_bookmark(&conn, &b1.id).unwrap();
+        assert_eq!(db_get_bin_count(&conn).unwrap(), 1);
+        db_delete_bookmark(&conn, &b2.id).unwrap();
+        assert_eq!(db_get_bin_count(&conn).unwrap(), 2);
+    }
+
+    #[test]
+    fn restore_bookmark_returns_to_active_list() {
+        let conn = mem();
+        let b = mk_bookmark(&conn, "https://example.com", "Example");
+        db_delete_bookmark(&conn, &b.id).unwrap();
+        db_restore_bookmark(&conn, &b.id).unwrap();
+
+        let active = db_get_bookmarks(&conn, None, None, None, false).unwrap();
+        assert_eq!(active.len(), 1);
+        assert!(active[0].deleted_at.is_none());
+        assert_eq!(db_get_bin_bookmarks(&conn).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn restore_bookmark_not_in_bin_returns_not_found() {
+        let conn = mem();
+        let b = mk_bookmark(&conn, "https://example.com", "Example");
+        let err = db_restore_bookmark(&conn, &b.id).unwrap_err();
+        assert!(matches!(err, AppError::NotFound { .. }));
+    }
+
+    #[test]
+    fn empty_bin_removes_all_binned() {
+        let conn = mem();
+        let b1 = mk_bookmark(&conn, "https://a.com", "A");
+        let b2 = mk_bookmark(&conn, "https://b.com", "B");
+        db_delete_bookmark(&conn, &b1.id).unwrap();
+        db_delete_bookmark(&conn, &b2.id).unwrap();
+
+        db_empty_bin(&conn).unwrap();
+        assert_eq!(db_get_bin_count(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn purge_expired_bin_removes_old_only() {
+        let conn = mem();
+        let b1 = mk_bookmark(&conn, "https://old.com", "Old");
+        let b2 = mk_bookmark(&conn, "https://new.com", "New");
+
+        // Manually insert b1 with a deleted_at 31 days ago
+        let old_ts = now() - 31 * 86400;
+        conn.execute(
+            "UPDATE bookmarks SET deleted_at = ?1 WHERE id = ?2",
+            params![old_ts, b1.id],
+        )
+        .unwrap();
+        // b2 deleted just now via soft-delete
+        db_delete_bookmark(&conn, &b2.id).unwrap();
+
+        db_purge_expired_bin(&conn, 30).unwrap();
+
+        let bin = db_get_bin_bookmarks(&conn).unwrap();
+        assert_eq!(bin.len(), 1);
+        assert_eq!(bin[0].id, b2.id);
+    }
+
+    #[test]
+    fn active_bookmark_count_excludes_bin() {
+        let conn = mem();
+        mk_bookmark(&conn, "https://a.com", "A");
+        let b2 = mk_bookmark(&conn, "https://b.com", "B");
+        db_delete_bookmark(&conn, &b2.id).unwrap();
+        assert_eq!(db_get_bookmark_count(&conn).unwrap(), 1);
     }
 
     // ── db_import_bookmarks ───────────────────────────────────────────────────

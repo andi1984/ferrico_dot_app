@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { Folder, Tag, Selection } from '../types'
-import { IconClose, IconPlus, IconFolder, IconAll, IconInbox, IconSettings } from './icons'
+import { IconClose, IconPlus, IconFolder, IconAll, IconInbox, IconSettings, IconTrash } from './icons'
 
 export interface SidebarProps {
   folders: Folder[]
@@ -8,6 +8,7 @@ export interface SidebarProps {
   selection: Selection
   bookmarkCount: number
   inboxCount?: number
+  binCount: number
   onSelect: (s: Selection) => void
   onAddFolder: () => void
   onDeleteFolder: (id: string) => void
@@ -90,7 +91,7 @@ export function SidebarSection({ label, onAdd }: { label: string; onAdd: () => v
   )
 }
 
-export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount = 0, onSelect, onAddFolder, onDeleteFolder, onAddTag, onDeleteTag, onOpenSettings, onFolderContext, onTagContext }: SidebarProps) {
+export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount = 0, binCount, onSelect, onAddFolder, onDeleteFolder, onAddTag, onDeleteTag, onOpenSettings, onFolderContext, onTagContext }: SidebarProps) {
   const isActive = (s: Selection): boolean => {
     if (s.type !== selection.type) return false
     if (s.type === 'all') return true
@@ -139,6 +140,15 @@ export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount = 
           label="All Bookmarks"
           count={bookmarkCount}
           ariaLabel={`All Bookmarks, ${bookmarkCount} total`}
+        />
+
+        <SidebarItem
+          active={isActive({ type: 'bin' })}
+          onClick={() => onSelect({ type: 'bin' })}
+          icon={<IconTrash />}
+          label="Bin"
+          count={binCount > 0 ? binCount : undefined}
+          ariaLabel={binCount > 0 ? `Bin, ${binCount} items` : 'Bin, empty'}
         />
 
         <SidebarSection label="Folders" onAdd={onAddFolder} />

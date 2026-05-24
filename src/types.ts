@@ -23,6 +23,7 @@ export interface Bookmark {
   tags: Tag[]
   created_at: number
   updated_at: number
+  deleted_at: number | null
 }
 
 export type Selection =
@@ -30,3 +31,4 @@ export type Selection =
   | { type: 'inbox' }
   | { type: 'folder'; id: string }
   | { type: 'tag'; id: string }
+  | { type: 'bin' }

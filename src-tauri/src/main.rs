@@ -18,7 +18,9 @@ use db::{
     db_add_bookmark, db_add_folder, db_add_tag,
     db_apply_inbox_sort, db_clear_all_data,
     db_delete_bookmark, db_delete_folder, db_delete_tag,
-    db_export_opml, db_get_inbox_count, db_import_bookmarks,
+    db_empty_bin, db_export_opml, db_get_bin_bookmarks, db_get_bin_count,
+    db_get_inbox_count, db_import_bookmarks, db_permanently_delete_bookmark,
+    db_purge_expired_bin, db_restore_bookmark,
     db_get_bookmark_count, db_get_bookmarks, db_get_folders, db_get_tags,
     now, open_db,
 };
@@ -123,6 +125,42 @@ fn add_bookmark(input: CreateBookmarkInput, state: State<'_, AppState>) -> Resul
 fn delete_bookmark(id: String, state: State<'_, AppState>) -> Result<(), AppError> {
     let db = lock_db!(state);
     db_delete_bookmark(&db, &id)
+}
+
+#[tauri::command]
+fn get_bin_bookmarks(state: State<'_, AppState>) -> Result<Vec<Bookmark>, AppError> {
+    let db = lock_db!(state);
+    db_get_bin_bookmarks(&db)
+}
+
+#[tauri::command]
+fn get_bin_count(state: State<'_, AppState>) -> Result<i64, AppError> {
+    let db = lock_db!(state);
+    db_get_bin_count(&db)
+}
+
+#[tauri::command]
+fn restore_bookmark(id: String, state: State<'_, AppState>) -> Result<(), AppError> {
+    let db = lock_db!(state);
+    db_restore_bookmark(&db, &id)
+}
+
+#[tauri::command]
+fn permanently_delete_bookmark(id: String, state: State<'_, AppState>) -> Result<(), AppError> {
+    let db = lock_db!(state);
+    db_permanently_delete_bookmark(&db, &id)
+}
+
+#[tauri::command]
+fn empty_bin(state: State<'_, AppState>) -> Result<(), AppError> {
+    let db = lock_db!(state);
+    db_empty_bin(&db)
+}
+
+#[tauri::command]
+fn purge_expired_bin(days: i64, state: State<'_, AppState>) -> Result<(), AppError> {
+    let db = lock_db!(state);
+    db_purge_expired_bin(&db, days)
 }
 
 #[tauri::command]
@@ -585,6 +623,12 @@ fn main() {
             get_inbox_count,
             add_bookmark,
             delete_bookmark,
+            get_bin_bookmarks,
+            get_bin_count,
+            restore_bookmark,
+            permanently_delete_bookmark,
+            empty_bin,
+            purge_expired_bin,
             get_folders,
             add_folder,
             delete_folder,

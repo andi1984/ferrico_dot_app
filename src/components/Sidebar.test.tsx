@@ -11,6 +11,7 @@ function makeProps(overrides?: Partial<SidebarProps>): SidebarProps {
     tags: [],
     selection: { type: 'all' },
     bookmarkCount: 0,
+    binCount: 0,
     onSelect: vi.fn(),
     onAddFolder: vi.fn(),
     onDeleteFolder: vi.fn(),
