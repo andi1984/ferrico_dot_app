@@ -15,7 +15,9 @@ import { InboxSortModal } from './components/InboxSortModal'
 import { Sidebar, INBOX_DROP_TARGET } from './components/Sidebar'
 import { EmptyState } from './components/EmptyState'
 import { useDragDrop } from './useDragDrop'
-import { IconClose, IconPlus, IconSearch, IconLayoutList, IconLayoutGrid, IconSort, IconChevronDown, IconSparkles } from './components/icons'
+import { IconClose, IconPlus, IconSearch, IconLayoutList, IconLayoutGrid, IconSort, IconChevronDown, IconSparkles, IconSun, IconMoon } from './components/icons'
+
+type Theme = 'dark' | 'light'
 
 type Modal = 'add-bookmark' | 'add-folder' | 'add-tag' | 'settings' | 'import-csv' | 'inbox-sort' | null
 
@@ -160,9 +162,17 @@ export default function App() {
   const [sortKey, setSortKey] = useState<SortKey>(() =>
     (localStorage.getItem('ferrico:sortKey') as SortKey) ?? 'date-desc'
   )
+  const [theme, setTheme] = useState<Theme>(() => {
+    const stored = localStorage.getItem('ferrico:theme') as Theme | null
+    return stored === 'light' ? 'light' : 'dark'
+  })
 
   useEffect(() => { localStorage.setItem('ferrico:viewMode', viewMode) }, [viewMode])
   useEffect(() => { localStorage.setItem('ferrico:sortKey', sortKey) }, [sortKey])
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+    localStorage.setItem('ferrico:theme', theme)
+  }, [theme])
 
   useEffect(() => {
     const t = setTimeout(() => setSearch(searchInput), 300)
@@ -452,7 +462,17 @@ export default function App() {
             }}
           >Ferrico — {selectionTitle()}</span>
         </div>
-        <div style={{ width: 60 }} />
+        <button
+          onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+          className="flex items-center justify-center rounded-md transition-colors duration-150 cursor-pointer"
+          style={{ width: 26, height: 22, color: 'var(--text-2)' }}
+          onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--btn-hover-bg)'; e.currentTarget.style.color = 'var(--text-1)' }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-2)' }}
+          aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+          title={theme === 'dark' ? 'Light theme' : 'Dark theme'}
+        >
+          {theme === 'dark' ? <IconSun size={13} /> : <IconMoon size={13} />}
+        </button>
       </div>
 
       <div className="flex-1 flex min-h-0">

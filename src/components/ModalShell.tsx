@@ -18,33 +18,32 @@ export function ModalShell({ title, onClose, children }: {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(4px)' }}
+      className="modal-backdrop fixed inset-0 z-50 flex items-center justify-center p-4 anim-fade-in"
       onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
     >
       <div
-        className="anim-scale-in w-full max-w-md rounded-xl shadow-2xl overflow-hidden"
-        style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-mid)' }}
+        className="modal-panel anim-scale-in w-full max-w-md rounded-xl shadow-2xl overflow-hidden"
+        style={{ border: '1px solid var(--border)' }}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
       >
         <div
-          className="flex items-center justify-between px-6 py-4"
-          style={{ borderBottom: '1px solid var(--border-dim)' }}
+          className="flex items-center justify-between px-5 py-3.5"
+          style={{ borderBottom: '1px solid var(--border-soft)' }}
         >
-          <span id={titleId} className="text-sm font-semibold tracking-wide" style={{ color: 'var(--text-primary)' }}>
+          <span id={titleId} className="section-label" style={{ color: 'var(--text-2)' }}>
             {title}
           </span>
           <button
             onClick={onClose}
-            className="rounded p-1 transition-colors duration-150 cursor-pointer"
-            style={{ color: 'var(--text-muted)' }}
-            onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--text-primary)')}
-            onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
+            className="flex items-center justify-center rounded-md transition-colors duration-150 cursor-pointer"
+            style={{ width: 26, height: 26, color: 'var(--text-2)' }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--btn-hover-bg)'; e.currentTarget.style.color = 'var(--text-1)' }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-2)' }}
             aria-label="Close dialog"
           >
-            <IconClose size={15} />
+            <IconClose size={14} />
           </button>
         </div>
         {children}
@@ -71,17 +70,24 @@ export function ModalActions({ onClose, submitLabel }: { onClose: () => void; su
       <button
         type="button"
         onClick={onClose}
-        className="flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-colors duration-150 cursor-pointer"
-        style={{ border: '1px solid var(--border-mid)', color: 'var(--text-secondary)' }}
-        onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--border-bright)')}
-        onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--border-mid)')}
+        className="flex-1 rounded-lg transition-colors duration-150 cursor-pointer"
+        style={{
+          height: 34,
+          background: 'var(--input-bg)',
+          border: '1px solid var(--border-soft)',
+          color: 'var(--text-1)',
+          fontSize: 12.5,
+          fontWeight: 500,
+        }}
+        onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--btn-hover-bg)')}
+        onMouseLeave={(e) => (e.currentTarget.style.background = 'var(--input-bg)')}
       >
         Cancel
       </button>
       <button
         type="submit"
-        className="flex-1 px-4 py-2 rounded-lg text-sm font-semibold transition-opacity duration-150 hover:opacity-90 cursor-pointer"
-        style={{ background: 'var(--accent)', color: '#0c0b0a' }}
+        className="btn-accent flex-1 rounded-lg cursor-pointer"
+        style={{ height: 34, fontSize: 12.5 }}
       >
         {submitLabel}
       </button>

@@ -2,34 +2,51 @@
 @import "tailwindcss";
 
 /* ─── Theme tokens ──────────────────────────────────────────────────────────
-   Ferrico's design system. Dark theme by default; values are OKLCH for a
-   refined warm-neutral chrome. Existing legacy variable names (--bg-base,
-   --text-primary, --accent, …) are preserved so older components resolve;
-   they map onto the new semantic tokens.
+   Ferrico's design system. Dark by default; light theme applied via
+   `[data-theme="light"]` on the document root. Each surface/border/text token
+   declares a hex fallback first, then the OKLCH value — older WebKit builds
+   that don't understand `oklch()` fall back to the hex, so the UI stays solid.
+   Legacy variable names (`--bg-base`, `--text-primary`, …) are preserved so
+   older components resolve unchanged.
    ────────────────────────────────────────────────────────────────────────── */
-:root {
+:root, :root[data-theme="dark"] {
   --font-display: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-mono:    'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
 
   /* Surfaces */
+  --bg:               #1c1a18;
   --bg:               oklch(0.175 0.008 55);
+  --bg-elev:          #232120;
   --bg-elev:          oklch(0.205 0.008 55);
+  --bg-elev-strong:   #312f2c;
   --bg-elev-strong:   oklch(0.265 0.008 55);
+  --sidebar-bg:       #181715;
   --sidebar-bg:       oklch(0.155 0.008 55);
+  --detail-bg:        #1a1816;
   --detail-bg:        oklch(0.165 0.008 55);
+  --header-bg:        #1f1d1b;
   --header-bg:        oklch(0.185 0.008 55);
+  --card-bg:          #25231f;
   --card-bg:          oklch(0.215 0.008 55);
+  --input-bg:         #28251f;
   --input-bg:         oklch(0.225 0.008 55);
+  --chrome-bg:        #28251f;
   --chrome-bg:        oklch(0.22 0.008 55);
 
   /* Borders */
+  --border-soft:      #312f2c;
   --border-soft:      oklch(0.265 0.008 55);
+  --border:           #3f3c38;
   --border:           oklch(0.335 0.010 55);
+  --border-strong:    #4c4944;
   --border-strong:    oklch(0.40 0.010 55);
 
   /* Text */
+  --text-1:           #f0ece2;
   --text-1:           oklch(0.96 0.005 60);
+  --text-2:           #aea69a;
   --text-2:           oklch(0.72 0.012 60);
+  --text-3:           #6f6a62;
   --text-3:           oklch(0.50 0.013 60);
 
   /* States */
@@ -40,14 +57,21 @@
   --scrollbar:           rgba(255,255,255,0.10);
 
   /* Accent — copper (default) */
+  --accent:        #cc9268;
   --accent:        oklch(0.79 0.105 55);
+  --accent-deep:   #a4633b;
   --accent-deep:   oklch(0.64 0.145 45);
+  --accent-bright: #dba17a;
   --accent-bright: oklch(0.84 0.110 55);
+  --accent-dim:    rgba(204,146,104,0.14);
   --accent-dim:    color-mix(in oklch, var(--accent) 14%, transparent);
-  --accent-glow:   color-mix(in oklch, var(--accent) 6%,  transparent);
+  --accent-glow:   rgba(204,146,104,0.10);
+  --accent-glow:   color-mix(in oklch, var(--accent) 6%, transparent);
+  --row-sel-bg:    rgba(204,146,104,0.14);
   --row-sel-bg:    color-mix(in oklch, var(--accent) 14%, transparent);
 
   /* Status */
+  --red:           #d85850;
   --red:           oklch(0.66 0.180 25);
 
   /* ─── Legacy aliases ─── kept so older components resolve unchanged */
@@ -61,6 +85,64 @@
   --text-primary:  var(--text-1);
   --text-secondary:var(--text-2);
   --text-muted:    var(--text-3);
+}
+
+/* ─── Light theme ─── soft warm-white, copper accent retained */
+:root[data-theme="light"] {
+  --bg:               #fafaf7;
+  --bg:               oklch(0.985 0.003 60);
+  --bg-elev:          #f3f2ee;
+  --bg-elev:          oklch(0.965 0.003 60);
+  --bg-elev-strong:   #e6e4dd;
+  --bg-elev-strong:   oklch(0.925 0.005 60);
+  --sidebar-bg:       #f4f3ef;
+  --sidebar-bg:       oklch(0.97 0.004 60);
+  --detail-bg:        #f4f3ef;
+  --detail-bg:        oklch(0.97 0.004 60);
+  --header-bg:        #fcfbf8;
+  --header-bg:        oklch(0.99 0.003 60);
+  --card-bg:          #ffffff;
+  --card-bg:          oklch(0.995 0.002 60);
+  --input-bg:         #f4f3ef;
+  --input-bg:         oklch(0.97 0.004 60);
+  --chrome-bg:        #ecebe6;
+  --chrome-bg:        oklch(0.92 0.005 60);
+
+  --border-soft:      #e6e4dd;
+  --border-soft:      oklch(0.93 0.005 60);
+  --border:           #d6d2c8;
+  --border:           oklch(0.86 0.008 60);
+  --border-strong:    #c2bdb1;
+  --border-strong:    oklch(0.78 0.010 60);
+
+  --text-1:           #2a2622;
+  --text-1:           oklch(0.22 0.010 60);
+  --text-2:           #6a655d;
+  --text-2:           oklch(0.45 0.010 60);
+  --text-3:           #989289;
+  --text-3:           oklch(0.62 0.010 60);
+
+  --row-hover-bg:        rgba(0,0,0,0.022);
+  --row-hover-bg-strong: rgba(0,0,0,0.034);
+  --btn-hover-bg:        rgba(0,0,0,0.055);
+  --tag-bg:              rgba(0,0,0,0.055);
+  --scrollbar:           rgba(0,0,0,0.18);
+
+  --accent:        #b8743d;
+  --accent:        oklch(0.66 0.110 55);
+  --accent-deep:   #8c5326;
+  --accent-deep:   oklch(0.54 0.140 45);
+  --accent-bright: #c4845a;
+  --accent-bright: oklch(0.72 0.110 55);
+  --accent-dim:    rgba(184,116,61,0.16);
+  --accent-dim:    color-mix(in oklch, var(--accent) 16%, transparent);
+  --accent-glow:   rgba(184,116,61,0.10);
+  --accent-glow:   color-mix(in oklch, var(--accent) 8%, transparent);
+  --row-sel-bg:    rgba(184,116,61,0.16);
+  --row-sel-bg:    color-mix(in oklch, var(--accent) 16%, transparent);
+
+  --red:           #c64338;
+  --red:           oklch(0.56 0.180 25);
 }
 
 *, *::before, *::after {
@@ -164,9 +246,24 @@ select option {
   to   { opacity: 1; transform: scale(1); }
 }
 
-.anim-fade-up  { opacity: 0; animation: fadeUp 0.22s ease forwards; }
-.anim-fade-in  { opacity: 0; animation: fadeIn 0.18s ease forwards; }
-.anim-scale-in { opacity: 0; animation: scaleIn 0.20s ease forwards; }
+.anim-fade-up  { animation: fadeUp 0.22s ease both; }
+.anim-fade-in  { animation: fadeIn 0.18s ease both; }
+.anim-scale-in { animation: scaleIn 0.20s ease both; }
+
+/* Modal panel — solid background that does not depend on var resolution
+   (older WKWebView builds may not understand color-mix(); the hex fallback
+   keeps the modal opaque). */
+.modal-panel {
+  background: #232120;
+  background: var(--bg-elev);
+}
+[data-theme="light"] .modal-panel { background: #ffffff; background: var(--card-bg); }
+.modal-backdrop {
+  background: rgba(0,0,0,0.55);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+[data-theme="light"] .modal-backdrop { background: rgba(40,30,20,0.35); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
