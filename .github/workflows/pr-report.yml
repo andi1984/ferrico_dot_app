@@ -39,7 +39,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workdir: src-tauri
+          workspaces: src-tauri
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
@@ -240,7 +240,7 @@ jobs:
               FAILED=1
             fi
           fi
-          if [ -s ts-errors.txt ]; then
+          if grep -q "error TS" ts-errors.txt 2>/dev/null; then
             echo "❌ TypeScript errors found"
             FAILED=1
           fi
