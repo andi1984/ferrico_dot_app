@@ -61,6 +61,7 @@ export const BookmarkCard = memo(function BookmarkCard({ bookmark, onDelete, onC
       <a
         href={bookmark.url}
         onClick={openUrl}
+        draggable={false}
         className="block text-sm font-medium leading-snug mb-2 cursor-pointer transition-colors duration-100"
         style={{
           color: 'var(--text-primary)',

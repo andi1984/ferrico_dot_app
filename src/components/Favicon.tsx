@@ -25,6 +25,7 @@ export function Favicon({ storedUrl, bookmarkUrl, title }: {
     <img
       src={src}
       alt=""
+      draggable={false}
       className="w-7 h-7 rounded object-contain flex-none"
       style={{ background: 'var(--bg-elevated)' }}
       onError={() => setFailed(true)}

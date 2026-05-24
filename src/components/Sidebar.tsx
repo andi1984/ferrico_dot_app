@@ -54,10 +54,9 @@ export function SidebarItem({ active, onClick, onContext, icon, label, count, on
     if (folderId === undefined) return
     e.preventDefault()
     setDragOver(false)
-    const bookmarkId = e.dataTransfer.getData('application/x-ferrico-bookmark')
-    if (bookmarkId && onDropBookmark) {
-      onDropBookmark(bookmarkId, folderId)
-    }
+    const bookmarkId = e.dataTransfer.getData('text/plain')
+    // Pass id (may be empty string); App's handleDropBookmark falls back to ref
+    onDropBookmark?.(bookmarkId, folderId)
   }
 
   return (
@@ -69,13 +68,14 @@ export function SidebarItem({ active, onClick, onContext, icon, label, count, on
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className="relative flex items-center gap-2 w-full px-3 py-1.5 rounded-lg text-sm transition-all duration-150 text-left group cursor-pointer"
+      className="relative flex items-center gap-2 w-full px-3 py-1.5 rounded-lg text-sm transition-all duration-75 text-left group cursor-pointer"
       style={{
-        background: dragOver ? 'var(--accent-dim)' : active ? 'var(--accent-dim)' : hovered ? 'rgba(255,255,255,0.035)' : 'transparent',
-        color: active ? 'var(--accent)' : hovered ? 'var(--text-primary)' : 'var(--text-secondary)',
-        borderLeft: dragOver ? '2px solid var(--accent-bright)' : active ? '2px solid var(--accent)' : '2px solid transparent',
-        paddingLeft: active || dragOver ? '10px' : '12px',
-        boxShadow: dragOver ? `inset 0 0 0 1px var(--accent)` : 'none',
+        background: dragOver ? 'var(--accent)' : active ? 'var(--accent-dim)' : hovered ? 'rgba(255,255,255,0.035)' : 'transparent',
+        color: dragOver ? '#0c0b0a' : active ? 'var(--accent)' : hovered ? 'var(--text-primary)' : 'var(--text-secondary)',
+        outline: dragOver ? '2px solid var(--accent-bright)' : 'none',
+        outlineOffset: '1px',
+        borderLeft: active && !dragOver ? '2px solid var(--accent)' : '2px solid transparent',
+        paddingLeft: active && !dragOver ? '10px' : '12px',
       }}
       aria-current={active ? 'page' : undefined}
       aria-label={ariaLabel}

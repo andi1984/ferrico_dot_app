@@ -356,14 +356,21 @@ export default function App() {
     }
   }, [loadAll])
 
+  // Ref-based fallback for WKWebView where getData() can return empty
+  const draggingIdRef = useRef<string | null>(null)
+
   const handleBookmarkDragStart = useCallback((e: React.DragEvent, bookmark: Bookmark) => {
     e.dataTransfer.effectAllowed = 'move'
-    e.dataTransfer.setData('application/x-ferrico-bookmark', bookmark.id)
+    e.dataTransfer.setData('text/plain', bookmark.id)
+    draggingIdRef.current = bookmark.id
   }, [])
 
   const handleDropBookmark = useCallback(async (bookmarkId: string, folderId: string | null) => {
+    const id = bookmarkId || draggingIdRef.current
+    draggingIdRef.current = null
+    if (!id) return
     try {
-      await invoke('move_bookmark', { id: bookmarkId, folderId: folderId })
+      await invoke('move_bookmark', { id, folderId })
       loadAll()
     } catch (e) {
       setError(extractErrorMessage(e))

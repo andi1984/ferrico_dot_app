@@ -42,6 +42,7 @@ export const BookmarkRow = memo(function BookmarkRow({ bookmark, onDelete, onCon
           <a
             href={bookmark.url}
             onClick={openUrl}
+            draggable={false}
             className="text-sm font-medium truncate leading-snug transition-colors duration-100 cursor-pointer"
             style={{ color: 'var(--text-primary)' }}
             onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--accent-bright)')}
