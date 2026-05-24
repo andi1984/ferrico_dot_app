@@ -28,6 +28,7 @@ export const BookmarkCard = memo(function BookmarkCard({ bookmark, onDelete, onC
         cursor: onDragStart ? 'grab' : undefined,
       }}
       onMouseDown={onDragStart ? (e) => onDragStart(e, bookmark) : undefined}
+      onDragStart={(e) => e.preventDefault()}
       onMouseEnter={(e) => {
         const el = e.currentTarget as HTMLDivElement
         el.style.borderColor = 'var(--border-mid)'
@@ -61,6 +62,7 @@ export const BookmarkCard = memo(function BookmarkCard({ bookmark, onDelete, onC
       <a
         href={bookmark.url}
         onClick={openUrl}
+        draggable={false}
         className="block text-sm font-medium leading-snug mb-2 cursor-pointer transition-colors duration-100"
         style={{
           color: 'var(--text-primary)',

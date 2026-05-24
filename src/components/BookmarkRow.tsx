@@ -26,6 +26,7 @@ export const BookmarkRow = memo(function BookmarkRow({ bookmark, onDelete, onCon
       style={{ borderColor: 'var(--border-dim)', cursor: onDragStart ? 'grab' : undefined }}
       onContextMenu={(e) => onContext(e, bookmark)}
       onMouseDown={onDragStart ? (e) => onDragStart(e, bookmark) : undefined}
+      onDragStart={(e) => e.preventDefault()}
     >
       {/* Left accent bar — CSS-driven, no useState */}
       <div
@@ -41,6 +42,7 @@ export const BookmarkRow = memo(function BookmarkRow({ bookmark, onDelete, onCon
           <a
             href={bookmark.url}
             onClick={openUrl}
+            draggable={false}
             className="text-sm font-medium truncate leading-snug transition-colors duration-100 cursor-pointer"
             style={{ color: 'var(--text-primary)' }}
             onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--accent-bright)')}

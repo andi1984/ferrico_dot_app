@@ -48,6 +48,9 @@ export function useDrag({ onDrop }: UseDragOptions): UseDragResult {
 
   const startDrag = useCallback((e: React.MouseEvent, bookmark: Bookmark) => {
     if (e.button !== 0) return  // left button only
+    // Prevent text-selection cursor and stop browser-native HTML5 drag.
+    // Native drags suppress mousemove on the document, breaking our entire system.
+    e.preventDefault()
     const startX = e.clientX
     const startY = e.clientY
     let activated = false
