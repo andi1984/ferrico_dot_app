@@ -1,27 +1,12 @@
-/// src-tauri/src/io.rs
-///
-/// Import / export for Ferrico in three formats:
-///
-///   JSON      — lossless round-trip, ideal for sync between computers.
-///               Preserves all fields: bookmark metadata, folder hierarchy
-///               (nested), and tags with colours.
-///
-///   Netscape HTML — the de-facto universal browser bookmark format used by
-///               Chrome, Firefox, Safari, Edge, Raindrop.io, Pinboard,
-///               Linkding, Pocket, and virtually every bookmark manager ever
-///               shipped.  `<DL><DT><A HREF="…" ADD_DATE="…">title</A>`
-///               with nested `<DL>` blocks for sub-folders.
-///
-///   OPML      — kept for RSS-reader compatibility. The existing
-///               `db_export_opml` is moved here; `import_opml` is new.
-///
-/// Architecture rules (CLAUDE.md):
-///   - All functions are pure: they take `&Connection`, never AppState.
-///   - One rusqlite transaction per import call.
-///   - Re-use `db::find_or_create_folder`, `db::find_or_create_tags`,
-///     and `db::db_add_bookmark` — those are now `pub(crate)`.
-///   - No new XML/HTML parser crates. OPML and Netscape use hand-rolled
-///     recursive-descent / state-machine parsers.
+//! Import / export for Ferrico in four formats:
+//!
+//! - JSON: lossless round-trip for sync between computers.
+//! - Netscape HTML: universal browser compat (Chrome, Firefox, Safari…).
+//! - OPML: RSS-reader compat; moved from db.rs, import now supported.
+//! - CSV: spreadsheet compat; import handled by existing `import_bookmarks`.
+//!
+//! All functions take `&Connection`, never `AppState`.
+//! Each import runs in a single rusqlite transaction.
 
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -154,23 +139,15 @@ pub fn export_json(conn: &Connection) -> Result<String, AppError> {
     })
 }
 
-/// Import a JSON export.
-///
-/// Strategy:
-///   1. Parse and validate the envelope.
-///   2. In a single transaction:
-///      a. Upsert all folders (find-or-create by name at the correct nesting
-///         level). We use the export's `id` as a hint but always look up by
-///         name to avoid clobbering existing data on a merge import.
-///      b. Upsert all tags (find-or-create by name; preserve colour from the
-///         export when the tag doesn't yet exist).
-///      c. Insert each bookmark. If a bookmark with the same URL already
-///         exists it is skipped (not an error).
+/// Import a JSON export. Single transaction: folders → tags → bookmarks.
+/// Existing URLs are skipped silently (merge-safe).
 pub fn import_json(conn: &Connection, json: &str) -> Result<ImportResult, AppError> {
     let json = crate::io_validate::strip_bom(json);
+    crate::io_validate::validate_import_size(json)?;
     let export: JsonExport = serde_json::from_str(json).map_err(|e| AppError::Validation {
         message: format!("invalid JSON: {e}"),
     })?;
+    crate::io_validate::validate_bookmark_count(export.bookmarks.len())?;
 
     if export.version != 1 {
         return Err(AppError::Validation {
@@ -460,6 +437,8 @@ fn html_escape(s: &str) -> String {
 // <DD>description   ← optional next line
 
 pub fn import_netscape_html(conn: &Connection, html: &str) -> Result<ImportResult, AppError> {
+    crate::io_validate::validate_import_size(html)?;
+    crate::io_validate::validate_dl_depth(html, crate::io_validate::MAX_DL_DEPTH)?;
     let tx = conn.unchecked_transaction()?;
     let mut imported = 0usize;
     let mut errors: Vec<String> = Vec::new();
@@ -481,8 +460,13 @@ pub fn import_netscape_html(conn: &Connection, html: &str) -> Result<ImportResul
 
         if upper.starts_with("<DT><H3") || upper.starts_with("<H3") {
             // Folder heading — extract name between > and </H3>
-            if let Some(name) = extract_tag_text(line, "H3") {
-                pending_folder_name = Some(html_unescape(&name));
+            if let Some(raw_name) = extract_tag_text(line, "H3") {
+                let name = crate::io_validate::sanitize_string(&html_unescape(&raw_name), crate::io_validate::MAX_FOLDER_NAME_LEN);
+                if let Err(e) = crate::io_validate::validate_folder_name(&name) {
+                    errors.push(format!("Line {}: folder: {e}", i + 1));
+                } else {
+                    pending_folder_name = Some(name);
+                }
             }
             i += 1;
             continue;
@@ -528,7 +512,15 @@ pub fn import_netscape_html(conn: &Connection, html: &str) -> Result<ImportResul
                     continue;
                 }
             };
-            let title = title.filter(|t| !t.trim().is_empty()).unwrap_or_else(|| url.clone());
+            if let Err(e) = crate::io_validate::validate_url(&url) {
+                errors.push(format!("Line {}: {e}", i + 1));
+                i += 1;
+                continue;
+            }
+            let title = crate::io_validate::sanitize_string(
+                &title.filter(|t| !t.trim().is_empty()).unwrap_or_else(|| url.clone()),
+                crate::io_validate::MAX_STRING_LEN,
+            );
 
             // Peek at next line for optional <DD> description
             let description = if i + 1 < n {
@@ -552,13 +544,17 @@ pub fn import_netscape_html(conn: &Connection, html: &str) -> Result<ImportResul
 
             // Resolve tags
             let tag_ids = match tags_raw.as_deref().filter(|s| !s.is_empty()) {
-                Some(raw) => match find_or_create_tags(&tx, raw, &mut tag_cache) {
-                    Ok(ids) => if ids.is_empty() { None } else { Some(ids) },
-                    Err(e) => {
+                Some(raw) => {
+                    if let Err(e) = crate::io_validate::validate_tag_names(raw) {
                         errors.push(format!("Line {}: tags: {e}", i + 1));
                         None
+                    } else {
+                        match find_or_create_tags(&tx, raw, &mut tag_cache) {
+                            Ok(ids) => if ids.is_empty() { None } else { Some(ids) },
+                            Err(e) => { errors.push(format!("Line {}: tags: {e}", i + 1)); None }
+                        }
                     }
-                },
+                }
                 None => None,
             };
 
@@ -640,6 +636,8 @@ pub fn export_opml(conn: &Connection) -> Result<String, AppError> {
 // Any <outline> without a URL but with a text attribute is treated as a folder.
 
 pub fn import_opml(conn: &Connection, xml: &str) -> Result<ImportResult, AppError> {
+    crate::io_validate::validate_import_size(xml)?;
+    crate::io_validate::validate_xml_depth(xml, crate::io_validate::MAX_XML_DEPTH)?;
     let tx = conn.unchecked_transaction()?;
     let mut imported = 0usize;
     let mut errors: Vec<String> = Vec::new();
@@ -682,7 +680,7 @@ pub fn import_opml(conn: &Connection, xml: &str) -> Result<ImportResult, AppErro
             } else {
                 line
             };
-            let upper = line.to_ascii_uppercase();
+            let _upper = line.to_ascii_uppercase();
 
             let url = opml_url(line); // htmlUrl or url attribute
             let xml_url = attr_value(line, "xmlurl").map(|s| xml_unescape(&s));
@@ -768,6 +766,58 @@ pub fn import_opml(conn: &Connection, xml: &str) -> Result<ImportResult, AppErro
 
     tx.commit()?;
     Ok(ImportResult { imported, errors })
+}
+
+// ─── CSV format ───────────────────────────────────────────────────────────────
+
+/// Export all bookmarks as CSV with the same column layout the existing
+/// `import_bookmarks` command expects, so the file can be re-imported.
+pub fn export_csv(conn: &Connection) -> Result<String, AppError> {
+    let bookmarks = db_get_bookmarks(conn, None, None, None, false)?;
+    let folders = db_get_folders(conn)?;
+    let folder_map: HashMap<String, String> =
+        folders.into_iter().map(|f| (f.id, f.name)).collect();
+
+    let mut out = String::from(
+        "url,title,description,favicon_url,feed_url,folder_name,tag_names\n",
+    );
+    for b in bookmarks {
+        let folder_name = b
+            .folder_id
+            .as_deref()
+            .and_then(|id| folder_map.get(id))
+            .map(String::as_str)
+            .unwrap_or("");
+        let tag_names = b
+            .tags
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        out.push_str(&csv_quote(&b.url));
+        out.push(',');
+        out.push_str(&csv_quote(&b.title));
+        out.push(',');
+        out.push_str(&csv_quote(b.description.as_deref().unwrap_or("")));
+        out.push(',');
+        out.push_str(&csv_quote(b.favicon_url.as_deref().unwrap_or("")));
+        out.push(',');
+        out.push_str(&csv_quote(b.feed_url.as_deref().unwrap_or("")));
+        out.push(',');
+        out.push_str(&csv_quote(folder_name));
+        out.push(',');
+        out.push_str(&csv_quote(&tag_names));
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+fn csv_quote(s: &str) -> String {
+    if s.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
 }
 
 // ─── Shared helpers ────────────────────────────────────────────────────────────

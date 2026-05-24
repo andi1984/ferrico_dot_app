@@ -638,7 +638,12 @@ export default function App() {
         <AddTagModal onAdd={handleAddTag} onClose={() => setModal(null)} />
       )}
       {modal === 'settings' && (
-        <SettingsModal onClose={() => setModal(null)} onClear={() => { setModal(null); loadAll() }} />
+        <SettingsModal
+          onClose={() => setModal(null)}
+          onClear={() => { setModal(null); loadAll() }}
+          onDone={loadAll}
+          onImportCsv={() => { setModal('import-csv') }}
+        />
       )}
       {modal === 'import-csv' && (
         <ImportCsvModal onClose={() => setModal(null)} onDone={loadAll} />

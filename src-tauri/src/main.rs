@@ -31,7 +31,7 @@ use rand::RngCore;
 use rand::rngs::OsRng;
 use serde::Deserialize;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use rusqlite::Connection;
 use tauri::{AppHandle, Emitter, State};
@@ -253,6 +253,12 @@ fn import_netscape_html(html: String, state: State<'_, AppState>) -> Result<Impo
 fn import_opml(xml: String, state: State<'_, AppState>) -> Result<ImportResult, AppError> {
     let db = lock_db!(state);
     io::import_opml(&db, &xml)
+}
+
+#[tauri::command]
+fn export_csv(state: State<'_, AppState>) -> Result<String, AppError> {
+    let db = lock_db!(state);
+    io::export_csv(&db)
 }
 
 #[tauri::command]
@@ -605,7 +611,7 @@ async fn start_http_server(db: Arc<Mutex<Connection>>, token: String, app_handle
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
 
-fn load_or_create_token(data_dir: &PathBuf) -> String {
+fn load_or_create_token(data_dir: &Path) -> String {
     let path = data_dir.join("settings.json");
     if let Ok(content) = fs::read_to_string(&path) {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -673,6 +679,7 @@ fn main() {
             export_netscape_html,
             import_netscape_html,
             import_opml,
+            export_csv,
             open_url,
             clear_all_data,
             suggest_csv_mapping,

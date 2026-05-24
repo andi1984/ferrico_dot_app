@@ -1,7 +1,7 @@
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::Path;
 use uuid::Uuid;
 
 use crate::error::AppError;
@@ -158,7 +158,7 @@ pub fn init_schema(conn: &Connection) -> Result<(), AppError> {
     Ok(())
 }
 
-pub fn open_db(data_dir: &PathBuf) -> Result<Connection, AppError> {
+pub fn open_db(data_dir: &Path) -> Result<Connection, AppError> {
     let conn = Connection::open(data_dir.join("ferrico.db"))?;
     init_schema(&conn)?;
     Ok(conn)
@@ -410,7 +410,7 @@ pub fn db_add_bookmark(
         }
     }
 
-    let tags = get_tags_batch(conn, &[id.clone()])?.remove(&id).unwrap_or_default();
+    let tags = get_tags_batch(conn, std::slice::from_ref(&id))?.remove(&id).unwrap_or_default();
 
     Ok(Bookmark {
         id,
