@@ -32,3 +32,7 @@ export type Selection =
   | { type: 'folder'; id: string }
   | { type: 'tag'; id: string }
   | { type: 'bin' }
+
+export type ViewMode = 'list' | 'grid'
+
+export type SortKey = 'date-desc' | 'date-asc' | 'title-asc' | 'title-desc' | 'domain-asc'
