@@ -11,19 +11,29 @@ interface BookmarkRowProps {
   onContext: (e: React.MouseEvent, bookmark: Bookmark) => void
   isBinView?: boolean
   onRestore?: (id: string) => void
+  onDragPointerDown?: (e: React.PointerEvent, bookmark: Bookmark) => void
 }
 
-export const BookmarkRow = memo(function BookmarkRow({ bookmark, onDelete, onContext, isBinView, onRestore }: BookmarkRowProps) {
+export const BookmarkRow = memo(function BookmarkRow({ bookmark, onDelete, onContext, isBinView, onRestore, onDragPointerDown }: BookmarkRowProps) {
   function openUrl(e: React.MouseEvent | React.KeyboardEvent) {
     e.preventDefault()
     invoke('open_url', { url: bookmark.url }).catch(() => {})
   }
 
+  // Drag from anywhere on the row except interactive elements (link, buttons,
+  // tags) so those keep their normal click behavior without the 5px wiggle.
+  function handlePointerDown(e: React.PointerEvent) {
+    const target = e.target as HTMLElement
+    if (target.closest('a, button, [data-no-drag]')) return
+    onDragPointerDown?.(e, bookmark)
+  }
+
   return (
     <div
-      className="group relative flex items-center gap-4 px-6 py-3 border-b transition-colors duration-150 hover:bg-[var(--bg-elevated)]"
-      style={{ borderColor: 'var(--border-dim)' }}
+      className="group relative flex items-center gap-4 px-6 py-3 border-b transition-colors duration-150 hover:bg-[var(--bg-elevated)] cursor-grab select-none"
+      style={{ borderColor: 'var(--border-dim)', touchAction: 'none' }}
       onContextMenu={(e) => onContext(e, bookmark)}
+      onPointerDown={handlePointerDown}
     >
       {/* Left accent bar — CSS-driven, no useState */}
       <div
@@ -62,11 +72,11 @@ export const BookmarkRow = memo(function BookmarkRow({ bookmark, onDelete, onCon
       </div>
 
       {bookmark.tags.length > 0 && (
-        <div className="hidden lg:flex items-center gap-1.5 flex-none" aria-label="Tags">
+        <div className="hidden lg:flex items-center gap-1.5 flex-none" aria-label="Tags" data-no-drag>
           {bookmark.tags.slice(0, 2).map((tag) => (
             <span
               key={tag.id}
-              className="px-2 py-0.5 rounded text-xs font-medium"
+              className="px-2 py-0.5 rounded text-xs font-medium cursor-default"
               style={{ background: tag.color + '1a', color: tag.color }}
             >
               {tag.name}

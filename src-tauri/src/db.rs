@@ -470,6 +470,17 @@ pub fn db_restore_bookmark(conn: &Connection, id: &str) -> Result<(), AppError> 
     Ok(())
 }
 
+pub fn db_move_bookmark(conn: &Connection, id: &str, folder_id: Option<&str>) -> Result<(), AppError> {
+    let n = conn.execute(
+        "UPDATE bookmarks SET folder_id = ?1, updated_at = ?2 WHERE id = ?3 AND deleted_at IS NULL",
+        params![folder_id, now(), id],
+    )?;
+    if n == 0 {
+        return Err(AppError::NotFound { message: format!("bookmark {id}") });
+    }
+    Ok(())
+}
+
 pub fn db_permanently_delete_bookmark(conn: &Connection, id: &str) -> Result<(), AppError> {
     let n = conn.execute(
         "DELETE FROM bookmarks WHERE id = ?1 AND deleted_at IS NOT NULL",

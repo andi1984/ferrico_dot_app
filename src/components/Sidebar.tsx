@@ -2,6 +2,11 @@ import { useState } from 'react'
 import type { Folder, Tag, Selection } from '../types'
 import { IconClose, IconPlus, IconFolder, IconAll, IconInbox, IconSettings, IconTrash } from './icons'
 
+// Sentinel used in [data-drop-target-id] for the Inbox row, which corresponds
+// to "unsorted" (folderId === null). The App layer maps it back to null when
+// invoking the Tauri command.
+export const INBOX_DROP_TARGET = '__inbox__'
+
 export interface SidebarProps {
   folders: Folder[]
   tags: Tag[]
@@ -17,9 +22,12 @@ export interface SidebarProps {
   onOpenSettings: () => void
   onFolderContext: (e: React.MouseEvent, folder: Folder) => void
   onTagContext: (e: React.MouseEvent, tag: Tag) => void
+  // ID of the drop target currently hovered during a drag (or null). Used to
+  // paint a highlight on the matching SidebarItem.
+  dragHoverTargetId?: string | null
 }
 
-export function SidebarItem({ active, onClick, onContext, icon, label, count, onDelete, ariaLabel }: {
+export function SidebarItem({ active, onClick, onContext, icon, label, count, onDelete, ariaLabel, dropTargetId, isDragTarget }: {
   active: boolean
   onClick: () => void
   onContext?: (e: React.MouseEvent) => void
@@ -28,6 +36,8 @@ export function SidebarItem({ active, onClick, onContext, icon, label, count, on
   count?: number
   onDelete?: () => void
   ariaLabel?: string
+  dropTargetId?: string
+  isDragTarget?: boolean
 }) {
   const [hovered, setHovered] = useState(false)
   const [deleteHovered, setDeleteHovered] = useState(false)
@@ -38,12 +48,15 @@ export function SidebarItem({ active, onClick, onContext, icon, label, count, on
       onContextMenu={onContext}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => { setHovered(false); setDeleteHovered(false) }}
-      className="relative flex items-center gap-2 w-full px-3 py-1.5 rounded-lg text-sm transition-all duration-150 text-left group cursor-pointer"
+      data-drop-target-id={dropTargetId}
+      className="relative flex items-center gap-2 w-full px-3 py-1.5 rounded-lg text-sm transition-all duration-75 text-left group cursor-pointer"
       style={{
-        background: active ? 'var(--accent-dim)' : hovered ? 'rgba(255,255,255,0.035)' : 'transparent',
-        color: active ? 'var(--accent)' : hovered ? 'var(--text-primary)' : 'var(--text-secondary)',
-        borderLeft: active ? '2px solid var(--accent)' : '2px solid transparent',
-        paddingLeft: active ? '10px' : '12px',
+        background: isDragTarget ? 'var(--accent)' : active ? 'var(--accent-dim)' : hovered ? 'rgba(255,255,255,0.035)' : 'transparent',
+        color: isDragTarget ? '#0c0b0a' : active ? 'var(--accent)' : hovered ? 'var(--text-primary)' : 'var(--text-secondary)',
+        outline: isDragTarget ? '2px solid var(--accent-bright)' : 'none',
+        outlineOffset: '1px',
+        borderLeft: active && !isDragTarget ? '2px solid var(--accent)' : '2px solid transparent',
+        paddingLeft: active && !isDragTarget ? '10px' : '12px',
       }}
       aria-current={active ? 'page' : undefined}
       aria-label={ariaLabel}
@@ -53,7 +66,7 @@ export function SidebarItem({ active, onClick, onContext, icon, label, count, on
       {count !== undefined && (
         <span className="text-xs flex-none" style={{ color: 'var(--text-muted)' }} aria-label={`${count} bookmarks`}>{count}</span>
       )}
-      {onDelete && (hovered || deleteHovered) && (
+      {onDelete && !isDragTarget && (hovered || deleteHovered) && (
         <button
           type="button"
           onClick={(e) => { e.stopPropagation(); onDelete() }}
@@ -91,7 +104,7 @@ export function SidebarSection({ label, onAdd }: { label: string; onAdd: () => v
   )
 }
 
-export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount = 0, binCount, onSelect, onAddFolder, onDeleteFolder, onAddTag, onDeleteTag, onOpenSettings, onFolderContext, onTagContext }: SidebarProps) {
+export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount = 0, binCount, onSelect, onAddFolder, onDeleteFolder, onAddTag, onDeleteTag, onOpenSettings, onFolderContext, onTagContext, dragHoverTargetId }: SidebarProps) {
   const isActive = (s: Selection): boolean => {
     if (s.type !== selection.type) return false
     if (s.type === 'all') return true
@@ -132,6 +145,8 @@ export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount = 
           label="Inbox"
           count={inboxCount}
           ariaLabel={`Inbox, ${inboxCount} unsorted`}
+          dropTargetId={INBOX_DROP_TARGET}
+          isDragTarget={dragHoverTargetId === INBOX_DROP_TARGET}
         />
         <SidebarItem
           active={isActive({ type: 'all' })}
@@ -163,6 +178,8 @@ export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount = 
               icon={<IconFolder />}
               label={folder.name}
               onDelete={() => onDeleteFolder(folder.id)}
+              dropTargetId={folder.id}
+              isDragTarget={dragHoverTargetId === folder.id}
             />
           ))
         }
