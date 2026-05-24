@@ -97,7 +97,7 @@ jobs:
           RUST_ROWS=""
           if [ -f rust-test-output.txt ]; then
             while IFS= read -r line; do
-              if [[ "$line" =~ ^"test "[a-z] ]]; then
+              if [[ "$line" =~ ^"test "[a-z] ]] && [[ ! "$line" =~ ^"test result:" ]]; then
                 name=$(echo "$line" | sed 's/^test //' | sed 's/ \.\.\. .*//')
                 status=$(echo "$line" | awk '{print $NF}')
                 if [ "$status" = "ok" ]; then
@@ -163,7 +163,10 @@ jobs:
           fi
 
           # ── TypeScript ───────────────────────────────────────────────────────
-          TS_ERRORS=$(grep -c "error TS" ts-errors.txt 2>/dev/null || echo 0)
+          # grep -c exits 1 on 0 matches (still outputs "0") — use || true so
+          # the fallback doesn't add a second "0" that breaks integer comparison
+          TS_ERRORS=$(grep -c "error TS" ts-errors.txt 2>/dev/null || true)
+          TS_ERRORS=${TS_ERRORS:-0}
           if [ "$TS_ERRORS" -eq 0 ]; then
             TS_LINE="TypeScript ✅ — 0 errors"
           else
@@ -240,7 +243,7 @@ jobs:
               FAILED=1
             fi
           fi
-          if [ -s ts-errors.txt ]; then
+          if grep -q "error TS" ts-errors.txt 2>/dev/null; then
             echo "❌ TypeScript errors found"
             FAILED=1
           fi
