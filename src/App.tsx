@@ -11,11 +11,12 @@ import { AddFolderModal } from './components/AddFolderModal'
 import { AddTagModal } from './components/AddTagModal'
 import { SettingsModal } from './components/SettingsModal'
 import { ImportCsvModal } from './components/ImportCsvModal'
+import { InboxSortModal } from './components/InboxSortModal'
 import { Sidebar } from './components/Sidebar'
 import { EmptyState } from './components/EmptyState'
-import { IconClose, IconPlus, IconSearch, IconLayoutList, IconLayoutGrid, IconSort, IconChevronDown } from './components/icons'
+import { IconClose, IconPlus, IconSearch, IconLayoutList, IconLayoutGrid, IconSort, IconChevronDown, IconSparkles } from './components/icons'
 
-type Modal = 'add-bookmark' | 'add-folder' | 'add-tag' | 'settings' | 'import-csv' | null
+type Modal = 'add-bookmark' | 'add-folder' | 'add-tag' | 'settings' | 'import-csv' | 'inbox-sort' | null
 
 // ─── Loading skeleton ─────────────────────────────────────────────────────────
 
@@ -160,6 +161,8 @@ export default function App() {
   const [searchInput, setSearchInput] = useState('')
   const [search, setSearch] = useState('')
   const [totalCount, setTotalCount] = useState(0)
+  const [inboxCount, setInboxCount] = useState(0)
+  const [binCount, setBinCount] = useState(0)
   const [modal, setModal] = useState<Modal>(null)
   const [error, setError] = useState<string | null>(null)
   const [addHovered, setAddHovered] = useState(false)
@@ -184,20 +187,28 @@ export default function App() {
 
   const loadAll = useCallback(async () => {
     try {
-      const [b, f, t, count] = await Promise.all([
-        invoke<Bookmark[]>('get_bookmarks', {
-          folderId: selection.type === 'folder' ? selection.id : null,
-          tagId: selection.type === 'tag' ? selection.id : null,
-          search: search || null,
-        }),
+      const isBin = selection.type === 'bin'
+      const [b, f, t, count, inbox, bCount] = await Promise.all([
+        isBin
+          ? invoke<Bookmark[]>('get_bin_bookmarks')
+          : invoke<Bookmark[]>('get_bookmarks', {
+              folderId: selection.type === 'folder' ? selection.id : null,
+              tagId: selection.type === 'tag' ? selection.id : null,
+              search: search || null,
+              inboxOnly: selection.type === 'inbox',
+            }),
         invoke<Folder[]>('get_folders'),
         invoke<Tag[]>('get_tags'),
         invoke<number>('get_bookmark_count'),
+        invoke<number>('get_inbox_count'),
+        invoke<number>('get_bin_count'),
       ])
       setBookmarks(b)
       setFolders(f)
       setTags(t)
       setTotalCount(count)
+      setInboxCount(inbox)
+      setBinCount(bCount)
       setError(null)
     } catch (e) {
       setError(extractErrorMessage(e))
@@ -207,6 +218,11 @@ export default function App() {
   }, [selection, search])
 
   useEffect(() => { loadAll() }, [loadAll])
+
+  // Purge bin items older than 30 days on startup
+  useEffect(() => {
+    invoke('purge_expired_bin', { days: 30 }).catch(() => {})
+  }, [])
 
   // Reload when browser extension adds a bookmark via the HTTP API
   useEffect(() => {
@@ -313,6 +329,33 @@ export default function App() {
     }
   }, [loadAll, selection])
 
+  const handleRestoreBookmark = useCallback(async (id: string) => {
+    try {
+      await invoke('restore_bookmark', { id })
+      loadAll()
+    } catch (e) {
+      setError(extractErrorMessage(e))
+    }
+  }, [loadAll])
+
+  const handleDeleteBookmarkForever = useCallback(async (id: string) => {
+    try {
+      await invoke('permanently_delete_bookmark', { id })
+      loadAll()
+    } catch (e) {
+      setError(extractErrorMessage(e))
+    }
+  }, [loadAll])
+
+  const handleEmptyBin = useCallback(async () => {
+    try {
+      await invoke('empty_bin')
+      loadAll()
+    } catch (e) {
+      setError(extractErrorMessage(e))
+    }
+  }, [loadAll])
+
   const openBookmarkContext = useCallback((e: React.MouseEvent, bookmark: Bookmark) => {
     e.preventDefault()
     setCtxMenu({
@@ -323,10 +366,25 @@ export default function App() {
         { label: 'Copy URL', action: () => navigator.clipboard.writeText(bookmark.url) },
         { label: 'Copy Title', action: () => navigator.clipboard.writeText(bookmark.title) },
         { sep: true, label: '', action: () => {} },
-        { label: 'Delete', danger: true, action: () => handleDeleteBookmark(bookmark.id) },
+        { label: 'Move to Bin', danger: true, action: () => handleDeleteBookmark(bookmark.id) },
       ],
     })
   }, [handleDeleteBookmark])
+
+  const openBinBookmarkContext = useCallback((e: React.MouseEvent, bookmark: Bookmark) => {
+    e.preventDefault()
+    setCtxMenu({
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        { label: 'Open in Browser', action: () => invoke('open_url', { url: bookmark.url }).catch(() => {}) },
+        { label: 'Copy URL', action: () => navigator.clipboard.writeText(bookmark.url) },
+        { sep: true, label: '', action: () => {} },
+        { label: 'Restore', action: () => handleRestoreBookmark(bookmark.id) },
+        { label: 'Delete Forever', danger: true, action: () => handleDeleteBookmarkForever(bookmark.id) },
+      ],
+    })
+  }, [handleRestoreBookmark, handleDeleteBookmarkForever])
 
   const openFolderContext = useCallback((e: React.MouseEvent, folder: Folder) => {
     e.preventDefault()
@@ -340,12 +398,15 @@ export default function App() {
 
   function selectionTitle(): string {
     if (selection.type === 'all') return 'All Bookmarks'
+    if (selection.type === 'inbox') return 'Inbox'
+    if (selection.type === 'bin') return 'Bin'
     if (selection.type === 'folder') return folders.find((f) => f.id === selection.id)?.name ?? 'Folder'
     return tags.find((t) => t.id === selection.id)?.name ?? 'Tag'
   }
 
   const loading = sortedBookmarks === null
   const hasBookmarks = !loading && sortedBookmarks.length > 0
+  const isBinView = selection.type === 'bin'
 
   return (
     <div className="flex h-screen overflow-hidden" style={{ background: 'var(--bg-base)', color: 'var(--text-primary)' }}>
@@ -354,6 +415,8 @@ export default function App() {
         tags={tags}
         selection={selection}
         bookmarkCount={totalCount}
+        inboxCount={inboxCount}
+        binCount={binCount}
         onSelect={setSelection}
         onAddFolder={() => setModal('add-folder')}
         onDeleteFolder={handleDeleteFolder}
@@ -427,29 +490,60 @@ export default function App() {
             )}
           </div>
 
-          <button
-            onClick={() => setModal('import-csv')}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors duration-150 flex-none cursor-pointer"
-            style={{ border: '1px solid var(--border-mid)', color: 'var(--text-secondary)' }}
-            onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--border-bright)')}
-            onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--border-mid)')}
-            aria-label="Import CSV"
-          >
-            Import CSV
-          </button>
+          {isBinView ? (
+            binCount > 0 && (
+              <button
+                onClick={handleEmptyBin}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors duration-150 flex-none cursor-pointer"
+                style={{ border: '1px solid var(--border-mid)', color: 'var(--red)' }}
+                onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--red)')}
+                onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--border-mid)')}
+                aria-label="Empty bin"
+              >
+                Empty Bin
+              </button>
+            )
+          ) : (
+            <>
+              {selection.type === 'inbox' && (bookmarks?.length ?? 0) > 0 && (
+                <button
+                  onClick={() => setModal('inbox-sort')}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors duration-150 flex-none cursor-pointer"
+                  style={{ border: '1px solid var(--accent)', color: 'var(--accent)' }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(200,160,90,0.08)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                  aria-label="Sort inbox with AI"
+                >
+                  <IconSparkles />
+                  AI Sort
+                </button>
+              )}
 
-          <button
-            onClick={() => setModal('add-bookmark')}
-            onMouseEnter={() => setAddHovered(true)}
-            onMouseLeave={() => setAddHovered(false)}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-semibold transition-opacity duration-150 flex-none cursor-pointer"
-            style={{ background: 'var(--accent)', color: '#0c0b0a', opacity: addHovered ? 0.88 : 1 }}
-            aria-label="Add bookmark"
-            aria-keyshortcuts="Control+N Meta+N"
-          >
-            <IconPlus size={13} />
-            Add
-          </button>
+              <button
+                onClick={() => setModal('import-csv')}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors duration-150 flex-none cursor-pointer"
+                style={{ border: '1px solid var(--border-mid)', color: 'var(--text-secondary)' }}
+                onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--border-bright)')}
+                onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--border-mid)')}
+                aria-label="Import CSV"
+              >
+                Import CSV
+              </button>
+
+              <button
+                onClick={() => setModal('add-bookmark')}
+                onMouseEnter={() => setAddHovered(true)}
+                onMouseLeave={() => setAddHovered(false)}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-semibold transition-opacity duration-150 flex-none cursor-pointer"
+                style={{ background: 'var(--accent)', color: '#0c0b0a', opacity: addHovered ? 0.88 : 1 }}
+                aria-label="Add bookmark"
+                aria-keyshortcuts="Control+N Meta+N"
+              >
+                <IconPlus size={13} />
+                Add
+              </button>
+            </>
+          )}
         </header>
 
         {/* Column headers — list mode only */}
@@ -462,8 +556,10 @@ export default function App() {
             <div className="w-7 flex-none" />
             <span className="flex-1 text-xs uppercase tracking-widest font-medium" style={{ color: 'var(--text-muted)' }}>Title</span>
             <span className="hidden lg:block text-xs uppercase tracking-widest font-medium w-28 flex-none" style={{ color: 'var(--text-muted)' }}>Tags</span>
-            <span className="hidden md:block text-xs uppercase tracking-widest font-medium w-20 text-right flex-none" style={{ color: 'var(--text-muted)' }}>Added</span>
-            <div className="w-5 flex-none" />
+            <span className="hidden md:block text-xs uppercase tracking-widest font-medium w-20 text-right flex-none" style={{ color: 'var(--text-muted)' }}>
+              {isBinView ? 'Deleted' : 'Added'}
+            </span>
+            <div className={isBinView ? 'w-9 flex-none' : 'w-5 flex-none'} />
           </div>
         )}
 
@@ -472,18 +568,24 @@ export default function App() {
           {loading ? (
             <LoadingSkeleton />
           ) : sortedBookmarks.length === 0 ? (
-            <EmptyState onAdd={() => setModal('add-bookmark')} />
+            isBinView
+              ? <div className="flex items-center justify-center h-full" style={{ color: 'var(--text-muted)' }}>
+                  <p className="text-sm">Bin is empty</p>
+                </div>
+              : <EmptyState onAdd={() => setModal('add-bookmark')} />
           ) : viewMode === 'grid' ? (
             <BookmarkGrid
               bookmarks={sortedBookmarks}
-              onDelete={handleDeleteBookmark}
-              onContext={openBookmarkContext}
+              onDelete={isBinView ? handleDeleteBookmarkForever : handleDeleteBookmark}
+              onContext={isBinView ? openBinBookmarkContext : openBookmarkContext}
             />
           ) : (
             <BookmarkList
               bookmarks={sortedBookmarks}
-              onDelete={handleDeleteBookmark}
-              onContext={openBookmarkContext}
+              onDelete={isBinView ? handleDeleteBookmarkForever : handleDeleteBookmark}
+              onContext={isBinView ? openBinBookmarkContext : openBookmarkContext}
+              isBinView={isBinView}
+              onRestore={handleRestoreBookmark}
             />
           )}
         </main>
@@ -503,6 +605,14 @@ export default function App() {
       )}
       {modal === 'import-csv' && (
         <ImportCsvModal onClose={() => setModal(null)} onDone={loadAll} />
+      )}
+      {modal === 'inbox-sort' && bookmarks && (
+        <InboxSortModal
+          bookmarks={bookmarks}
+          folders={folders}
+          onClose={() => setModal(null)}
+          onDone={loadAll}
+        />
       )}
 
       {ctxMenu && <ContextMenu state={ctxMenu} onClose={() => setCtxMenu(null)} />}

@@ -23,12 +23,15 @@ export interface Bookmark {
   tags: Tag[]
   created_at: number
   updated_at: number
+  deleted_at: number | null
 }
 
 export type Selection =
   | { type: 'all' }
+  | { type: 'inbox' }
   | { type: 'folder'; id: string }
   | { type: 'tag'; id: string }
+  | { type: 'bin' }
 
 export type ViewMode = 'list' | 'grid'
 

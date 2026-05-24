@@ -11,6 +11,7 @@ function makeProps(overrides?: Partial<SidebarProps>): SidebarProps {
     tags: [],
     selection: { type: 'all' },
     bookmarkCount: 0,
+    binCount: 0,
     onSelect: vi.fn(),
     onAddFolder: vi.fn(),
     onDeleteFolder: vi.fn(),
@@ -91,5 +92,29 @@ describe('Sidebar', () => {
     render(<Sidebar {...makeProps({ onOpenSettings })} />)
     await userEvent.click(screen.getByRole('button', { name: /open settings/i }))
     expect(onOpenSettings).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders Inbox with the unsorted count', () => {
+    render(<Sidebar {...makeProps({ inboxCount: 7 })} />)
+    expect(screen.getByRole('button', { name: /inbox/i })).toBeInTheDocument()
+    expect(screen.getByText('7')).toBeInTheDocument()
+  })
+
+  it('marks Inbox as active when selection is { type: inbox }', () => {
+    render(<Sidebar {...makeProps({ selection: { type: 'inbox' } })} />)
+    expect(screen.getByRole('button', { name: /inbox/i })).toHaveAttribute('aria-current', 'page')
+  })
+
+  it('calls onSelect({ type: inbox }) when Inbox is clicked', async () => {
+    const onSelect = vi.fn()
+    render(<Sidebar {...makeProps({ onSelect })} />)
+    await userEvent.click(screen.getByRole('button', { name: /inbox/i }))
+    expect(onSelect).toHaveBeenCalledWith({ type: 'inbox' })
+  })
+
+  it('renders with default inboxCount of 0 when prop is omitted', () => {
+    render(<Sidebar {...makeProps()} />)
+    const inboxBtn = screen.getByRole('button', { name: /inbox, 0 unsorted/i })
+    expect(inboxBtn).toBeInTheDocument()
   })
 })
