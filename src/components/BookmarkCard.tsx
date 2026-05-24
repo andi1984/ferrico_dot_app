@@ -19,7 +19,7 @@ export const BookmarkCard = memo(function BookmarkCard({ bookmark, onDelete, onC
 
   return (
     <div
-      className="group relative rounded-xl p-4 mb-3 break-inside-avoid transition-shadow duration-150"
+      className="group relative rounded-xl p-4 transition-shadow duration-150"
       style={{
         background: 'var(--bg-elevated)',
         border: '1px solid var(--border-dim)',
