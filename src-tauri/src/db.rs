@@ -633,7 +633,7 @@ pub fn db_delete_folder(conn: &Connection, id: &str) -> Result<(), AppError> {
 
 pub fn db_get_inbox_count(conn: &Connection) -> Result<i64, AppError> {
     Ok(conn.query_row(
-        "SELECT COUNT(*) FROM bookmarks WHERE folder_id IS NULL",
+        "SELECT COUNT(*) FROM bookmarks WHERE folder_id IS NULL AND deleted_at IS NULL",
         [],
         |r| r.get(0),
     )?)
@@ -650,7 +650,8 @@ pub fn db_apply_inbox_sort(
     for assignment in assignments {
         let folder_id = find_or_create_folder(&tx, &assignment.folder_name, &mut folder_cache)?;
         let n = tx.execute(
-            "UPDATE bookmarks SET folder_id = ?1, updated_at = ?2 WHERE id = ?3",
+            "UPDATE bookmarks SET folder_id = ?1, updated_at = ?2 \
+             WHERE id = ?3 AND deleted_at IS NULL",
             params![folder_id, now(), assignment.bookmark_id],
         )?;
         moved += n;
@@ -1566,6 +1567,127 @@ mod tests {
         db_import_bookmarks(&conn, inputs).unwrap();
         // Only 2 unique tags total ("rust" pre-existed, "systems" is new)
         assert_eq!(db_get_tags(&conn).unwrap().len(), 2);
+    }
+
+    // ── Inbox ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn inbox_count_only_counts_active_unfoldered_bookmarks() {
+        let conn = mem();
+        let folder = mk_folder(&conn, "Work");
+
+        // In inbox (no folder, not deleted)
+        mk_bookmark(&conn, "https://a.com", "A");
+        mk_bookmark(&conn, "https://b.com", "B");
+
+        // Has a folder — not inbox
+        db_add_bookmark(&conn, CreateBookmarkInput {
+            url: "https://c.com".to_string(),
+            title: "C".to_string(),
+            description: None, favicon_url: None, feed_url: None,
+            folder_id: Some(folder.id.clone()),
+            tag_ids: None,
+        }).unwrap();
+
+        // Deleted (in bin) — not inbox even though folder_id IS NULL
+        let d = mk_bookmark(&conn, "https://d.com", "D");
+        db_delete_bookmark(&conn, &d.id).unwrap();
+
+        assert_eq!(db_get_inbox_count(&conn).unwrap(), 2);
+    }
+
+    #[test]
+    fn inbox_view_excludes_binned_and_foldered_bookmarks() {
+        let conn = mem();
+        let folder = mk_folder(&conn, "Work");
+
+        let a = mk_bookmark(&conn, "https://a.com", "A"); // inbox
+        let _b = db_add_bookmark(&conn, CreateBookmarkInput {
+            url: "https://b.com".to_string(),
+            title: "B".to_string(),
+            description: None, favicon_url: None, feed_url: None,
+            folder_id: Some(folder.id.clone()),
+            tag_ids: None,
+        }).unwrap(); // in folder, not inbox
+        let c = mk_bookmark(&conn, "https://c.com", "C"); // will be binned
+        db_delete_bookmark(&conn, &c.id).unwrap();
+
+        let inbox = db_get_bookmarks(&conn, None, None, None, true).unwrap();
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox[0].id, a.id);
+    }
+
+    #[test]
+    fn apply_inbox_sort_moves_bookmark_to_folder() {
+        let conn = mem();
+        let b = mk_bookmark(&conn, "https://a.com", "A");
+
+        let result = db_apply_inbox_sort(&conn, vec![
+            InboxSortAssignment { bookmark_id: b.id.clone(), folder_name: "Tech".to_string() },
+        ]).unwrap();
+
+        assert_eq!(result.moved, 1);
+        let inbox = db_get_bookmarks(&conn, None, None, None, true).unwrap();
+        assert_eq!(inbox.len(), 0);
+        let folders = db_get_folders(&conn).unwrap();
+        assert_eq!(folders.len(), 1);
+        assert_eq!(folders[0].name, "Tech");
+    }
+
+    #[test]
+    fn apply_inbox_sort_reuses_existing_folder() {
+        let conn = mem();
+        let existing = mk_folder(&conn, "Tech");
+        let b = mk_bookmark(&conn, "https://a.com", "A");
+
+        db_apply_inbox_sort(&conn, vec![
+            InboxSortAssignment { bookmark_id: b.id.clone(), folder_name: "Tech".to_string() },
+        ]).unwrap();
+
+        assert_eq!(db_get_folders(&conn).unwrap().len(), 1);
+        let bookmarks = db_get_bookmarks(&conn, Some(&existing.id), None, None, false).unwrap();
+        assert_eq!(bookmarks.len(), 1);
+    }
+
+    #[test]
+    fn apply_inbox_sort_skips_binned_bookmarks() {
+        let conn = mem();
+        let b = mk_bookmark(&conn, "https://a.com", "A");
+        db_delete_bookmark(&conn, &b.id).unwrap(); // move to bin
+
+        let result = db_apply_inbox_sort(&conn, vec![
+            InboxSortAssignment { bookmark_id: b.id.clone(), folder_name: "Tech".to_string() },
+        ]).unwrap();
+
+        // Binned bookmark must not be moved — the UPDATE hits deleted_at IS NULL guard
+        assert_eq!(result.moved, 0);
+        assert_eq!(db_get_bin_count(&conn).unwrap(), 1);
+    }
+
+    #[test]
+    fn inbox_count_decreases_when_bookmark_sorted() {
+        let conn = mem();
+        mk_bookmark(&conn, "https://a.com", "A");
+        let b = mk_bookmark(&conn, "https://b.com", "B");
+        assert_eq!(db_get_inbox_count(&conn).unwrap(), 2);
+
+        db_apply_inbox_sort(&conn, vec![
+            InboxSortAssignment { bookmark_id: b.id.clone(), folder_name: "Work".to_string() },
+        ]).unwrap();
+
+        assert_eq!(db_get_inbox_count(&conn).unwrap(), 1);
+    }
+
+    #[test]
+    fn inbox_count_decreases_when_bookmark_deleted() {
+        let conn = mem();
+        mk_bookmark(&conn, "https://a.com", "A");
+        let b = mk_bookmark(&conn, "https://b.com", "B");
+        assert_eq!(db_get_inbox_count(&conn).unwrap(), 2);
+
+        db_delete_bookmark(&conn, &b.id).unwrap();
+
+        assert_eq!(db_get_inbox_count(&conn).unwrap(), 1);
     }
 
     #[test]
