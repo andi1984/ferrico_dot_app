@@ -3,6 +3,7 @@ export interface Tag {
   name: string
   color: string
   created_at: number
+  bookmark_count?: number
 }
 
 export interface Folder {

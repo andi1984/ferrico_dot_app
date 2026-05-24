@@ -8,7 +8,7 @@
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
-      width: 320px;
+      width: 340px;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       background: #0f172a;
       color: #f1f5f9;
@@ -66,7 +66,7 @@
       color: #64748b;
     }
 
-    input, textarea, select {
+    input, textarea {
       width: 100%;
       background: #1e293b;
       border: 1px solid #334155;
@@ -79,22 +79,260 @@
       transition: border-color 0.15s;
     }
 
-    input:focus, textarea:focus, select:focus { border-color: #6366f1; }
+    input:focus, textarea:focus { border-color: #6366f1; }
 
     textarea { resize: none; height: 56px; }
 
-    select {
-      appearance: none;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
-      background-repeat: no-repeat;
-      background-position: right 10px center;
-      padding-right: 28px;
-      cursor: pointer;
+    ::placeholder { color: #475569; }
+
+    /* ── Combobox shared ──────────────────────────────────── */
+
+    .combobox-wrap {
+      display: flex;
+      flex-direction: column;
     }
 
-    select option { background: #1e293b; color: #f1f5f9; }
+    .ac-dropdown {
+      display: none;
+      margin-top: 4px;
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+      max-height: 220px;
+      overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: #334155 transparent;
+    }
 
-    ::placeholder { color: #475569; }
+    .ac-dropdown.open { display: block; }
+
+    .ac-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      cursor: pointer;
+      font-size: 13px;
+      color: #94a3b8;
+      transition: background 0.1s, color 0.1s;
+      user-select: none;
+    }
+
+    .ac-item:hover,
+    .ac-item.active {
+      background: #293548;
+      color: #f1f5f9;
+    }
+
+    .ac-item.is-selected { color: #cbd5e1; }
+
+    .item-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .item-name {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .item-count {
+      font-size: 11px;
+      color: #475569;
+      font-variant-numeric: tabular-nums;
+      flex-shrink: 0;
+    }
+
+    .item-check {
+      flex-shrink: 0;
+      color: #6366f1;
+      display: flex;
+      align-items: center;
+    }
+
+    .ac-item.create-item { color: #818cf8; }
+    .ac-item.create-item:hover,
+    .ac-item.create-item.active {
+      background: color-mix(in srgb, #6366f1 10%, #1e293b);
+      color: #a5b4fc;
+    }
+
+    .ac-empty {
+      color: #475569;
+      font-style: italic;
+      cursor: default;
+    }
+    .ac-empty:hover { background: transparent; color: #475569; }
+
+    .ac-divider {
+      height: 1px;
+      background: #1e3a5f;
+      margin: 3px 0;
+    }
+
+    /* ── Tag pill input ───────────────────────────────────── */
+
+    .pill-input {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      align-items: center;
+      min-height: 36px;
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 5px 8px;
+      cursor: text;
+      transition: border-color 0.15s;
+    }
+
+    .pill-input.focused { border-color: #6366f1; }
+
+    .pill-input > input {
+      flex: 1;
+      min-width: 80px;
+      width: auto;
+      background: transparent;
+      border: none;
+      border-radius: 0;
+      padding: 0;
+      font-size: 13px;
+      color: #f1f5f9;
+      outline: none;
+    }
+
+    .pill-input > input:focus { border-color: transparent; }
+
+    .tag-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 4px 2px 6px;
+      border-radius: 20px;
+      background: color-mix(in srgb, var(--tag-color) 14%, #1e293b);
+      border: 1px solid var(--tag-color);
+      color: #f1f5f9;
+      font-size: 11px;
+      font-weight: 500;
+      flex-shrink: 0;
+      max-width: 140px;
+    }
+
+    .tag-pill .tag-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--tag-color);
+      flex-shrink: 0;
+    }
+
+    .tag-pill .pill-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .tag-pill .pill-remove {
+      cursor: pointer;
+      opacity: 0.55;
+      font-size: 14px;
+      line-height: 1;
+      padding: 0 2px;
+      color: #f1f5f9;
+      flex-shrink: 0;
+    }
+
+    .tag-pill .pill-remove:hover { opacity: 1; }
+
+    /* ── Folder picker ────────────────────────────────────── */
+
+    .folder-display {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 36px;
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 6px 10px;
+      cursor: pointer;
+      transition: border-color 0.15s;
+    }
+
+    .folder-display.focused { border-color: #6366f1; }
+
+    .folder-display .folder-icon { color: #475569; flex-shrink: 0; display: flex; align-items: center; }
+
+    .folder-display > input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      border-radius: 0;
+      padding: 0;
+      font-size: 13px;
+      color: #f1f5f9;
+      outline: none;
+      cursor: pointer;
+      min-width: 0;
+    }
+
+    .folder-display > input:focus { border-color: transparent; cursor: text; }
+
+    .folder-caret {
+      color: #475569;
+      flex-shrink: 0;
+      transition: transform 0.15s;
+      display: flex;
+      align-items: center;
+    }
+
+    .folder-display.focused .folder-caret { transform: rotate(180deg); }
+
+    .folder-clear {
+      cursor: pointer;
+      color: #475569;
+      font-size: 15px;
+      line-height: 1;
+      flex-shrink: 0;
+      padding: 0 2px;
+    }
+    .folder-clear:hover { color: #94a3b8; }
+
+    .folder-depth-arrow {
+      color: #475569;
+      font-size: 11px;
+      flex-shrink: 0;
+    }
+
+    /* create-folder inline panel inside dropdown */
+    .dropdown-create-row {
+      padding: 8px 10px;
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      border-top: 1px solid #1e3a5f;
+    }
+
+    .dropdown-create-row input {
+      flex: 1;
+      min-width: 0;
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      padding: 5px 8px;
+      font-size: 12px;
+      color: #f1f5f9;
+      font-family: inherit;
+      outline: none;
+    }
+
+    .dropdown-create-row input:focus { border-color: #6366f1; }
 
     /* ── Creation panels ──────────────────────────────────── */
 
@@ -107,6 +345,7 @@
       border: 1px solid #1e3a5f;
       border-left: 2px solid #6366f1;
       border-radius: 8px;
+      margin-top: 4px;
       animation: panel-in 0.14s ease;
     }
 
@@ -115,7 +354,6 @@
       to   { opacity: 1; transform: translateY(0); }
     }
 
-    /* Inputs inside creation panels — need contrast against the darker bg */
     .creation-panel input {
       background: #1e293b;
       border-color: #334155;
@@ -126,62 +364,6 @@
 
     .creation-panel input:focus { border-color: #6366f1; }
 
-    /* Folder: back + input + create all in one line */
-    .panel-input-row {
-      display: flex;
-      gap: 6px;
-      align-items: center;
-    }
-
-    .panel-input-row input {
-      flex: 1;
-      min-width: 0;
-      width: auto;
-    }
-
-    /* Back arrow button */
-    .btn-back {
-      width: 30px;
-      height: 30px;
-      flex: none;
-      padding: 0;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      background: transparent;
-      border: 1px solid #334155;
-      border-radius: 6px;
-      color: #64748b;
-      cursor: pointer;
-      transition: color 0.15s, border-color 0.15s, background 0.15s;
-    }
-
-    .btn-back:hover {
-      background: #1e293b;
-      border-color: #475569;
-      color: #94a3b8;
-    }
-
-    /* Compact create button inside panel rows */
-    .btn-create-sm {
-      flex: none;
-      padding: 0 13px;
-      height: 30px;
-      border: none;
-      border-radius: 6px;
-      background: #6366f1;
-      color: white;
-      font-size: 12px;
-      font-weight: 600;
-      font-family: inherit;
-      cursor: pointer;
-      white-space: nowrap;
-      transition: background 0.15s;
-    }
-
-    .btn-create-sm:hover { background: #5254cc; }
-
-    /* Panel footer actions (tag form) */
     .panel-actions {
       display: flex;
       gap: 6px;
@@ -220,65 +402,39 @@
 
     .btn-filled-sm:hover { background: #5254cc; }
 
-    /* ── Tag chips ─────────────────────────────────────────── */
-
-    .tags-row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      align-items: center;
+    .btn-create-sm {
+      flex: none;
+      padding: 0 10px;
+      height: 28px;
+      border: none;
+      border-radius: 6px;
+      background: #6366f1;
+      color: white;
+      font-size: 12px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.15s;
     }
 
-    .tag-chip {
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      padding: 4px 10px 4px 7px;
-      border-radius: 20px;
-      background: #1e293b;
+    .btn-create-sm:hover { background: #5254cc; }
+
+    .btn-cancel-sm {
+      flex: none;
+      padding: 0 8px;
+      height: 28px;
       border: 1px solid #334155;
+      border-radius: 6px;
+      background: transparent;
       color: #94a3b8;
       font-size: 12px;
-      font-weight: 500;
       font-family: inherit;
       cursor: pointer;
-      transition: border-color 0.15s, background 0.15s, color 0.15s;
-      flex: none;
+      transition: background 0.15s;
     }
 
-    .tag-chip:hover { border-color: #475569; color: #cbd5e1; }
-
-    .tag-chip.selected {
-      border-color: var(--tag-color);
-      background: color-mix(in srgb, var(--tag-color) 12%, #1e293b);
-      color: #f1f5f9;
-    }
-
-    .tag-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: var(--tag-color, #6366f1);
-      flex-shrink: 0;
-    }
-
-    .btn-add-tag {
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      padding: 4px 10px;
-      border-radius: 20px;
-      background: transparent;
-      border: 1px dashed #334155;
-      color: #64748b;
-      font-size: 12px;
-      font-family: inherit;
-      cursor: pointer;
-      flex: none;
-      transition: border-color 0.15s, color 0.15s;
-    }
-
-    .btn-add-tag:hover { border-color: #6366f1; color: #6366f1; }
+    .btn-cancel-sm:hover { background: #1e293b; }
 
     /* ── Color swatches ────────────────────────────────────── */
 
@@ -292,7 +448,7 @@
     .swatch {
       width: 22px;
       height: 22px;
-      min-width: 22px; /* prevent flex shrink */
+      min-width: 22px;
       border-radius: 50%;
       border: none;
       padding: 0;

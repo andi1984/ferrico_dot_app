@@ -37,6 +37,8 @@ pub struct Tag {
     pub name: String,
     pub color: String,
     pub created_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bookmark_count: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -208,6 +210,7 @@ fn get_tags_batch(
                 name: row.get(2)?,
                 color: row.get(3)?,
                 created_at: row.get(4)?,
+                bookmark_count: None,
             },
         ))
     })?;
@@ -673,8 +676,14 @@ pub fn db_apply_inbox_sort(
 }
 
 pub fn db_get_tags(conn: &Connection) -> Result<Vec<Tag>, AppError> {
-    let mut stmt =
-        conn.prepare("SELECT id, name, color, created_at FROM tags ORDER BY name")?;
+    let mut stmt = conn.prepare(
+        "SELECT t.id, t.name, t.color, t.created_at, \
+         COUNT(bt.bookmark_id) as bookmark_count \
+         FROM tags t \
+         LEFT JOIN bookmark_tags bt ON bt.tag_id = t.id \
+         GROUP BY t.id \
+         ORDER BY t.name",
+    )?;
     let tags = stmt
         .query_map([], |row| {
             Ok(Tag {
@@ -682,6 +691,7 @@ pub fn db_get_tags(conn: &Connection) -> Result<Vec<Tag>, AppError> {
                 name: row.get(1)?,
                 color: row.get(2)?,
                 created_at: row.get(3)?,
+                bookmark_count: Some(row.get(4)?),
             })
         })?
         .filter_map(|r| r.ok())
@@ -713,6 +723,7 @@ pub fn db_add_tag(
                 name: row.get(1)?,
                 color: row.get(2)?,
                 created_at: row.get(3)?,
+                bookmark_count: None,
             })
         },
     )?)
