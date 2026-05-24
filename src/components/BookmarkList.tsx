@@ -9,9 +9,10 @@ interface BookmarkListProps {
   onContext: (e: React.MouseEvent, bookmark: Bookmark) => void
   isBinView?: boolean
   onRestore?: (id: string) => void
+  onDragStart?: (e: React.MouseEvent, bookmark: Bookmark) => void
 }
 
-export function BookmarkList({ bookmarks, onDelete, onContext, isBinView, onRestore }: BookmarkListProps) {
+export function BookmarkList({ bookmarks, onDelete, onContext, isBinView, onRestore, onDragStart }: BookmarkListProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
 
   const virtualizer = useVirtualizer({
@@ -44,6 +45,7 @@ export function BookmarkList({ bookmarks, onDelete, onContext, isBinView, onRest
               onContext={onContext}
               isBinView={isBinView}
               onRestore={onRestore}
+              onDragStart={onDragStart}
             />
           </div>
         ))}

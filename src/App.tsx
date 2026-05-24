@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { useDrag } from './useDrag'
 import { subscribeToBookmarkAdded, type UnlistenFn } from './events'
 import type { Bookmark, Folder, Tag, Selection, ViewMode, SortKey } from './types'
 import { extractErrorMessage, duckduckgoFavicon, domainOf } from './utils'
@@ -356,6 +357,17 @@ export default function App() {
     }
   }, [loadAll])
 
+  const handleMoveBookmark = useCallback(async (bookmarkId: string, folderId: string | null) => {
+    try {
+      await invoke('move_bookmark', { id: bookmarkId, folderId })
+      loadAll()
+    } catch (e) {
+      setError(extractErrorMessage(e))
+    }
+  }, [loadAll])
+
+  const { startDrag, dragTargetId } = useDrag({ onDrop: handleMoveBookmark })
+
   const openBookmarkContext = useCallback((e: React.MouseEvent, bookmark: Bookmark) => {
     e.preventDefault()
     setCtxMenu({
@@ -425,6 +437,7 @@ export default function App() {
         onOpenSettings={() => setModal('settings')}
         onFolderContext={openFolderContext}
         onTagContext={openTagContext}
+        dragTargetId={isBinView ? undefined : dragTargetId}
       />
 
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
@@ -578,6 +591,7 @@ export default function App() {
               bookmarks={sortedBookmarks}
               onDelete={isBinView ? handleDeleteBookmarkForever : handleDeleteBookmark}
               onContext={isBinView ? openBinBookmarkContext : openBookmarkContext}
+              onDragStart={!isBinView ? startDrag : undefined}
             />
           ) : (
             <BookmarkList
@@ -586,6 +600,7 @@ export default function App() {
               onContext={isBinView ? openBinBookmarkContext : openBookmarkContext}
               isBinView={isBinView}
               onRestore={handleRestoreBookmark}
+              onDragStart={!isBinView ? startDrag : undefined}
             />
           )}
         </main>

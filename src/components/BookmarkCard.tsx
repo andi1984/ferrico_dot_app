@@ -9,9 +9,10 @@ interface BookmarkCardProps {
   bookmark: Bookmark
   onDelete: (id: string) => void
   onContext: (e: React.MouseEvent, bookmark: Bookmark) => void
+  onDragStart?: (e: React.MouseEvent, bookmark: Bookmark) => void
 }
 
-export const BookmarkCard = memo(function BookmarkCard({ bookmark, onDelete, onContext }: BookmarkCardProps) {
+export const BookmarkCard = memo(function BookmarkCard({ bookmark, onDelete, onContext, onDragStart }: BookmarkCardProps) {
   function openUrl(e: React.MouseEvent | React.KeyboardEvent) {
     e.preventDefault()
     invoke('open_url', { url: bookmark.url }).catch(() => {})
@@ -24,7 +25,9 @@ export const BookmarkCard = memo(function BookmarkCard({ bookmark, onDelete, onC
         background: 'var(--bg-elevated)',
         border: '1px solid var(--border-dim)',
         boxShadow: '0 1px 3px rgba(0,0,0,0.12)',
+        cursor: onDragStart ? 'grab' : undefined,
       }}
+      onMouseDown={onDragStart ? (e) => onDragStart(e, bookmark) : undefined}
       onMouseEnter={(e) => {
         const el = e.currentTarget as HTMLDivElement
         el.style.borderColor = 'var(--border-mid)'
