@@ -73,10 +73,18 @@ function SortDropdown({ value, onChange }: { value: SortKey; onChange: (k: SortK
     <div ref={ref} className="relative flex-none">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors duration-150 cursor-pointer"
-        style={{ border: '1px solid var(--border-mid)', color: 'var(--text-secondary)' }}
-        onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--border-bright)')}
-        onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--border-mid)')}
+        className="flex items-center gap-1.5 rounded-lg transition-colors duration-150 cursor-pointer"
+        style={{
+          height: 32,
+          padding: '0 10px',
+          background: 'var(--input-bg)',
+          border: '1px solid var(--border-soft)',
+          color: 'var(--text-2)',
+          fontSize: 12,
+          fontWeight: 500,
+        }}
+        onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--btn-hover-bg)')}
+        onMouseLeave={(e) => (e.currentTarget.style.background = 'var(--input-bg)')}
         aria-label="Sort bookmarks"
         aria-expanded={open}
         aria-haspopup="listbox"
@@ -90,12 +98,12 @@ function SortDropdown({ value, onChange }: { value: SortKey; onChange: (k: SortK
         <div
           role="listbox"
           aria-label="Sort order"
-          className="absolute right-0 top-full mt-1 z-50 rounded-lg overflow-hidden py-1"
+          className="absolute right-0 top-full mt-1.5 z-50 rounded-lg overflow-hidden py-1 anim-scale-in"
           style={{
-            background: 'var(--bg-elevated)',
-            border: '1px solid var(--border-mid)',
-            boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
-            minWidth: '148px',
+            background: 'var(--bg-elev-strong)',
+            border: '1px solid var(--border)',
+            boxShadow: '0 12px 32px rgba(0,0,0,0.45)',
+            minWidth: '168px',
           }}
         >
           {SORT_OPTIONS.map((o) => (
@@ -104,9 +112,13 @@ function SortDropdown({ value, onChange }: { value: SortKey; onChange: (k: SortK
               role="option"
               aria-selected={o.key === value}
               onClick={() => { onChange(o.key); setOpen(false) }}
-              className="w-full flex items-center gap-2 px-3 py-2 text-xs text-left transition-colors duration-100 cursor-pointer"
-              style={{ color: o.key === value ? 'var(--accent-bright)' : 'var(--text-secondary)' }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.05)')}
+              className="w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors duration-100 cursor-pointer"
+              style={{
+                fontSize: 12.5,
+                color: o.key === value ? 'var(--accent)' : 'var(--text-2)',
+                fontWeight: o.key === value ? 600 : 500,
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--row-hover-bg)')}
               onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
             >
               <span
@@ -118,35 +130,6 @@ function SortDropdown({ value, onChange }: { value: SortKey; onChange: (k: SortK
           ))}
         </div>
       )}
-    </div>
-  )
-}
-
-// ─── View mode toggle ─────────────────────────────────────────────────────────
-
-function ViewToggle({ value, onChange }: { value: ViewMode; onChange: (m: ViewMode) => void }) {
-  return (
-    <div
-      className="flex items-center rounded-lg overflow-hidden flex-none"
-      style={{ border: '1px solid var(--border-mid)' }}
-      role="group"
-      aria-label="View mode"
-    >
-      {(['list', 'grid'] as ViewMode[]).map((mode) => (
-        <button
-          key={mode}
-          onClick={() => onChange(mode)}
-          className="flex items-center justify-center px-2.5 py-2 transition-colors duration-150 cursor-pointer"
-          style={{
-            color: value === mode ? 'var(--accent-bright)' : 'var(--text-muted)',
-            background: value === mode ? 'rgba(255,255,255,0.07)' : 'transparent',
-          }}
-          aria-label={mode === 'list' ? 'List view' : 'Grid view'}
-          aria-pressed={value === mode}
-        >
-          {mode === 'list' ? <IconLayoutList size={14} /> : <IconLayoutGrid size={14} />}
-        </button>
-      ))}
     </div>
   )
 }
@@ -439,11 +422,40 @@ export default function App() {
   }
 
   const loading = sortedBookmarks === null
-  const hasBookmarks = !loading && sortedBookmarks.length > 0
   const isBinView = selection.type === 'bin'
 
   return (
-    <div className="flex h-screen overflow-hidden" style={{ background: 'var(--bg-base)', color: 'var(--text-primary)' }}>
+    <div className="flex flex-col h-screen w-screen overflow-hidden" style={{ background: 'var(--chrome-bg)', color: 'var(--text-1)' }}>
+      {/* macOS-style window chrome */}
+      <div
+        className="shrink-0 flex items-center px-4 relative"
+        style={{
+          height: 38,
+          background: 'var(--chrome-bg)',
+          borderBottom: '1px solid var(--border-soft)',
+        }}
+      >
+        <div className="flex items-center gap-2" aria-hidden="true">
+          <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#ff5f57' }} />
+          <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#febc2e' }} />
+          <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#28c840' }} />
+        </div>
+        <div className="flex-1 flex items-center justify-center min-w-0 px-4">
+          <span
+            className="truncate"
+            style={{
+              fontFamily: 'var(--font-display)',
+              fontSize: 12.5,
+              fontWeight: 500,
+              color: 'var(--text-2)',
+              letterSpacing: '0.01em',
+            }}
+          >Ferrico — {selectionTitle()}</span>
+        </div>
+        <div style={{ width: 60 }} />
+      </div>
+
+      <div className="flex-1 flex min-h-0">
       <Sidebar
         folders={folders}
         tags={tags}
@@ -462,7 +474,7 @@ export default function App() {
         dragHoverTargetId={drag.state.active ? drag.state.hoverTargetId : null}
       />
 
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden" style={{ background: 'var(--bg)' }}>
         {error && (
           <div
             role="alert"
@@ -475,28 +487,42 @@ export default function App() {
         )}
 
         <header
-          className="flex items-center gap-3 px-6 py-3.5 flex-none"
-          style={{ borderBottom: '1px solid var(--border-dim)', background: 'var(--bg-base)' }}
+          className="flex items-center gap-2.5 px-5 py-3 flex-none flex-wrap"
+          style={{ borderBottom: '1px solid var(--border-soft)', background: 'var(--header-bg)' }}
         >
-          <h1 className="font-semibold text-sm flex-none" style={{ color: 'var(--text-primary)' }}>
-            {selectionTitle()}
-          </h1>
+          <div className="flex items-baseline gap-2 shrink-0 mr-auto">
+            <h1
+              style={{
+                fontFamily: 'var(--font-display)',
+                fontSize: 20,
+                fontWeight: 600,
+                color: 'var(--text-1)',
+                letterSpacing: '-0.015em',
+              }}
+            >{selectionTitle()}</h1>
+            {!loading && (
+              <span
+                className="mono tabnum"
+                style={{ fontSize: 11.5, color: 'var(--text-3)', fontWeight: 500 }}
+                aria-label={`${sortedBookmarks?.length ?? 0} results`}
+              >{(sortedBookmarks?.length ?? 0).toLocaleString()}</span>
+            )}
+          </div>
 
-          <div className="flex-1" />
-
-          <SortDropdown value={sortKey} onChange={setSortKey} />
-
-          <ViewToggle value={viewMode} onChange={setViewMode} />
-
+          {/* Search */}
           <div
-            className="flex items-center gap-2 px-3 py-2 rounded-lg transition-all duration-200 w-56"
+            className="flex items-center gap-2 rounded-lg px-2.5 min-w-0 transition-colors duration-150"
             style={{
-              background: 'var(--bg-elevated)',
-              border: `1px solid ${searchFocused ? 'var(--border-bright)' : 'var(--border-dim)'}`,
+              height: 32,
+              maxWidth: 260,
+              flex: '1 1 160px',
+              minWidth: 120,
+              background: 'var(--input-bg)',
+              border: `1px solid ${searchFocused ? 'var(--accent)' : 'var(--border-soft)'}`,
               boxShadow: searchFocused ? '0 0 0 2px var(--accent-glow)' : 'none',
             }}
           >
-            <span className="flex-none" style={{ color: searchFocused ? 'var(--accent)' : 'var(--text-muted)' }} aria-hidden="true">
+            <span className="flex-none" style={{ color: searchFocused ? 'var(--accent)' : 'var(--text-3)' }} aria-hidden="true">
               <IconSearch size={13} />
             </span>
             <input
@@ -506,33 +532,89 @@ export default function App() {
               onChange={(e) => setSearchInput(e.target.value)}
               onFocus={() => setSearchFocused(true)}
               onBlur={() => setSearchFocused(false)}
-              placeholder="Search…"
+              placeholder="Search bookmarks…"
               aria-label="Search bookmarks"
-              className="bg-transparent text-sm flex-1 min-w-0 outline-none"
-              style={{ color: 'var(--text-primary)' }}
+              className="bg-transparent flex-1 min-w-0 outline-none"
+              style={{ color: 'var(--text-1)', fontSize: 12.5 }}
             />
             {searchInput && (
               <button
                 onClick={() => setSearchInput('')}
                 className="flex-none transition-colors duration-150 cursor-pointer"
-                style={{ color: 'var(--text-muted)' }}
-                onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--text-secondary)')}
-                onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
+                style={{ color: 'var(--text-3)' }}
+                onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--text-2)')}
+                onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-3)')}
                 aria-label="Clear search"
               >
                 <IconClose size={11} />
               </button>
             )}
+            {!searchInput && (
+              <span
+                className="mono shrink-0"
+                style={{
+                  fontSize: 10,
+                  color: 'var(--text-3)',
+                  padding: '1px 5px',
+                  border: '1px solid var(--border-soft)',
+                  borderRadius: 4,
+                }}
+                aria-hidden="true"
+              >⌘F</span>
+            )}
+          </div>
+
+          <SortDropdown value={sortKey} onChange={setSortKey} />
+
+          {/* Segmented view-mode pill */}
+          <div
+            className="flex items-center rounded-lg p-0.5 shrink-0"
+            style={{
+              background: 'var(--input-bg)',
+              border: '1px solid var(--border-soft)',
+            }}
+            role="group"
+            aria-label="View mode"
+          >
+            {(['list', 'grid'] as ViewMode[]).map((mode) => {
+              const isSel = viewMode === mode
+              return (
+                <button
+                  key={mode}
+                  onClick={() => setViewMode(mode)}
+                  className="flex items-center justify-center rounded-md transition-colors cursor-pointer"
+                  style={{
+                    width: 26,
+                    height: 24,
+                    background: isSel ? 'var(--bg-elev-strong)' : 'transparent',
+                    color: isSel ? 'var(--text-1)' : 'var(--text-3)',
+                    boxShadow: isSel ? '0 1px 2px rgba(0,0,0,0.3)' : 'none',
+                  }}
+                  aria-label={mode === 'list' ? 'List view' : 'Grid view'}
+                  aria-pressed={isSel}
+                >
+                  {mode === 'list' ? <IconLayoutList size={13} /> : <IconLayoutGrid size={13} />}
+                </button>
+              )
+            })}
           </div>
 
           {isBinView ? (
             binCount > 0 && (
               <button
                 onClick={handleEmptyBin}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors duration-150 flex-none cursor-pointer"
-                style={{ border: '1px solid var(--border-mid)', color: 'var(--red)' }}
+                className="flex items-center gap-1.5 rounded-lg transition-colors duration-150 flex-none cursor-pointer"
+                style={{
+                  height: 32,
+                  padding: '0 11px',
+                  background: 'var(--input-bg)',
+                  border: '1px solid var(--border-soft)',
+                  color: 'var(--red)',
+                  fontSize: 12,
+                  fontWeight: 500,
+                }}
                 onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--red)')}
-                onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--border-mid)')}
+                onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--border-soft)')}
                 aria-label="Empty bin"
               >
                 Empty Bin
@@ -543,9 +625,16 @@ export default function App() {
               {selection.type === 'inbox' && (bookmarks?.length ?? 0) > 0 && (
                 <button
                   onClick={() => setModal('inbox-sort')}
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors duration-150 flex-none cursor-pointer"
-                  style={{ border: '1px solid var(--accent)', color: 'var(--accent)' }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(200,160,90,0.08)')}
+                  className="flex items-center gap-1.5 rounded-lg transition-colors duration-150 flex-none cursor-pointer"
+                  style={{
+                    height: 32,
+                    padding: '0 11px',
+                    border: '1px solid var(--accent)',
+                    color: 'var(--accent)',
+                    fontSize: 12,
+                    fontWeight: 500,
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--accent-dim)')}
                   onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                   aria-label="Sort inbox with AI"
                 >
@@ -556,21 +645,35 @@ export default function App() {
 
               <button
                 onClick={() => setModal('import-csv')}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors duration-150 flex-none cursor-pointer"
-                style={{ border: '1px solid var(--border-mid)', color: 'var(--text-secondary)' }}
-                onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--border-bright)')}
-                onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--border-mid)')}
+                className="rounded-lg transition-colors duration-150 flex-none cursor-pointer"
+                style={{
+                  height: 32,
+                  padding: '0 11px',
+                  background: 'var(--input-bg)',
+                  border: '1px solid var(--border-soft)',
+                  color: 'var(--text-1)',
+                  fontSize: 12,
+                  fontWeight: 500,
+                  whiteSpace: 'nowrap',
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--btn-hover-bg)')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'var(--input-bg)')}
                 aria-label="Import CSV"
               >
-                Import CSV
+                Import
               </button>
 
               <button
                 onClick={() => setModal('add-bookmark')}
                 onMouseEnter={() => setAddHovered(true)}
                 onMouseLeave={() => setAddHovered(false)}
-                className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-semibold transition-opacity duration-150 flex-none cursor-pointer"
-                style={{ background: 'var(--accent)', color: '#0c0b0a', opacity: addHovered ? 0.88 : 1 }}
+                className="btn-accent rounded-lg flex items-center gap-1.5 flex-none cursor-pointer"
+                style={{
+                  height: 32,
+                  padding: '0 12px',
+                  fontSize: 12,
+                  opacity: addHovered ? 0.95 : 1,
+                }}
                 aria-label="Add bookmark"
                 aria-keyshortcuts="Control+N Meta+N"
               >
@@ -580,23 +683,6 @@ export default function App() {
             </>
           )}
         </header>
-
-        {/* Column headers — list mode only */}
-        {hasBookmarks && viewMode === 'list' && (
-          <div
-            className="flex items-center gap-4 px-6 py-2 flex-none"
-            style={{ borderBottom: '1px solid var(--border-dim)' }}
-            aria-hidden="true"
-          >
-            <div className="w-7 flex-none" />
-            <span className="flex-1 text-xs uppercase tracking-widest font-medium" style={{ color: 'var(--text-muted)' }}>Title</span>
-            <span className="hidden lg:block text-xs uppercase tracking-widest font-medium w-28 flex-none" style={{ color: 'var(--text-muted)' }}>Tags</span>
-            <span className="hidden md:block text-xs uppercase tracking-widest font-medium w-20 text-right flex-none" style={{ color: 'var(--text-muted)' }}>
-              {isBinView ? 'Deleted' : 'Added'}
-            </span>
-            <div className={isBinView ? 'w-9 flex-none' : 'w-5 flex-none'} />
-          </div>
-        )}
 
         {/* Main content — flex-1 + min-h-0 gives the list/grid a bounded, scrollable height */}
         <main className="flex-1 min-h-0">
@@ -626,6 +712,7 @@ export default function App() {
             />
           )}
         </main>
+      </div>
       </div>
 
       {modal === 'add-bookmark' && (
@@ -658,19 +745,21 @@ export default function App() {
       {drag.state.active && drag.state.payload && (
         <div
           aria-hidden="true"
-          className="fixed z-[100] rounded-lg px-3 py-2 text-xs font-medium shadow-2xl"
+          className="fixed z-[100] rounded-lg px-3 py-2 shadow-2xl"
           style={{
             top: drag.state.pointerY + 12,
             left: drag.state.pointerX + 12,
             pointerEvents: 'none',
-            background: 'var(--bg-elevated)',
-            color: 'var(--text-primary)',
+            background: 'var(--bg-elev-strong)',
+            color: 'var(--text-1)',
             border: '1px solid var(--accent)',
             maxWidth: '240px',
             whiteSpace: 'nowrap',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             opacity: 0.95,
+            fontSize: 12,
+            fontWeight: 500,
           }}
         >
           {drag.state.payload.title}
@@ -682,11 +771,14 @@ export default function App() {
         <div
           role="status"
           aria-live="polite"
-          className="fixed bottom-5 left-1/2 -translate-x-1/2 z-[110] rounded-lg px-4 py-2.5 text-sm font-medium shadow-2xl"
+          className="fixed bottom-5 left-1/2 -translate-x-1/2 z-[110] rounded-lg px-4 py-2.5 shadow-2xl anim-fade-up"
           style={{
-            background: 'var(--bg-elevated)',
-            color: 'var(--text-primary)',
-            border: '1px solid var(--border-mid)',
+            background: 'var(--bg-elev-strong)',
+            color: 'var(--text-1)',
+            border: '1px solid var(--border)',
+            fontSize: 13,
+            fontWeight: 500,
+            boxShadow: '0 12px 32px rgba(0,0,0,0.4)',
           }}
         >
           {moveStatus}

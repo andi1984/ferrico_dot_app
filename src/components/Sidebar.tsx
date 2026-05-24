@@ -49,22 +49,64 @@ export function SidebarItem({ active, onClick, onContext, icon, label, count, on
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => { setHovered(false); setDeleteHovered(false) }}
       data-drop-target-id={dropTargetId}
-      className="relative flex items-center gap-2 w-full px-3 py-1.5 rounded-lg text-sm transition-all duration-75 text-left group cursor-pointer"
+      className="relative flex items-center gap-2.5 w-full rounded-md text-left transition-colors duration-150 group cursor-pointer"
       style={{
-        background: isDragTarget ? 'var(--accent)' : active ? 'var(--accent-dim)' : hovered ? 'rgba(255,255,255,0.035)' : 'transparent',
-        color: isDragTarget ? '#0c0b0a' : active ? 'var(--accent)' : hovered ? 'var(--text-primary)' : 'var(--text-secondary)',
+        padding: '6px 10px',
+        background: isDragTarget
+          ? 'var(--accent)'
+          : active
+            ? 'var(--row-sel-bg)'
+            : hovered
+              ? 'var(--row-hover-bg)'
+              : 'transparent',
+        color: isDragTarget ? '#1a1410' : 'var(--text-1)',
         outline: isDragTarget ? '2px solid var(--accent-bright)' : 'none',
         outlineOffset: '1px',
-        borderLeft: active && !isDragTarget ? '2px solid var(--accent)' : '2px solid transparent',
-        paddingLeft: active && !isDragTarget ? '10px' : '12px',
       }}
       aria-current={active ? 'page' : undefined}
       aria-label={ariaLabel}
     >
-      {icon && <span className="flex-none" aria-hidden="true">{icon}</span>}
-      <span className="flex-1 truncate font-medium">{label}</span>
+      {active && !isDragTarget && (
+        <span
+          aria-hidden="true"
+          className="absolute left-0 top-1/2 -translate-y-1/2 rounded-r-full"
+          style={{ width: 2.5, height: 14, background: 'var(--accent)' }}
+        />
+      )}
+      {icon && (
+        <span
+          className="flex-none flex items-center justify-center"
+          aria-hidden="true"
+          style={{
+            color: isDragTarget
+              ? '#1a1410'
+              : active
+                ? 'var(--accent)'
+                : 'var(--text-2)',
+            opacity: active ? 1 : 0.85,
+          }}
+        >
+          {icon}
+        </span>
+      )}
+      <span
+        className="flex-1 truncate"
+        style={{
+          fontSize: 13,
+          fontWeight: active ? 600 : 500,
+          letterSpacing: '-0.005em',
+        }}
+      >{label}</span>
       {count !== undefined && (
-        <span className="text-xs flex-none" style={{ color: 'var(--text-muted)' }} aria-label={`${count} bookmarks`}>{count}</span>
+        <span
+          className="flex-none tabnum mono"
+          style={{
+            fontSize: 11,
+            color: isDragTarget ? '#1a1410' : active ? 'var(--accent)' : 'var(--text-3)',
+            fontWeight: 500,
+          }}
+          aria-label={`${count} bookmarks`}
+        >{count.toLocaleString()}</span>
       )}
       {onDelete && !isDragTarget && (hovered || deleteHovered) && (
         <button
@@ -73,7 +115,7 @@ export function SidebarItem({ active, onClick, onContext, icon, label, count, on
           onMouseEnter={() => setDeleteHovered(true)}
           onMouseLeave={() => setDeleteHovered(false)}
           className="flex-none transition-colors duration-100 p-0.5 rounded cursor-pointer"
-          style={{ color: deleteHovered ? 'var(--red)' : 'var(--text-muted)' }}
+          style={{ color: deleteHovered ? 'var(--red)' : 'var(--text-3)' }}
           aria-label={`Delete ${label}`}
         >
           <IconClose size={11} />
@@ -86,16 +128,19 @@ export function SidebarItem({ active, onClick, onContext, icon, label, count, on
 export function SidebarSection({ label, onAdd }: { label: string; onAdd: () => void }) {
   const [hovered, setHovered] = useState(false)
   return (
-    <div className="flex items-center justify-between px-3 mb-1 mt-5">
-      <span className="text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
-        {label}
-      </span>
+    <div className="flex items-center justify-between px-4 mt-5 mb-1">
+      <span className="section-label">{label}</span>
       <button
         onClick={onAdd}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
-        className="rounded p-0.5 transition-colors duration-150 cursor-pointer"
-        style={{ color: hovered ? 'var(--text-primary)' : 'var(--text-muted)' }}
+        className="rounded transition-colors duration-150 cursor-pointer flex items-center justify-center"
+        style={{
+          width: 18,
+          height: 18,
+          color: hovered ? 'var(--text-1)' : 'var(--text-3)',
+          background: hovered ? 'var(--row-hover-bg)' : 'transparent',
+        }}
         aria-label={`New ${label.toLowerCase()}`}
       >
         <IconPlus size={12} />
@@ -118,26 +163,54 @@ export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount = 
 
   return (
     <aside
-      className="w-52 flex-none flex flex-col h-full overflow-hidden"
-      style={{ background: 'var(--bg-sidebar)', borderRight: '1px solid var(--border-dim)' }}
+      className="flex flex-col shrink-0 h-full overflow-hidden"
+      style={{
+        width: 224,
+        background: 'var(--sidebar-bg)',
+        borderRight: '1px solid var(--border-soft)',
+      }}
     >
-      <div className="px-4 py-5 flex-none" style={{ borderBottom: '1px solid var(--border-dim)' }}>
-        <div className="flex items-center gap-2.5">
-          <span style={{ color: 'var(--accent)', lineHeight: 1 }} aria-hidden="true">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="none">
-              <path d="M5 2a2 2 0 0 0-2 2v17.586a.5.5 0 0 0 .854.353L12 13.914l8.146 8.025A.5.5 0 0 0 21 21.586V4a2 2 0 0 0-2-2H5z"/>
-            </svg>
-          </span>
+      {/* Brand block */}
+      <div className="flex items-center gap-2.5 px-4 pt-4 pb-5 shrink-0">
+        <div
+          className="flex items-center justify-center shrink-0"
+          style={{
+            width: 28,
+            height: 28,
+            borderRadius: 8,
+            background: 'linear-gradient(135deg, var(--accent) 0%, var(--accent-deep) 100%)',
+            boxShadow:
+              'inset 0 1px 0 rgba(255,255,255,0.08), 0 4px 12px -2px rgba(0,0,0,0.4)',
+          }}
+          aria-hidden="true"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="#1a1410" stroke="none">
+            <path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z" />
+          </svg>
+        </div>
+        <div className="flex flex-col leading-none min-w-0">
           <span
-            className="text-base tracking-tight"
-            style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 500, color: 'var(--text-primary)', letterSpacing: '0.03em' }}
-          >
-            ferrico
-          </span>
+            style={{
+              fontFamily: 'var(--font-display)',
+              fontSize: 17,
+              fontWeight: 600,
+              color: 'var(--text-1)',
+              letterSpacing: '-0.01em',
+            }}
+          >ferrico</span>
+          <span
+            className="mono truncate"
+            style={{
+              fontSize: 10,
+              color: 'var(--text-3)',
+              marginTop: 3,
+              letterSpacing: '0.02em',
+            }}
+          >v0.1 · {bookmarkCount.toLocaleString()} marks</span>
         </div>
       </div>
 
-      <nav className="flex-1 overflow-y-auto px-2 py-3" aria-label="Library navigation">
+      <nav className="flex-1 overflow-y-auto sb-scroll px-2 pb-3 flex flex-col gap-0.5" aria-label="Library navigation">
         <SidebarItem
           active={isActive({ type: 'inbox' })}
           onClick={() => onSelect({ type: 'inbox' })}
@@ -168,7 +241,7 @@ export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount = 
 
         <SidebarSection label="Folders" onAdd={onAddFolder} />
         {folders.length === 0
-          ? <p className="px-3 py-1 text-xs italic" style={{ color: 'var(--text-muted)' }}>No folders yet</p>
+          ? <p className="px-3 py-1 italic" style={{ color: 'var(--text-3)', fontSize: 11.5 }}>No folders yet</p>
           : folders.map((folder) => (
             <SidebarItem
               key={folder.id}
@@ -186,14 +259,20 @@ export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount = 
 
         <SidebarSection label="Tags" onAdd={onAddTag} />
         {tags.length === 0
-          ? <p className="px-3 py-1 text-xs italic" style={{ color: 'var(--text-muted)' }}>No tags yet</p>
+          ? <p className="px-3 py-1 italic" style={{ color: 'var(--text-3)', fontSize: 11.5 }}>No tags yet</p>
           : tags.map((tag) => (
             <SidebarItem
               key={tag.id}
               active={isActive({ type: 'tag', id: tag.id })}
               onClick={() => onSelect({ type: 'tag', id: tag.id })}
               onContext={(e) => onTagContext(e, tag)}
-              icon={<span className="w-2 h-2 rounded-full flex-none block" style={{ background: tag.color }} aria-hidden="true" />}
+              icon={
+                <span
+                  className="block rounded-full"
+                  style={{ width: 6, height: 6, background: tag.color }}
+                  aria-hidden="true"
+                />
+              }
               label={tag.name}
               onDelete={() => onDeleteTag(tag.id)}
             />
@@ -201,20 +280,30 @@ export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount = 
         }
       </nav>
 
-      <div className="flex-none px-2 py-3" style={{ borderTop: '1px solid var(--border-dim)' }}>
+      <div className="shrink-0" style={{ borderTop: '1px solid var(--border-soft)' }}>
         <button
           onClick={onOpenSettings}
           onMouseEnter={() => setSettingsHovered(true)}
           onMouseLeave={() => setSettingsHovered(false)}
-          className="flex items-center gap-2 w-full px-3 py-1.5 rounded-lg text-sm transition-colors duration-150 cursor-pointer"
+          className="w-full flex items-center gap-2.5 px-4 py-3 transition-colors duration-150 cursor-pointer"
           style={{
-            color: settingsHovered ? 'var(--text-primary)' : 'var(--text-muted)',
-            background: settingsHovered ? 'rgba(255,255,255,0.035)' : 'transparent',
+            color: settingsHovered ? 'var(--text-1)' : 'var(--text-2)',
+            background: settingsHovered ? 'var(--row-hover-bg)' : 'transparent',
           }}
           aria-label="Open settings"
         >
-          <IconSettings />
-          <span className="font-medium">Settings</span>
+          <IconSettings size={15} />
+          <span style={{ fontSize: 13, fontWeight: 500 }}>Settings</span>
+          <span
+            className="ml-auto mono"
+            style={{
+              fontSize: 10,
+              color: 'var(--text-3)',
+              padding: '2px 5px',
+              border: '1px solid var(--border)',
+              borderRadius: 4,
+            }}
+          >⌘,</span>
         </button>
       </div>
     </aside>

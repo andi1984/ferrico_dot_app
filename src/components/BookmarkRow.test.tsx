@@ -47,11 +47,12 @@ describe('BookmarkRow', () => {
     expect(screen.queryByRole('paragraph')).not.toBeInTheDocument()
   })
 
-  it('renders up to 2 tags and an overflow count for the rest', () => {
+  it('renders up to 3 tags and an overflow count for the rest', () => {
     const tags = [
       makeTag({ id: '1', name: 'Alpha' }),
       makeTag({ id: '2', name: 'Beta' }),
       makeTag({ id: '3', name: 'Gamma' }),
+      makeTag({ id: '4', name: 'Delta' }),
     ]
     render(
       <BookmarkRow
@@ -63,7 +64,8 @@ describe('BookmarkRow', () => {
     )
     expect(screen.getByText('Alpha')).toBeInTheDocument()
     expect(screen.getByText('Beta')).toBeInTheDocument()
-    expect(screen.queryByText('Gamma')).not.toBeInTheDocument()
+    expect(screen.getByText('Gamma')).toBeInTheDocument()
+    expect(screen.queryByText('Delta')).not.toBeInTheDocument()
     expect(screen.getByText('+1')).toBeInTheDocument()
   })
 
