@@ -231,6 +231,25 @@ fn clear_all_data(state: State<'_, AppState>) -> Result<(), AppError> {
     db_clear_all_data(&db)
 }
 
+// ─── Claude CLI Helper ────────────────────────────────────────────────────────
+
+async fn run_claude(prompt: &str) -> Result<String, AppError> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let existing_path = std::env::var("PATH").unwrap_or_default();
+    let extended_path =
+        format!("{home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:{existing_path}");
+    let output = tokio::process::Command::new("claude")
+        .arg("-p")
+        .arg(prompt)
+        .env("PATH", &extended_path)
+        .output()
+        .await
+        .map_err(|e| AppError::Validation {
+            message: format!("claude CLI unavailable: {e}"),
+        })?;
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 // ─── Inbox Sort ───────────────────────────────────────────────────────────────
 
 #[derive(serde::Deserialize)]
@@ -284,22 +303,7 @@ async fn suggest_inbox_sort(
          Include every bookmark exactly once."
     );
 
-    let home = std::env::var("HOME").unwrap_or_default();
-    let existing_path = std::env::var("PATH").unwrap_or_default();
-    let extended_path =
-        format!("{home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:{existing_path}");
-
-    let output = tokio::process::Command::new("claude")
-        .arg("-p")
-        .arg(&prompt)
-        .env("PATH", &extended_path)
-        .output()
-        .await
-        .map_err(|e| AppError::Validation {
-            message: format!("claude CLI unavailable: {e}"),
-        })?;
-
-    let raw = String::from_utf8_lossy(&output.stdout);
+    let raw = run_claude(&prompt).await?;
     let trimmed = raw.trim();
     let json_str = if let (Some(start), Some(end)) = (trimmed.find('['), trimmed.rfind(']')) {
         &trimmed[start..=end]
@@ -387,22 +391,7 @@ async fn suggest_csv_mapping(
          \"folder_name\": null, \"tag_names\": null}}"
     );
 
-    let home = std::env::var("HOME").unwrap_or_default();
-    let existing_path = std::env::var("PATH").unwrap_or_default();
-    let extended_path =
-        format!("{home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:{existing_path}");
-
-    let output = tokio::process::Command::new("claude")
-        .arg("-p")
-        .arg(&prompt)
-        .env("PATH", &extended_path)
-        .output()
-        .await
-        .map_err(|e| AppError::Validation {
-            message: format!("claude CLI unavailable: {e}"),
-        })?;
-
-    let raw = String::from_utf8_lossy(&output.stdout);
+    let raw = run_claude(&prompt).await?;
     let json_str = extract_json(&raw);
 
     let value: serde_json::Value =
@@ -723,5 +712,144 @@ mod http_tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         assert!(!called.load(Ordering::Relaxed), "notifier must not be called on auth failure");
+    }
+
+    fn make_full_app(token: &str) -> (axum::Router, Arc<AtomicBool>) {
+        let (state, called) = make_state(token);
+        let cors = tower_http::cors::CorsLayer::new()
+            .allow_origin(tower_http::cors::Any)
+            .allow_methods(tower_http::cors::Any)
+            .allow_headers(tower_http::cors::Any);
+        let app = axum::Router::new()
+            .route("/bookmarks", post(http_add_bookmark))
+            .route("/folders", axum::routing::get(http_get_folders).post(http_add_folder))
+            .route("/tags", axum::routing::get(http_get_tags).post(http_add_tag))
+            .with_state(state)
+            .layer(cors);
+        (app, called)
+    }
+
+    #[tokio::test]
+    async fn get_folders_returns_empty_list_with_auth() {
+        let (app, _) = make_full_app("tok");
+        let req = Request::builder()
+            .method("GET")
+            .uri("/folders")
+            .header("authorization", "Bearer tok")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn get_folders_returns_401_without_auth() {
+        let (app, _) = make_full_app("tok");
+        let req = Request::builder()
+            .method("GET")
+            .uri("/folders")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn get_tags_returns_empty_list_with_auth() {
+        let (app, _) = make_full_app("tok");
+        let req = Request::builder()
+            .method("GET")
+            .uri("/tags")
+            .header("authorization", "Bearer tok")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn get_tags_returns_401_without_auth() {
+        let (app, _) = make_full_app("tok");
+        let req = Request::builder()
+            .method("GET")
+            .uri("/tags")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn post_folders_creates_folder() {
+        let (app, _) = make_full_app("tok");
+        let req = Request::builder()
+            .method("POST")
+            .uri("/folders")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer tok")
+            .body(Body::from(r#"{"name":"Work"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn post_folders_returns_401_without_auth() {
+        let (app, _) = make_full_app("tok");
+        let req = Request::builder()
+            .method("POST")
+            .uri("/folders")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name":"Work"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn post_tags_creates_tag() {
+        let (app, _) = make_full_app("tok");
+        let req = Request::builder()
+            .method("POST")
+            .uri("/tags")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer tok")
+            .body(Body::from(r##"{"name":"rust","color":"#6366f1"}"##))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn post_tags_returns_401_without_auth() {
+        let (app, _) = make_full_app("tok");
+        let req = Request::builder()
+            .method("POST")
+            .uri("/tags")
+            .header("content-type", "application/json")
+            .body(Body::from(r##"{"name":"rust","color":"#6366f1"}"##))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn ping_returns_ok() {
+        let (state, called) = make_state("tok");
+        let app = axum::Router::new()
+            .route("/bookmarks", post(http_add_bookmark))
+            .with_state(state);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/bookmarks")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer tok")
+            .body(Body::from(r#"{"url":"__ping__","title":"__ping__"}"#))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(!called.load(Ordering::Relaxed), "ping must not trigger a notification");
     }
 }
