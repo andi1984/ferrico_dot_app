@@ -45,10 +45,9 @@ describe('BookmarkList', () => {
     const { container } = render(
       <BookmarkList bookmarks={[bm]} onDelete={() => {}} onContext={() => {}} />,
     )
-    // The inner content div (second level) carries the total virtualizer height.
-    // With one description row the estimate is 64px.
+    // Total size = 1 date-group header (38px) + 1 description row (88px) = 126px.
     const inner = container.querySelector('div > div > div') as HTMLElement
-    expect(inner.style.height).toBe('64px')
+    expect(inner.style.height).toBe('126px')
   })
 
   it('calls onDelete with the bookmark id', () => {

@@ -1,26 +1,108 @@
-@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600&family=Outfit:wght@300;400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;450;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap');
 @import "tailwindcss";
 
-:root {
-  --bg-base:       #0c0b0a;
-  --bg-surface:    #131110;
-  --bg-elevated:   #1b1916;
-  --bg-sidebar:    #0f0e0d;
-  --border-dim:    #1f1d1b;
-  --border-mid:    #2c2926;
-  --border-bright: #3c3935;
-  --text-primary:  #e3ddd2;
-  --text-secondary:#96908a;
-  --text-muted:    #514d4a;
-  --accent:        #bf8b5e;
-  --accent-bright: #cc9b6e;
-  --accent-dim:    rgba(191, 139, 94, 0.1);
-  --accent-glow:   rgba(191, 139, 94, 0.05);
-  --red:           #e05252;
+/* ─── Theme tokens ──────────────────────────────────────────────────────────
+   Ferrico's design system. Dark by default; light theme applied via
+   `[data-theme="light"]` on the document root. All tokens are plain hex
+   or rgba — no oklch() or color-mix() — so the palette renders identically
+   across older WebKit (Tauri WKWebView on macOS 12.x) and survives Tailwind
+   v4's CSS optimizer. Legacy variable names (`--bg-base`, `--text-primary`,
+   …) are preserved so older components resolve unchanged.
+   ────────────────────────────────────────────────────────────────────────── */
+:root, :root[data-theme="dark"] {
+  --font-display: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono:    'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* Surfaces */
+  --bg:               #1c1a18;
+  --bg-elev:          #232120;
+  --bg-elev-strong:   #312f2c;
+  --sidebar-bg:       #181715;
+  --detail-bg:        #1a1816;
+  --header-bg:        #1f1d1b;
+  --card-bg:          #25231f;
+  --input-bg:         #28251f;
+  --chrome-bg:        #28251f;
+
+  /* Borders */
+  --border-soft:      #312f2c;
+  --border:           #3f3c38;
+  --border-strong:    #4c4944;
+
+  /* Text */
+  --text-1:           #f0ece2;
+  --text-2:           #aea69a;
+  --text-3:           #6f6a62;
+
+  /* States */
+  --row-hover-bg:        rgba(255,255,255,0.025);
+  --row-hover-bg-strong: rgba(255,255,255,0.038);
+  --btn-hover-bg:        rgba(255,255,255,0.055);
+  --tag-bg:              rgba(255,255,255,0.055);
+  --scrollbar:           rgba(255,255,255,0.10);
+
+  /* Accent — copper */
+  --accent:        #cc9268;
+  --accent-deep:   #a4633b;
+  --accent-bright: #dba17a;
+  --accent-dim:    rgba(204,146,104,0.14);
+  --accent-glow:   rgba(204,146,104,0.10);
+  --row-sel-bg:    rgba(204,146,104,0.14);
+
+  /* Status */
+  --red:           #d85850;
+
+  /* ─── Legacy aliases ─── kept so older components resolve unchanged */
+  --bg-base:       var(--bg);
+  --bg-surface:    var(--bg-elev);
+  --bg-elevated:   var(--bg-elev-strong);
+  --bg-sidebar:    var(--sidebar-bg);
+  --border-dim:    var(--border-soft);
+  --border-mid:    var(--border);
+  --border-bright: var(--border-strong);
+  --text-primary:  var(--text-1);
+  --text-secondary:var(--text-2);
+  --text-muted:    var(--text-3);
+}
+
+/* ─── Light theme ─── soft warm-white, copper accent retained */
+:root[data-theme="light"] {
+  --bg:               #faf8f4;
+  --bg-elev:          #f3f1ec;
+  --bg-elev-strong:   #e6e3dc;
+  --sidebar-bg:       #f4f2ed;
+  --detail-bg:        #f4f2ed;
+  --header-bg:        #fcfaf6;
+  --card-bg:          #ffffff;
+  --input-bg:         #f4f2ed;
+  --chrome-bg:        #ebe8e1;
+
+  --border-soft:      #e6e3dc;
+  --border:           #d6d2c8;
+  --border-strong:    #c2bdb1;
+
+  --text-1:           #2a2622;
+  --text-2:           #6a655d;
+  --text-3:           #989289;
+
+  --row-hover-bg:        rgba(0,0,0,0.026);
+  --row-hover-bg-strong: rgba(0,0,0,0.04);
+  --btn-hover-bg:        rgba(0,0,0,0.06);
+  --tag-bg:              rgba(0,0,0,0.055);
+  --scrollbar:           rgba(0,0,0,0.18);
+
+  --accent:        #b8743d;
+  --accent-deep:   #8c5326;
+  --accent-bright: #c4845a;
+  --accent-dim:    rgba(184,116,61,0.16);
+  --accent-glow:   rgba(184,116,61,0.10);
+  --row-sel-bg:    rgba(184,116,61,0.18);
+
+  --red:           #c64338;
 }
 
 *, *::before, *::after {
-  font-family: 'Outfit', sans-serif;
+  font-family: var(--font-display);
   box-sizing: border-box;
 }
 
@@ -28,9 +110,17 @@ html, body, #root {
   height: 100%;
   margin: 0;
   padding: 0;
-  background: var(--bg-base);
-  color: var(--text-primary);
+  background: var(--chrome-bg);
+  color: var(--text-1);
 }
+
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: 'cv11', 'ss01';
+}
+
+button, input, textarea, select { font-family: inherit; }
 
 :focus-visible {
   outline: 2px solid var(--accent);
@@ -38,35 +128,69 @@ html, body, #root {
   border-radius: 3px;
 }
 
-::-webkit-scrollbar        { width: 3px; height: 3px; }
-::-webkit-scrollbar-track  { background: transparent; }
-::-webkit-scrollbar-thumb  { background: var(--border-mid); border-radius: 2px; }
-::-webkit-scrollbar-thumb:hover { background: var(--border-bright); }
+/* Native scrollbars — thin, themed, only show on the scroll container.
+   Components opt in by adding the `sb-scroll` class to overflow containers. */
+.sb-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar) transparent;
+}
+.sb-scroll::-webkit-scrollbar        { width: 10px; height: 10px; }
+.sb-scroll::-webkit-scrollbar-track  { background: transparent; }
+.sb-scroll::-webkit-scrollbar-thumb  {
+  background: var(--scrollbar);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+.sb-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,255,255,0.16);
+  background-clip: content-box;
+}
+[data-theme="light"] .sb-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(0,0,0,0.28);
+  background-clip: content-box;
+}
 
-/* Form fields — bottom-border-only luxury style */
+/* Global fallback for any container that ends up scrolling without sb-scroll */
+::-webkit-scrollbar        { width: 8px; height: 8px; }
+::-webkit-scrollbar-track  { background: transparent; }
+::-webkit-scrollbar-thumb  { background: var(--scrollbar); border-radius: 999px; }
+
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Mono accents (tabular for counts/dates) */
+.mono   { font-family: var(--font-mono); font-feature-settings: 'tnum'; }
+.tabnum { font-variant-numeric: tabular-nums; }
+
+/* Form fields — bottom-border-only luxury style (kept for modals) */
 .ff {
   width: 100%;
   background: transparent;
   border: none;
-  border-bottom: 1px solid var(--border-mid);
-  color: var(--text-primary);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-1);
   font-size: 14px;
-  font-family: 'Outfit', sans-serif;
+  font-family: var(--font-display);
   font-weight: 400;
   padding: 8px 0;
   outline: none;
   transition: border-color 0.15s ease;
   appearance: none;
 }
-.ff::placeholder { color: var(--text-muted); }
+.ff::placeholder { color: var(--text-3); }
 .ff:focus        { border-bottom-color: var(--accent); }
 
-select.ff { cursor: pointer; }
+select.ff   { cursor: pointer; }
 textarea.ff { resize: none; }
 
 select option {
-  background: var(--bg-elevated);
-  color: var(--text-primary);
+  background: var(--bg-elev-strong);
+  color: var(--text-1);
 }
 
 @keyframes fadeUp {
@@ -82,18 +206,23 @@ select option {
   to   { opacity: 1; transform: scale(1); }
 }
 
-.anim-fade-up {
-  opacity: 0;
-  animation: fadeUp 0.22s ease forwards;
+.anim-fade-up  { animation: fadeUp 0.22s ease both; }
+.anim-fade-in  { animation: fadeIn 0.18s ease both; }
+.anim-scale-in { animation: scaleIn 0.20s ease both; }
+
+/* Modal panel — explicit hex fallback first, var() override second, so the
+   panel paints solidly even if the CSS variable fails to resolve. */
+.modal-panel {
+  background: #232120;
+  background: var(--bg-elev);
 }
-.anim-fade-in {
-  opacity: 0;
-  animation: fadeIn 0.18s ease forwards;
+[data-theme="light"] .modal-panel { background: #ffffff; background: var(--card-bg); }
+.modal-backdrop {
+  background: rgba(0,0,0,0.55);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
 }
-.anim-scale-in {
-  opacity: 0;
-  animation: scaleIn 0.2s ease forwards;
-}
+[data-theme="light"] .modal-backdrop { background: rgba(40,30,20,0.35); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
@@ -105,27 +234,33 @@ select option {
 /* Bookmark card — CSS-driven hover keeps it off the JS hot path */
 .bm-card {
   height: 100%;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-dim);
+  background: var(--card-bg);
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  overflow: hidden;
   box-shadow: 0 1px 3px rgba(0,0,0,0.12);
   touch-action: none;
-  transition: border-color 150ms ease, box-shadow 150ms ease;
-  /* Hint to the compositor that we want our own layer — keeps hover paints local. */
+  transition: border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
   will-change: transform;
 }
 .bm-card:hover {
-  border-color: var(--border-mid);
-  box-shadow: 0 4px 20px rgba(0,0,0,0.22);
+  border-color: var(--border);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.28);
+  transform: translateY(-1px);
+}
+.bm-card.is-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset, 0 8px 24px rgba(0,0,0,0.28);
 }
 .bm-card-title {
-  color: var(--text-primary);
+  color: var(--text-1);
   transition: color 100ms ease;
 }
 .bm-card-title:hover {
   color: var(--accent-bright);
 }
 .bm-card-close {
-  color: var(--text-muted);
+  color: var(--text-3);
   transition: color 100ms ease, opacity 150ms ease;
 }
 .bm-card-close:hover {
@@ -136,14 +271,15 @@ select option {
 .ctx-menu {
   position: fixed;
   z-index: 200;
-  min-width: 160px;
-  border-radius: 8px;
+  min-width: 168px;
+  border-radius: 10px;
   padding: 4px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-mid);
-  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  background: var(--bg-elev-strong);
+  border: 1px solid var(--border);
+  box-shadow: 0 12px 32px rgba(0,0,0,0.45);
   animation: scaleIn 0.12s ease forwards;
   transform-origin: top left;
+  backdrop-filter: blur(8px);
 }
 .ctx-item {
   display: flex;
@@ -151,15 +287,62 @@ select option {
   gap: 8px;
   width: 100%;
   padding: 6px 10px;
-  border-radius: 5px;
+  border-radius: 6px;
   font-size: 13px;
-  color: var(--text-secondary);
+  color: var(--text-2);
   background: transparent;
   border: none;
   cursor: pointer;
   text-align: left;
   transition: background 0.1s, color 0.1s;
 }
-.ctx-item:hover { background: rgba(255,255,255,0.06); color: var(--text-primary); }
-.ctx-item.danger:hover { background: rgba(224,82,82,0.12); color: var(--red); }
-.ctx-sep { height: 1px; background: var(--border-dim); margin: 3px 4px; }
+.ctx-item:hover           { background: rgba(255,255,255,0.06); color: var(--text-1); }
+.ctx-item.danger:hover    { background: rgba(224,82,82,0.12);  color: var(--red); }
+.ctx-sep                  { height: 1px; background: var(--border-soft); margin: 3px 4px; }
+
+/* Tag pill — uniform, mono, slightly tinted */
+.tag-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 4px;
+  background: var(--tag-bg);
+  color: var(--text-2);
+  font-size: 10.5px;
+  font-weight: 500;
+  font-family: var(--font-mono);
+  letter-spacing: 0.01em;
+}
+
+/* Accent gradient button (primary CTA — Add bookmark, Open, etc.) */
+.btn-accent {
+  background: linear-gradient(180deg, var(--accent) 0%, var(--accent-deep) 100%);
+  color: #1a1410;
+  font-weight: 600;
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.18) inset,
+    0 1px 3px rgba(0,0,0,0.25);
+  transition: transform 100ms ease, filter 100ms ease;
+}
+.btn-accent:hover  { filter: brightness(1.06); }
+.btn-accent:active { transform: translateY(0.5px); }
+
+/* Section label (uppercase tracking) */
+.section-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text-3);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* Subtle ambient grain for the chrome bar */
+.grain::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.03;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+}

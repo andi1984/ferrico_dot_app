@@ -29,18 +29,18 @@ describe('computeColumns', () => {
   })
 
   it('returns 1 column at exactly card min width', () => {
-    expect(computeColumns(260)).toBe(1)
+    expect(computeColumns(220)).toBe(1)
   })
 
   it('returns 2 columns when there is room for two cards plus a gap', () => {
-    // 2 * 260 + 12 = 532
-    expect(computeColumns(532)).toBe(2)
-    expect(computeColumns(531)).toBe(1)
+    // 2 * 220 + 14 = 454
+    expect(computeColumns(454)).toBe(2)
+    expect(computeColumns(453)).toBe(1)
   })
 
   it('returns 4 columns for a typical desktop width', () => {
-    // 4 * 260 + 3 * 12 = 1076
-    expect(computeColumns(1076)).toBe(4)
+    // 4 * 220 + 3 * 14 = 922
+    expect(computeColumns(922)).toBe(4)
   })
 
   it('grows with width', () => {

@@ -4,9 +4,9 @@ import type { Bookmark } from '../types'
 import { BookmarkCard } from './BookmarkCard'
 
 // Layout constants kept here (not Tailwind) so the virtualizer can do math on them.
-const CARD_MIN_WIDTH = 260
-const CARD_GAP = 12
-const CARD_HEIGHT = 220
+const CARD_MIN_WIDTH = 220
+const CARD_GAP = 14
+const CARD_HEIGHT = 260
 const PADDING = 20
 
 interface BookmarkGridProps {
@@ -58,7 +58,7 @@ export const BookmarkGrid = memo(function BookmarkGrid({
   const virtualItems = virtualizer.getVirtualItems()
 
   return (
-    <div ref={scrollRef} style={{ height: '100%', overflowY: 'auto' }}>
+    <div ref={scrollRef} className="sb-scroll" style={{ height: '100%', overflowY: 'auto', background: 'var(--bg)' }}>
       <div
         style={{
           height: totalSize + PADDING * 2,

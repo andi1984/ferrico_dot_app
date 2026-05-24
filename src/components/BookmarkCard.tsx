@@ -1,7 +1,7 @@
 import { memo } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { Bookmark } from '../types'
-import { domainOf, formatDate } from '../utils'
+import { domainOf, formatDate, initials } from '../utils'
 import { Favicon } from './Favicon'
 import { IconClose } from './icons'
 
@@ -10,6 +10,21 @@ interface BookmarkCardProps {
   onDelete: (id: string) => void
   onContext: (e: React.MouseEvent, bookmark: Bookmark) => void
   onDragPointerDown?: (e: React.PointerEvent, bookmark: Bookmark) => void
+}
+
+// Stable preview gradients keyed off the URL so each tile reads as its own.
+const PREVIEW_GRADIENTS: Array<[string, string]> = [
+  ['#2a221d', '#1a1612'], // base copper
+  ['#1c2a26', '#0f1715'], // teal night
+  ['#2a1a1c', '#180f10'], // ember
+  ['#1f2233', '#11131e'], // indigo
+  ['#2a261a', '#181508'], // amber dusk
+  ['#1a2820', '#0d1612'], // moss
+]
+function hash(s: string): number {
+  let h = 0
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0
+  return Math.abs(h)
 }
 
 export const BookmarkCard = memo(function BookmarkCard({
@@ -23,85 +38,122 @@ export const BookmarkCard = memo(function BookmarkCard({
     invoke('open_url', { url: bookmark.url }).catch(() => {})
   }
 
-  // Drag from anywhere on the card except interactive elements (link, buttons,
-  // tags) so those keep their normal click behavior without the 5px wiggle.
   function handlePointerDown(e: React.PointerEvent) {
     const target = e.target as HTMLElement
     if (target.closest('a, button, [data-no-drag]')) return
     onDragPointerDown?.(e, bookmark)
   }
 
+  const [from, to] = PREVIEW_GRADIENTS[hash(bookmark.url) % PREVIEW_GRADIENTS.length]
+  const glyph = initials(bookmark.title)
+
   return (
     <div
-      className="bm-card group relative rounded-xl p-4 cursor-grab select-none overflow-hidden"
+      className="bm-card group relative cursor-grab select-none flex flex-col"
       onContextMenu={(e) => onContext(e, bookmark)}
       onPointerDown={handlePointerDown}
     >
-      <button
-        onClick={() => onDelete(bookmark.id)}
-        className="bm-card-close absolute top-3 right-3 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity duration-150 cursor-pointer"
-        aria-label={`Delete ${bookmark.title}`}
+      {/* Preview banner */}
+      <div
+        className="relative shrink-0"
+        style={{
+          aspectRatio: '16 / 9',
+          background: `linear-gradient(135deg, ${from} 0%, ${to} 100%)`,
+          borderBottom: '1px solid var(--border-soft)',
+        }}
       >
-        <IconClose size={12} />
-      </button>
+        <div
+          className="absolute inset-0 flex items-center justify-center"
+          style={{ opacity: 0.18 }}
+          aria-hidden="true"
+        >
+          <span
+            style={{
+              fontFamily: 'var(--font-display)',
+              fontSize: 72,
+              fontWeight: 700,
+              color: 'rgba(255,255,255,0.85)',
+              letterSpacing: '-0.04em',
+            }}
+          >{glyph}</span>
+        </div>
 
-      <div className="flex items-center gap-2 mb-3 pr-5">
-        <Favicon storedUrl={bookmark.favicon_url} bookmarkUrl={bookmark.url} title={bookmark.title} />
-        <span className="text-xs truncate" style={{ color: 'var(--text-muted)' }}>
-          {domainOf(bookmark.url)}
-        </span>
+        <div className="absolute bottom-2.5 left-2.5">
+          <Favicon
+            storedUrl={bookmark.favicon_url}
+            bookmarkUrl={bookmark.url}
+            title={bookmark.title}
+            size={28}
+            radius={6}
+          />
+        </div>
+
+        <button
+          onClick={() => onDelete(bookmark.id)}
+          className="bm-card-close absolute top-2.5 right-2.5 rounded-md opacity-0 group-hover:opacity-100 transition-opacity duration-150 cursor-pointer flex items-center justify-center"
+          style={{
+            width: 22,
+            height: 22,
+            background: 'rgba(0,0,0,0.35)',
+            backdropFilter: 'blur(6px)',
+          }}
+          aria-label={`Delete ${bookmark.title}`}
+          data-no-drag
+        >
+          <IconClose size={12} />
+        </button>
       </div>
 
-      <a
-        href={bookmark.url}
-        onClick={openUrl}
-        className="bm-card-title block text-sm font-medium leading-snug mb-2 cursor-pointer"
-        style={{
-          display: '-webkit-box',
-          WebkitLineClamp: 3,
-          WebkitBoxOrient: 'vertical',
-          overflow: 'hidden',
-        } as React.CSSProperties}
-      >
-        {bookmark.title}
-      </a>
-
-      {bookmark.description && (
-        <p
-          className="text-xs mb-3 leading-relaxed"
+      {/* Body */}
+      <div className="p-3.5 flex flex-col flex-1 min-h-0">
+        <a
+          href={bookmark.url}
+          onClick={openUrl}
+          className="bm-card-title block cursor-pointer"
           style={{
-            color: 'var(--text-secondary)',
+            fontSize: 13.5,
+            fontWeight: 600,
+            lineHeight: 1.35,
+            letterSpacing: '-0.005em',
             display: '-webkit-box',
-            WebkitLineClamp: 3,
+            WebkitLineClamp: 2,
             WebkitBoxOrient: 'vertical',
             overflow: 'hidden',
+            minHeight: '2.7em',
+            marginBottom: 4,
           } as React.CSSProperties}
         >
-          {bookmark.description}
-        </p>
-      )}
+          {bookmark.title}
+        </a>
 
-      {bookmark.tags.length > 0 && (
-        <div className="flex flex-wrap gap-1 mb-3">
-          {bookmark.tags.slice(0, 4).map((tag) => (
-            <span
-              key={tag.id}
-              data-no-drag
-              className="px-2 py-0.5 rounded text-xs font-medium cursor-default"
-              style={{ background: tag.color + '1a', color: tag.color }}
-            >
-              {tag.name}
-            </span>
-          ))}
+        {bookmark.tags.length > 0 && (
+          <div className="flex flex-wrap gap-1 mb-2" data-no-drag>
+            {bookmark.tags.slice(0, 3).map((tag) => (
+              <span
+                key={tag.id}
+                className="tag-pill cursor-default truncate"
+                style={{ background: tag.color + '22', color: tag.color, maxWidth: 88 }}
+              >
+                {tag.name}
+              </span>
+            ))}
+            {bookmark.tags.length > 3 && (
+              <span className="mono" style={{ fontSize: 10.5, color: 'var(--text-3)' }}>
+                +{bookmark.tags.length - 3}
+              </span>
+            )}
+          </div>
+        )}
+
+        <div className="flex items-center gap-2 mt-auto pt-1">
+          <span className="mono truncate" style={{ fontSize: 10.5, color: 'var(--text-3)' }}>
+            {domainOf(bookmark.url)}
+          </span>
+          <span className="mono tabnum ml-auto shrink-0" style={{ fontSize: 10.5, color: 'var(--text-3)' }}>
+            {formatDate(bookmark.created_at)}
+          </span>
         </div>
-      )}
-
-      <span
-        className="absolute left-4 bottom-3 text-xs"
-        style={{ color: 'var(--text-muted)' }}
-      >
-        {formatDate(bookmark.created_at)}
-      </span>
+      </div>
     </div>
   )
 })
