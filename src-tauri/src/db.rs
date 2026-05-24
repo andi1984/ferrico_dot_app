@@ -135,7 +135,11 @@ pub fn init_schema(conn: &Connection) -> Result<(), AppError> {
            bookmark_id TEXT NOT NULL REFERENCES bookmarks(id) ON DELETE CASCADE,
            tag_id      TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
            PRIMARY KEY (bookmark_id, tag_id)
-         );",
+         );
+
+         CREATE INDEX IF NOT EXISTS idx_bookmarks_deleted ON bookmarks(deleted_at);
+         CREATE INDEX IF NOT EXISTS idx_bookmarks_folder  ON bookmarks(folder_id);
+         CREATE INDEX IF NOT EXISTS idx_bt_tag            ON bookmark_tags(tag_id);",
     )?;
 
     // Migration: add deleted_at column to existing databases that predate the bin feature
@@ -167,6 +171,19 @@ pub(crate) fn now() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+fn validate_url(url: &str) -> Result<(), AppError> {
+    if url.trim().is_empty() {
+        return Err(AppError::Validation { message: "url is required".into() });
+    }
+    let lower = url.trim().to_lowercase();
+    for scheme in ["javascript:", "data:", "vbscript:"] {
+        if lower.starts_with(scheme) {
+            return Err(AppError::Validation { message: "unsafe URL scheme".into() });
+        }
+    }
+    Ok(())
 }
 
 fn row_to_raw(row: &rusqlite::Row) -> rusqlite::Result<RawBookmark> {
@@ -214,7 +231,7 @@ fn get_tags_batch(
             },
         ))
     })?;
-    for row in rows.flatten() {
+    for row in rows.collect::<Result<Vec<_>, _>>()? {
         map.entry(row.0).or_default().push(row.1);
     }
     Ok(map)
@@ -312,69 +329,50 @@ pub fn db_get_bookmarks(
     search: Option<&str>,
     inbox_only: bool,
 ) -> Result<Vec<Bookmark>, AppError> {
-    let raws: Vec<RawBookmark> = if inbox_only {
-        let mut stmt = conn.prepare(
-            "SELECT id, url, title, description, favicon_url, feed_url, folder_id, \
-             created_at, updated_at, deleted_at FROM bookmarks \
-             WHERE folder_id IS NULL AND deleted_at IS NULL ORDER BY created_at DESC",
-        )?;
-        let rows: Vec<RawBookmark> = stmt.query_map([], row_to_raw)?.filter_map(|r| r.ok()).collect();
-        rows
-    } else {
-        match (folder_id, tag_id) {
-            (_, Some(tid)) => {
-                let mut stmt = conn.prepare(
-                    "SELECT b.id, b.url, b.title, b.description, b.favicon_url, b.feed_url, \
-                     b.folder_id, b.created_at, b.updated_at, b.deleted_at \
-                     FROM bookmarks b JOIN bookmark_tags bt ON bt.bookmark_id = b.id \
-                     WHERE bt.tag_id = ?1 AND b.deleted_at IS NULL ORDER BY b.created_at DESC",
-                )?;
-                let rows: Vec<RawBookmark> = stmt.query_map(params![tid], row_to_raw)?
-                    .filter_map(|r| r.ok())
-                    .collect();
-                rows
-            }
-            (Some(fid), None) => {
-                let mut stmt = conn.prepare(
-                    "SELECT id, url, title, description, favicon_url, feed_url, folder_id, \
-                     created_at, updated_at, deleted_at FROM bookmarks \
-                     WHERE folder_id = ?1 AND deleted_at IS NULL ORDER BY created_at DESC",
-                )?;
-                let rows: Vec<RawBookmark> = stmt.query_map(params![fid], row_to_raw)?
-                    .filter_map(|r| r.ok())
-                    .collect();
-                rows
-            }
-            (None, None) => {
-                let mut stmt = conn.prepare(
-                    "SELECT id, url, title, description, favicon_url, feed_url, folder_id, \
-                     created_at, updated_at, deleted_at FROM bookmarks \
-                     WHERE deleted_at IS NULL ORDER BY created_at DESC",
-                )?;
-                let rows: Vec<RawBookmark> = stmt.query_map([], row_to_raw)?
-                    .filter_map(|r| r.ok())
-                    .collect();
-                rows
-            }
-        }
-    };
+    // Build query dynamically so all filter combinations share one code path.
+    let mut join = String::new();
+    let mut wheres = vec!["b.deleted_at IS NULL".to_string()];
+    let mut params: Vec<String> = Vec::new();
 
-    let mut bookmarks = enrich_batch(raws, conn)?;
-
-    if let Some(q) = search {
-        let q = q.to_lowercase();
-        bookmarks.retain(|b| {
-            b.title.to_lowercase().contains(&q)
-                || b.url.to_lowercase().contains(&q)
-                || b.description
-                    .as_deref()
-                    .unwrap_or("")
-                    .to_lowercase()
-                    .contains(&q)
-        });
+    if let Some(tid) = tag_id {
+        join.push_str(" JOIN bookmark_tags bt ON bt.bookmark_id = b.id");
+        wheres.push("bt.tag_id = ?".into());
+        params.push(tid.to_string());
     }
 
-    Ok(bookmarks)
+    if inbox_only {
+        wheres.push("b.folder_id IS NULL".into());
+    } else if let Some(fid) = folder_id {
+        wheres.push("b.folder_id = ?".into());
+        params.push(fid.to_string());
+    }
+
+    // Push search into SQL so we never load a full table just to filter in Rust.
+    let search_pat = search.map(|s| format!("%{}%", s.to_lowercase()));
+    if let Some(ref pat) = search_pat {
+        wheres.push(
+            "(LOWER(b.title) LIKE ? \
+              OR LOWER(b.url) LIKE ? \
+              OR LOWER(COALESCE(b.description,'')) LIKE ?)"
+                .into(),
+        );
+        params.extend([pat.clone(), pat.clone(), pat.clone()]);
+    }
+
+    let sql = format!(
+        "SELECT b.id, b.url, b.title, b.description, b.favicon_url, b.feed_url, \
+         b.folder_id, b.created_at, b.updated_at, b.deleted_at \
+         FROM bookmarks b{} WHERE {} ORDER BY b.created_at DESC",
+        join,
+        wheres.join(" AND ")
+    );
+
+    let mut stmt = conn.prepare(&sql)?;
+    let raws = stmt
+        .query_map(params_from_iter(params.iter()), row_to_raw)?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    enrich_batch(raws, conn)
 }
 
 pub fn db_get_bookmark_count(conn: &Connection) -> Result<i64, AppError> {
@@ -385,9 +383,7 @@ pub fn db_add_bookmark(
     conn: &Connection,
     input: CreateBookmarkInput,
 ) -> Result<Bookmark, AppError> {
-    if input.url.trim().is_empty() {
-        return Err(AppError::Validation { message: "url is required".into() });
-    }
+    validate_url(&input.url)?;
     if input.title.trim().is_empty() {
         return Err(AppError::Validation { message: "title is required".into() });
     }
@@ -448,9 +444,8 @@ pub fn db_get_bin_bookmarks(conn: &Connection) -> Result<Vec<Bookmark>, AppError
          created_at, updated_at, deleted_at FROM bookmarks \
          WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC",
     )?;
-    let raws: Vec<RawBookmark> = stmt.query_map([], row_to_raw)?
-        .filter_map(|r| r.ok())
-        .collect();
+    let raws = stmt.query_map([], row_to_raw)?
+        .collect::<Result<Vec<_>, _>>()?;
     enrich_batch(raws, conn)
 }
 
@@ -615,8 +610,7 @@ pub fn db_get_folders(conn: &Connection) -> Result<Vec<Folder>, AppError> {
                 created_at: row.get(3)?,
             })
         })?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(folders)
 }
 
@@ -694,8 +688,7 @@ pub fn db_get_tags(conn: &Connection) -> Result<Vec<Tag>, AppError> {
                 bookmark_count: Some(row.get(4)?),
             })
         })?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(tags)
 }
 
@@ -752,7 +745,7 @@ pub fn db_export_opml(conn: &Connection) -> Result<String, AppError> {
     let folders: Vec<Folder> = {
         let mut stmt =
             conn.prepare("SELECT id, name, parent_id, created_at FROM folders ORDER BY name")?;
-        let rows: Vec<Folder> = stmt.query_map([], |row| {
+        let rows = stmt.query_map([], |row| {
             Ok(Folder {
                 id: row.get(0)?,
                 name: row.get(1)?,
@@ -760,8 +753,7 @@ pub fn db_export_opml(conn: &Connection) -> Result<String, AppError> {
                 created_at: row.get(3)?,
             })
         })?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
         rows
     };
 
@@ -771,9 +763,8 @@ pub fn db_export_opml(conn: &Connection) -> Result<String, AppError> {
              created_at, updated_at, deleted_at FROM bookmarks \
              WHERE deleted_at IS NULL ORDER BY created_at",
         )?;
-        let rows: Vec<RawBookmark> = stmt.query_map([], row_to_raw)?
-            .filter_map(|r| r.ok())
-            .collect();
+        let rows = stmt.query_map([], row_to_raw)?
+            .collect::<Result<Vec<_>, _>>()?;
         rows
     };
 
@@ -893,6 +884,91 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, AppError::Validation { .. }));
+    }
+
+    #[test]
+    fn add_bookmark_javascript_scheme_is_validation_error() {
+        let conn = mem();
+        for url in &["javascript:alert(1)", "JAVASCRIPT:void(0)", "JavaScript:x"] {
+            let err = db_add_bookmark(
+                &conn,
+                CreateBookmarkInput {
+                    url: url.to_string(),
+                    title: "Bad".to_string(),
+                    description: None,
+                    favicon_url: None,
+                    feed_url: None,
+                    folder_id: None,
+                    tag_ids: None,
+                },
+            )
+            .unwrap_err();
+            assert!(matches!(err, AppError::Validation { .. }), "expected Validation for {url}");
+        }
+    }
+
+    #[test]
+    fn add_bookmark_data_scheme_is_validation_error() {
+        let conn = mem();
+        let err = db_add_bookmark(
+            &conn,
+            CreateBookmarkInput {
+                url: "data:text/html,<h1>hi</h1>".to_string(),
+                title: "Data".to_string(),
+                description: None,
+                favicon_url: None,
+                feed_url: None,
+                folder_id: None,
+                tag_ids: None,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, AppError::Validation { .. }));
+    }
+
+    #[test]
+    fn search_combined_with_inbox_only() {
+        let conn = mem();
+        let folder = mk_folder(&conn, "Work");
+
+        // In inbox, matches search
+        mk_bookmark(&conn, "https://rust-lang.org", "Rust Language");
+        // In inbox, doesn't match search
+        mk_bookmark(&conn, "https://python.org", "Python");
+        // In folder — excluded even though title matches search
+        db_add_bookmark(&conn, CreateBookmarkInput {
+            url: "https://rust-book.com".to_string(),
+            title: "Rust Book".to_string(),
+            description: None, favicon_url: None, feed_url: None,
+            folder_id: Some(folder.id.clone()),
+            tag_ids: None,
+        }).unwrap();
+
+        let results = db_get_bookmarks(&conn, None, None, Some("rust"), true).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Rust Language");
+    }
+
+    #[test]
+    fn search_combined_with_tag_filter() {
+        let conn = mem();
+        let tag = mk_tag(&conn, "systems");
+        let b1 = mk_bookmark(&conn, "https://rust-lang.org", "Rust");
+        let _b2 = mk_bookmark(&conn, "https://go.dev", "Go");
+        let b3 = mk_bookmark(&conn, "https://other.com", "systems journal");
+
+        // Tag both rust and "systems journal"
+        for bid in &[&b1.id, &b3.id] {
+            conn.execute(
+                "INSERT INTO bookmark_tags (bookmark_id, tag_id) VALUES (?1, ?2)",
+                params![bid, tag.id],
+            ).unwrap();
+        }
+
+        // Tag filter + search: must have the tag AND match "rust"
+        let results = db_get_bookmarks(&conn, None, Some(&tag.id), Some("rust"), false).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, b1.id);
     }
 
     #[test]
