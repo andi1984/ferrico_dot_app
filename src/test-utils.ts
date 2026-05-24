@@ -32,6 +32,7 @@ export function makeBookmark(overrides?: Partial<Bookmark>): Bookmark {
     tags: [],
     created_at: 1700000000,
     updated_at: 1700000000,
+    deleted_at: null,
     ...overrides,
   }
 }
