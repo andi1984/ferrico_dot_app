@@ -17,9 +17,10 @@ export interface SidebarProps {
   onOpenSettings: () => void
   onFolderContext: (e: React.MouseEvent, folder: Folder) => void
   onTagContext: (e: React.MouseEvent, tag: Tag) => void
+  onDropBookmark?: (bookmarkId: string, folderId: string | null) => void
 }
 
-export function SidebarItem({ active, onClick, onContext, icon, label, count, onDelete, ariaLabel }: {
+export function SidebarItem({ active, onClick, onContext, icon, label, count, onDelete, ariaLabel, folderId, onDropBookmark }: {
   active: boolean
   onClick: () => void
   onContext?: (e: React.MouseEvent) => void
@@ -28,9 +29,33 @@ export function SidebarItem({ active, onClick, onContext, icon, label, count, on
   count?: number
   onDelete?: () => void
   ariaLabel?: string
+  folderId?: string | null
+  onDropBookmark?: (bookmarkId: string, folderId: string | null) => void
 }) {
   const [hovered, setHovered] = useState(false)
   const [deleteHovered, setDeleteHovered] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
+
+  const handleDragOver = (e: React.DragEvent) => {
+    if (folderId === undefined) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    setDragOver(true)
+  }
+
+  const handleDragLeave = () => {
+    setDragOver(false)
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    if (folderId === undefined) return
+    e.preventDefault()
+    setDragOver(false)
+    const bookmarkId = e.dataTransfer.getData('application/x-ferrico-bookmark')
+    if (bookmarkId && onDropBookmark) {
+      onDropBookmark(bookmarkId, folderId)
+    }
+  }
 
   return (
     <button
@@ -38,12 +63,16 @@ export function SidebarItem({ active, onClick, onContext, icon, label, count, on
       onContextMenu={onContext}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => { setHovered(false); setDeleteHovered(false) }}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
       className="relative flex items-center gap-2 w-full px-3 py-1.5 rounded-lg text-sm transition-all duration-150 text-left group cursor-pointer"
       style={{
-        background: active ? 'var(--accent-dim)' : hovered ? 'rgba(255,255,255,0.035)' : 'transparent',
+        background: dragOver ? 'var(--accent-dim)' : active ? 'var(--accent-dim)' : hovered ? 'rgba(255,255,255,0.035)' : 'transparent',
         color: active ? 'var(--accent)' : hovered ? 'var(--text-primary)' : 'var(--text-secondary)',
-        borderLeft: active ? '2px solid var(--accent)' : '2px solid transparent',
-        paddingLeft: active ? '10px' : '12px',
+        borderLeft: dragOver ? '2px solid var(--accent-bright)' : active ? '2px solid var(--accent)' : '2px solid transparent',
+        paddingLeft: active || dragOver ? '10px' : '12px',
+        boxShadow: dragOver ? `inset 0 0 0 1px var(--accent)` : 'none',
       }}
       aria-current={active ? 'page' : undefined}
       aria-label={ariaLabel}
@@ -91,7 +120,7 @@ export function SidebarSection({ label, onAdd }: { label: string; onAdd: () => v
   )
 }
 
-export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount = 0, binCount, onSelect, onAddFolder, onDeleteFolder, onAddTag, onDeleteTag, onOpenSettings, onFolderContext, onTagContext }: SidebarProps) {
+export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount = 0, binCount, onSelect, onAddFolder, onDeleteFolder, onAddTag, onDeleteTag, onOpenSettings, onFolderContext, onTagContext, onDropBookmark }: SidebarProps) {
   const isActive = (s: Selection): boolean => {
     if (s.type !== selection.type) return false
     if (s.type === 'all') return true
@@ -132,6 +161,8 @@ export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount = 
           label="Inbox"
           count={inboxCount}
           ariaLabel={`Inbox, ${inboxCount} unsorted`}
+          folderId={null}
+          onDropBookmark={onDropBookmark}
         />
         <SidebarItem
           active={isActive({ type: 'all' })}
@@ -163,6 +194,8 @@ export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount = 
               icon={<IconFolder />}
               label={folder.name}
               onDelete={() => onDeleteFolder(folder.id)}
+              folderId={folder.id}
+              onDropBookmark={onDropBookmark}
             />
           ))
         }
