@@ -1,0 +1,263 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump (empty = auto-detect from commits)'
+        required: false
+        default: ''
+        type: choice
+        options:
+          - ''
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    name: Prepare release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.calc.outputs.version }}
+      tag: ${{ steps.calc.outputs.tag }}
+      changelog: ${{ steps.calc.outputs.changelog }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Calculate version and changelog
+        id: calc
+        env:
+          BUMP_OVERRIDE: ${{ inputs.bump }}
+        run: |
+          python3 - <<'PYEOF'
+          import subprocess, re, json, os
+          from pathlib import Path
+
+          try:
+              last_tag = subprocess.check_output(['git', 'describe', '--tags', '--abbrev=0']).decode().strip()
+              range_spec = f'{last_tag}..HEAD'
+          except subprocess.CalledProcessError:
+              last_tag = ''
+              range_spec = 'HEAD'
+
+          raw = subprocess.check_output(['git', 'log', range_spec, '--pretty=format:%s']).decode().strip()
+          commits = [c for c in raw.split('\n') if c and not c.startswith('Merge ')]
+
+          if not commits:
+              print("No commits since last release")
+              raise SystemExit(1)
+
+          bump_override = os.environ.get('BUMP_OVERRIDE', '').strip()
+          bump = 'patch'
+          for c in commits:
+              if 'BREAKING CHANGE' in c or re.match(r'^[a-z]+(\(.+\))?!:', c):
+                  bump = 'major'; break
+              if re.match(r'^feat(\(.+\))?:', c):
+                  bump = 'minor'
+          if bump_override in ('major', 'minor', 'patch'):
+              bump = bump_override
+
+          pkg = json.loads(Path('package.json').read_text())
+          major, minor, patch = map(int, pkg['version'].split('.'))
+          if bump == 'major':   new_ver = f'{major+1}.0.0'
+          elif bump == 'minor': new_ver = f'{major}.{minor+1}.0'
+          else:                 new_ver = f'{major}.{minor}.{patch+1}'
+
+          breaking, feats, fixes, perfs = [], [], [], []
+          for c in commits:
+              if 'BREAKING CHANGE' in c or re.match(r'^[a-z]+(\(.+\))?!:', c):
+                  breaking.append(re.sub(r'^[a-z]+(\(.+\))?!?:\s*', '', c))
+              elif re.match(r'^feat(\(.+\))?:', c):
+                  feats.append(re.sub(r'^feat(\(.+\))?: ', '', c))
+              elif re.match(r'^fix(\(.+\))?:', c):
+                  fixes.append(re.sub(r'^fix(\(.+\))?: ', '', c))
+              elif re.match(r'^perf(\(.+\))?:', c):
+                  perfs.append(re.sub(r'^perf(\(.+\))?: ', '', c))
+
+          parts = []
+          if breaking: parts.append('### Breaking Changes\n\n' + '\n'.join(f'- {x}' for x in breaking))
+          if feats:    parts.append('### Features\n\n'          + '\n'.join(f'- {x}' for x in feats))
+          if fixes:    parts.append('### Bug Fixes\n\n'          + '\n'.join(f'- {x}' for x in fixes))
+          if perfs:    parts.append('### Performance\n\n'        + '\n'.join(f'- {x}' for x in perfs))
+          changelog = '\n\n'.join(parts)
+
+          gho = os.environ['GITHUB_OUTPUT']
+          with open(gho, 'a') as f:
+              f.write(f'version={new_ver}\n')
+              f.write(f'tag=v{new_ver}\n')
+              delim = 'CHANGELOG_HEREDOC_EOF'
+              f.write(f'changelog<<{delim}\n{changelog}\n{delim}\n')
+
+          print(f'Bump: {bump} → {new_ver}')
+          PYEOF
+
+      - name: Update package.json version
+        env:
+          VERSION: ${{ steps.calc.outputs.version }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os
+          from pathlib import Path
+          p = Path('package.json')
+          pkg = json.loads(p.read_text())
+          pkg['version'] = os.environ['VERSION']
+          p.write_text(json.dumps(pkg, indent=2) + '\n')
+          PYEOF
+
+      - name: Update tauri.conf.json version
+        env:
+          VERSION: ${{ steps.calc.outputs.version }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os
+          from pathlib import Path
+          p = Path('src-tauri/tauri.conf.json')
+          conf = json.loads(p.read_text())
+          conf['version'] = os.environ['VERSION']
+          p.write_text(json.dumps(conf, indent=2) + '\n')
+          PYEOF
+
+      - name: Update Cargo.toml version
+        env:
+          VERSION: ${{ steps.calc.outputs.version }}
+        run: |
+          sed -i "0,/^version = .*/s//version = \"$VERSION\"/" src-tauri/Cargo.toml
+
+      - name: Update CHANGELOG.md
+        env:
+          VERSION: ${{ steps.calc.outputs.version }}
+          CHANGELOG: ${{ steps.calc.outputs.changelog }}
+        run: |
+          python3 - <<'PYEOF'
+          import os
+          from pathlib import Path
+          from datetime import date
+
+          version = os.environ['VERSION']
+          changelog = os.environ['CHANGELOG']
+          today = date.today().isoformat()
+
+          p = Path('CHANGELOG.md')
+          content = p.read_text()
+          lines = content.split('\n')
+
+          new_entry = f'## [{version}] - {today}\n\n{changelog}\n'
+          # Insert after the first line (the # Changelog heading)
+          lines.insert(1, '\n' + new_entry)
+          p.write_text('\n'.join(lines))
+          PYEOF
+
+      - name: Commit and tag
+        env:
+          VERSION: ${{ steps.calc.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml CHANGELOG.md
+          git commit -m "chore(release): v$VERSION"
+          git tag "v$VERSION"
+          git push origin HEAD:main
+          git push origin "v$VERSION"
+
+  build:
+    name: Build (${{ matrix.artifact-name }})
+    needs: prepare
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-22.04
+            artifact-name: linux
+            rust-targets: ''
+            tauri-args: ''
+          - platform: windows-latest
+            artifact-name: windows
+            rust-targets: ''
+            tauri-args: ''
+          - platform: macos-latest
+            artifact-name: macos
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            tauri-args: --target universal-apple-darwin
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            pkg-config \
+            build-essential
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workdir: src-tauri
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build Tauri app
+        id: tauri-build
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: ${{ matrix.tauri-args }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.artifact-name }}
+          path: "${{ join(fromJSON(steps.tauri-build.outputs.artifactPaths), '\n') }}"
+          retention-days: 1
+
+  release:
+    name: Create GitHub release
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Create GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          CHANGELOG: ${{ needs.prepare.outputs.changelog }}
+        run: |
+          printf '%s' "$CHANGELOG" > release-notes.md
+          readarray -t FILES < <(find release-artifacts -type f | sort)
+          gh release create "$TAG" \
+            --title "Release $TAG" \
+            --notes-file release-notes.md \
+            "${FILES[@]}"
