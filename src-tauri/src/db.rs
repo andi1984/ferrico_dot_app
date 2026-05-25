@@ -1,6 +1,6 @@
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use uuid::Uuid;
 
@@ -281,11 +281,26 @@ pub(crate) fn append_folder_tree(
     parent_id: Option<&str>,
     indent: usize,
 ) {
+    let mut visited = HashSet::new();
+    append_folder_tree_inner(xml, folders, bookmarks, parent_id, indent, &mut visited);
+}
+
+fn append_folder_tree_inner(
+    xml: &mut String,
+    folders: &[Folder],
+    bookmarks: &[RawBookmark],
+    parent_id: Option<&str>,
+    indent: usize,
+    visited: &mut HashSet<String>,
+) {
     let pad = " ".repeat(indent);
     for folder in folders
         .iter()
         .filter(|f| f.parent_id.as_deref() == parent_id)
     {
+        if !visited.insert(folder.id.clone()) {
+            continue; // cycle in folder tree — skip to avoid infinite recursion
+        }
         xml.push_str(&format!(
             "{}<outline text=\"{}\">\n",
             pad,
@@ -297,7 +312,7 @@ pub(crate) fn append_folder_tree(
         {
             append_outline(xml, b, indent + 2);
         }
-        append_folder_tree(xml, folders, bookmarks, Some(&folder.id), indent + 2);
+        append_folder_tree_inner(xml, folders, bookmarks, Some(&folder.id), indent + 2, visited);
         xml.push_str(&format!("{}</outline>\n", pad));
     }
     if parent_id.is_none() {

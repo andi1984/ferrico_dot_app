@@ -276,6 +276,10 @@ pub fn validate_dl_depth(html: &str, max_depth: usize) -> Result<(), AppError> {
     let mut pos = 0;
 
     while pos < lower.len() {
+        // Jump to the next '<' — it's always ASCII so pos stays on a char boundary.
+        let Some(offset) = lower[pos..].find('<') else { break };
+        pos += offset;
+
         if lower[pos..].starts_with("</dl") {
             depth = depth.saturating_sub(1);
             pos += 5;
@@ -294,7 +298,7 @@ pub fn validate_dl_depth(html: &str, max_depth: usize) -> Result<(), AppError> {
             }
             pos += 3;
         } else {
-            pos += 1;
+            pos += 1; // skip past this '<'; it's ASCII so safe to add 1
         }
     }
 
@@ -684,5 +688,15 @@ mod tests {
             validate_dl_depth(html, 1),
             Err(AppError::Validation { .. })
         ));
+    }
+
+    #[test]
+    fn dl_depth_with_multibyte_chars_does_not_panic() {
+        // Em dash (—, 3 bytes) and other multi-byte chars must not cause a
+        // char-boundary panic in the byte-level scanner.
+        let html = "<!DOCTYPE netscape-bookmark-file-1>\
+            <title>raindrop.io bookmarks — exported</title>\
+            <DL><DT><A HREF=\"https://example.com\">café &amp; résumé</A></DT></DL>";
+        assert!(validate_dl_depth(html, MAX_DL_DEPTH).is_ok());
     }
 }
