@@ -287,8 +287,20 @@ async fn run_claude(prompt: &str) -> Result<String, AppError> {
         .output()
         .await
         .map_err(|e| AppError::Validation {
-            message: format!("claude CLI unavailable: {e}"),
+            message: format!("claude CLI not found: {e}"),
         })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(AppError::Validation {
+            message: format!(
+                "claude exited {:?} — stderr: {} stdout: {}",
+                output.status.code(),
+                stderr.trim(),
+                stdout.trim()
+            ),
+        });
+    }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 

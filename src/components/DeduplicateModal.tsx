@@ -102,8 +102,8 @@ export function DeduplicateModal({ onClose, onDone }: DeduplicateModalProps) {
         })
       )
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      setClaudeError(msg)
+      const raw = e instanceof Error ? e.message : typeof e === 'object' && e !== null && 'message' in e ? (e as { message: string }).message : String(e)
+      setClaudeError(raw)
     } finally {
       setClaudeLoading(false)
     }
@@ -301,8 +301,9 @@ export function DeduplicateModal({ onClose, onDone }: DeduplicateModalProps) {
             </div>
 
             {claudeError && (
-              <div className="mx-6 mt-4 rounded-lg px-4 py-2.5 text-xs" style={{ background: 'rgba(224,82,82,0.08)', color: '#e07070', border: '1px solid rgba(224,82,82,0.15)' }}>
-                Claude unavailable — selections were not changed. Pick manually below.
+              <div className="mx-6 mt-4 rounded-lg px-4 py-2.5 text-xs flex flex-col gap-1" style={{ background: 'rgba(224,82,82,0.08)', color: '#e07070', border: '1px solid rgba(224,82,82,0.15)' }}>
+                <span className="font-medium">Claude unavailable — pick manually below.</span>
+                <span className="opacity-70 font-mono break-all">{claudeError}</span>
               </div>
             )}
             {applyError && (
