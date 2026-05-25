@@ -11,13 +11,14 @@ import { AddFolderModal } from './components/AddFolderModal'
 import { AddTagModal } from './components/AddTagModal'
 import { SettingsModal } from './components/SettingsModal'
 import { ImportCsvModal } from './components/ImportCsvModal'
+import { ImportModal } from './components/ImportModal'
 import { InboxSortModal } from './components/InboxSortModal'
 import { Sidebar, INBOX_DROP_TARGET } from './components/Sidebar'
 import { EmptyState } from './components/EmptyState'
 import { useDragDrop } from './useDragDrop'
-import { IconClose, IconPlus, IconSearch, IconLayoutList, IconLayoutGrid, IconSort, IconChevronDown, IconSparkles } from './components/icons'
+import { IconClose, IconImport, IconPlus, IconSearch, IconLayoutList, IconLayoutGrid, IconSort, IconChevronDown, IconSparkles } from './components/icons'
 
-type Modal = 'add-bookmark' | 'add-folder' | 'add-tag' | 'settings' | 'import-csv' | 'inbox-sort' | null
+type Modal = 'add-bookmark' | 'add-folder' | 'add-tag' | 'settings' | 'import' | 'import-csv' | 'inbox-sort' | null
 
 // ─── Loading skeleton ─────────────────────────────────────────────────────────
 
@@ -555,14 +556,15 @@ export default function App() {
               )}
 
               <button
-                onClick={() => setModal('import-csv')}
+                onClick={() => setModal('import')}
                 className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors duration-150 flex-none cursor-pointer"
                 style={{ border: '1px solid var(--border-mid)', color: 'var(--text-secondary)' }}
                 onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--border-bright)')}
                 onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--border-mid)')}
-                aria-label="Import CSV"
+                aria-label="Import bookmarks"
               >
-                Import CSV
+                <IconImport size={13} />
+                Import
               </button>
 
               <button
@@ -643,6 +645,13 @@ export default function App() {
           onClear={() => { setModal(null); loadAll() }}
           onDone={loadAll}
           onImportCsv={() => { setModal('import-csv') }}
+        />
+      )}
+      {modal === 'import' && (
+        <ImportModal
+          onClose={() => setModal(null)}
+          onDone={loadAll}
+          onImportCsv={() => setModal('import-csv')}
         />
       )}
       {modal === 'import-csv' && (
