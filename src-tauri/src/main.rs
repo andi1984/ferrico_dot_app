@@ -276,19 +276,39 @@ fn clear_all_data(state: State<'_, AppState>) -> Result<(), AppError> {
 // ─── Claude CLI Helper ────────────────────────────────────────────────────────
 
 async fn run_claude(prompt: &str) -> Result<String, AppError> {
+    use tokio::io::AsyncWriteExt;
+
     let home = std::env::var("HOME").unwrap_or_default();
     let existing_path = std::env::var("PATH").unwrap_or_default();
     let extended_path =
         format!("{home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:{existing_path}");
-    let output = tokio::process::Command::new("claude")
+
+    // Pass prompt via stdin to avoid E2BIG when prompt exceeds ARG_MAX
+    let mut child = tokio::process::Command::new("claude")
         .arg("-p")
-        .arg(prompt)
+        .arg("-")
         .env("PATH", &extended_path)
-        .output()
-        .await
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .map_err(|e| AppError::Validation {
             message: format!("claude CLI not found: {e}"),
         })?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(prompt.as_bytes())
+            .await
+            .map_err(|e| AppError::Validation {
+                message: format!("failed to write to claude stdin: {e}"),
+            })?;
+    }
+
+    let output = child.wait_with_output().await.map_err(|e| AppError::Validation {
+        message: format!("claude process error: {e}"),
+    })?;
+
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
