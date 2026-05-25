@@ -1,13 +1,47 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { ModalShell, FieldLabel } from './ModalShell'
-import { IconExport } from './icons'
+import { IconExport, IconImport } from './icons'
 
-export function SettingsModal({ onClose, onClear }: { onClose: () => void; onClear: () => void }) {
+interface ImportResult {
+  imported: number
+  errors: string[]
+}
+
+type ExportFormat = 'json' | 'html' | 'opml' | 'csv'
+
+const EXPORT_FORMATS: { key: ExportFormat; label: string; command: string; ext: string; mime: string }[] = [
+  { key: 'json',  label: 'JSON',          command: 'export_json',          ext: 'json', mime: 'application/json' },
+  { key: 'html',  label: 'Netscape HTML', command: 'export_netscape_html', ext: 'html', mime: 'text/html' },
+  { key: 'opml',  label: 'OPML',          command: 'export_opml',          ext: 'opml', mime: 'text/xml' },
+  { key: 'csv',   label: 'CSV',           command: 'export_csv',           ext: 'csv',  mime: 'text/csv' },
+]
+
+const IMPORT_COMMANDS: Record<string, string> = {
+  json: 'import_json',
+  html: 'import_netscape_html',
+  htm:  'import_netscape_html',
+  opml: 'import_opml',
+  xml:  'import_opml',
+}
+
+export interface SettingsModalProps {
+  onClose: () => void
+  onClear: () => void
+  onDone: () => void
+  onImportCsv: () => void
+}
+
+export function SettingsModal({ onClose, onClear, onDone, onImportCsv }: SettingsModalProps) {
   const [token, setToken] = useState('')
   const [copied, setCopied] = useState(false)
   const [confirmClear, setConfirmClear] = useState(false)
   const [clearing, setClearing] = useState(false)
+  const [exportBusy, setExportBusy] = useState<ExportFormat | null>(null)
+  const [importResult, setImportResult] = useState<ImportResult | null>(null)
+  const [importError, setImportError] = useState<string | null>(null)
+  const [importing, setImporting] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => { invoke<string>('get_api_token').then(setToken) }, [])
 
@@ -17,15 +51,60 @@ export function SettingsModal({ onClose, onClear }: { onClose: () => void; onCle
     setTimeout(() => setCopied(false), 2000)
   }
 
-  async function handleExport() {
-    const opml = await invoke<string>('export_opml')
-    const blob = new Blob([opml], { type: 'text/xml' })
-    const objectUrl = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = objectUrl
-    a.download = 'ferrico-bookmarks.opml'
-    a.click()
-    URL.revokeObjectURL(objectUrl)
+  async function handleExport(fmt: typeof EXPORT_FORMATS[number]) {
+    setExportBusy(fmt.key)
+    try {
+      const content = await invoke<string>(fmt.command)
+      const blob = new Blob([content], { type: fmt.mime })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `ferrico-bookmarks.${fmt.ext}`
+      a.click()
+      URL.revokeObjectURL(url)
+    } finally {
+      setExportBusy(null)
+    }
+  }
+
+  function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    e.target.value = ''
+
+    const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+
+    if (ext === 'csv') {
+      onImportCsv()
+      return
+    }
+
+    const command = IMPORT_COMMANDS[ext]
+    if (!command) {
+      setImportError(`Unsupported file type: .${ext}. Use .json, .html, .opml, .xml, or .csv.`)
+      return
+    }
+
+    const reader = new FileReader()
+    reader.onload = async (ev) => {
+      const text = ev.target?.result as string
+      setImporting(true)
+      setImportError(null)
+      setImportResult(null)
+      try {
+        const result = await invoke<ImportResult>(command, ext === 'json' ? { json: text } : ext === 'opml' || ext === 'xml' ? { xml: text } : { html: text })
+        setImportResult(result)
+        if (result.imported > 0) onDone()
+      } catch (err) {
+        const msg = typeof err === 'object' && err !== null && 'message' in err
+          ? (err as { message: string }).message
+          : String(err)
+        setImportError(msg)
+      } finally {
+        setImporting(false)
+      }
+    }
+    reader.readAsText(file)
   }
 
   async function handleClearConfirmed() {
@@ -41,6 +120,8 @@ export function SettingsModal({ onClose, onClear }: { onClose: () => void; onCle
   return (
     <ModalShell title="Settings" onClose={onClose}>
       <div className="p-6 flex flex-col gap-6">
+
+        {/* Browser Extension Token */}
         <div>
           <FieldLabel>Browser Extension Token</FieldLabel>
           <p className="text-xs mb-3" style={{ color: 'var(--text-secondary)' }}>
@@ -68,26 +149,89 @@ export function SettingsModal({ onClose, onClear }: { onClose: () => void; onCle
           </div>
         </div>
 
+        {/* Import & Export */}
         <div style={{ borderTop: '1px solid var(--border-dim)', paddingTop: '1.5rem' }}>
           <FieldLabel>Export</FieldLabel>
           <p className="text-xs mb-3" style={{ color: 'var(--text-secondary)' }}>
-            Download all bookmarks as an OPML file.
+            Download all bookmarks. JSON is lossless (recommended for backup/sync); Netscape HTML works in all browsers.
           </p>
+          <div className="flex flex-wrap gap-2">
+            {EXPORT_FORMATS.map((fmt) => (
+              <button
+                key={fmt.key}
+                onClick={() => handleExport(fmt)}
+                disabled={exportBusy !== null}
+                className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-all duration-150 cursor-pointer"
+                style={{
+                  background: 'var(--bg-elevated)',
+                  border: '1px solid var(--border-mid)',
+                  color: 'var(--text-secondary)',
+                  opacity: exportBusy !== null && exportBusy !== fmt.key ? 0.5 : 1,
+                }}
+                onMouseEnter={(e) => { if (!exportBusy) e.currentTarget.style.borderColor = 'var(--border-bright)' }}
+                onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--border-mid)' }}
+              >
+                {exportBusy === fmt.key
+                  ? <span className="inline-block w-3 h-3 rounded-full border-2 animate-spin flex-none" style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
+                  : <IconExport size={13} />
+                }
+                {fmt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <FieldLabel>Import</FieldLabel>
+          <p className="text-xs mb-3" style={{ color: 'var(--text-secondary)' }}>
+            Supports JSON, Netscape HTML (.html), OPML (.opml/.xml), and CSV. CSV opens the field-mapping wizard.
+          </p>
+
           <button
-            onClick={handleExport}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-150 cursor-pointer"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={importing}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-all duration-150 cursor-pointer"
             style={{
               background: 'var(--bg-elevated)',
               border: '1px solid var(--border-mid)',
               color: 'var(--text-secondary)',
             }}
-            onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--border-bright)')}
-            onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--border-mid)')}
-            aria-label="Export OPML"
+            onMouseEnter={(e) => { if (!importing) e.currentTarget.style.borderColor = 'var(--border-bright)' }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--border-mid)' }}
           >
-            <IconExport size={14} />
-            Export OPML
+            {importing
+              ? <span className="inline-block w-3 h-3 rounded-full border-2 animate-spin flex-none" style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
+              : <IconImport size={13} />
+            }
+            {importing ? 'Importing…' : 'Choose file to import…'}
           </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json,.html,.htm,.opml,.xml,.csv"
+            className="hidden"
+            onChange={handleImportFile}
+          />
+
+          {importError && (
+            <div className="mt-3 rounded-lg px-4 py-3 text-xs" style={{ background: 'rgba(224,82,82,0.08)', color: '#e07070', border: '1px solid rgba(224,82,82,0.15)' }}>
+              {importError}
+            </div>
+          )}
+
+          {importResult && (
+            <div className="mt-3 rounded-lg px-4 py-3 text-xs flex flex-col gap-1" style={{ background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.2)' }}>
+              <p style={{ color: 'var(--text-primary)' }}>
+                {importResult.imported.toLocaleString()} bookmark{importResult.imported === 1 ? '' : 's'} imported.
+              </p>
+              {importResult.errors.length > 0 && (
+                <ul className="mt-1 space-y-0.5 list-disc list-inside" style={{ color: '#e07070' }}>
+                  {importResult.errors.slice(0, 5).map((e, i) => <li key={i}>{e}</li>)}
+                  {importResult.errors.length > 5 && <li>…and {importResult.errors.length - 5} more</li>}
+                </ul>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Danger zone */}

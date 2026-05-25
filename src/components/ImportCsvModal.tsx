@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import Papa from 'papaparse'
 import { IconClose } from './icons'
@@ -54,9 +54,11 @@ function getCell(row: string[], colIndex: Map<string, number>, col: string | nul
 export interface ImportCsvModalProps {
   onClose: () => void
   onDone: () => void
+  csvDropPath?: string | null
+  onCsvDropConsumed?: () => void
 }
 
-export function ImportCsvModal({ onClose, onDone }: ImportCsvModalProps) {
+export function ImportCsvModal({ onClose, onDone, csvDropPath, onCsvDropConsumed }: ImportCsvModalProps) {
   const [step, setStep] = useState<Step>('select')
   const [csv, setCsv] = useState<ParsedCsv | null>(null)
   const [mapping, setMapping] = useState<Mapping>({ url: null, title: null, description: null, favicon_url: null, feed_url: null, folder_name: null, tag_names: null })
@@ -68,32 +70,51 @@ export function ImportCsvModal({ onClose, onDone }: ImportCsvModalProps) {
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  // Auto-load a CSV that was dropped via Tauri's native drag-drop
+  useEffect(() => {
+    if (!csvDropPath) return
+    onCsvDropConsumed?.()
+    invoke<string>('read_text_file', { path: csvDropPath })
+      .then((text) => parseCsvText(text))
+      .catch(() => {/* user can still pick manually */})
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  function processParsedRows(rows: string[][]) {
+    if (!rows.length) return
+    const [headerRow, ...dataRows] = rows
+    const colIndex = buildColIndex(headerRow)
+    const parsed: ParsedCsv = { headers: headerRow, rows: dataRows, colIndex }
+    setCsv(parsed)
+    setStep('mapping')
+    setClaudeLoading(true)
+    setClaudeError(null)
+    invoke<Mapping>('suggest_csv_mapping', {
+      headers: parsed.headers,
+      sampleRows: parsed.rows.slice(0, 5),
+    })
+      .then((suggested) => setMapping(suggested))
+      .catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        setClaudeError(msg)
+      })
+      .finally(() => setClaudeLoading(false))
+  }
+
+  function parseCsvText(text: string) {
+    Papa.parse<string[]>(text, {
+      header: false,
+      skipEmptyLines: true,
+      complete(res) { processParsedRows(res.data) },
+    })
+  }
+
   function parseCsvFile(file: File) {
     // Use papaparse's async File API — reads in chunks, doesn't block the thread
     Papa.parse<string[]>(file, {
       header: false,
       skipEmptyLines: true,
-      complete(res) {
-        if (!res.data.length) return
-        const [headerRow, ...dataRows] = res.data
-        const colIndex = buildColIndex(headerRow)
-        const parsed: ParsedCsv = { headers: headerRow, rows: dataRows, colIndex }
-        setCsv(parsed)
-        setStep('mapping')
-        setClaudeLoading(true)
-        setClaudeError(null)
-
-        invoke<Mapping>('suggest_csv_mapping', {
-          headers: parsed.headers,
-          sampleRows: parsed.rows.slice(0, 5),
-        })
-          .then((suggested) => setMapping(suggested))
-          .catch((err) => {
-            const msg = err instanceof Error ? err.message : String(err)
-            setClaudeError(msg)
-          })
-          .finally(() => setClaudeLoading(false))
-      },
+      complete(res) { processParsedRows(res.data) },
     })
   }
 

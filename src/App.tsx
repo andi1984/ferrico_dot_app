@@ -11,15 +11,16 @@ import { AddFolderModal } from './components/AddFolderModal'
 import { AddTagModal } from './components/AddTagModal'
 import { SettingsModal } from './components/SettingsModal'
 import { ImportCsvModal } from './components/ImportCsvModal'
+import { ImportModal } from './components/ImportModal'
 import { InboxSortModal } from './components/InboxSortModal'
 import { Sidebar, INBOX_DROP_TARGET } from './components/Sidebar'
 import { EmptyState } from './components/EmptyState'
 import { useDragDrop } from './useDragDrop'
-import { IconClose, IconPlus, IconSearch, IconLayoutList, IconLayoutGrid, IconSort, IconChevronDown, IconSparkles, IconSun, IconMoon } from './components/icons'
+import { IconClose, IconImport, IconPlus, IconSearch, IconLayoutList, IconLayoutGrid, IconSort, IconChevronDown, IconSparkles, IconSun, IconMoon } from './components/icons'
 
 type Theme = 'dark' | 'light'
 
-type Modal = 'add-bookmark' | 'add-folder' | 'add-tag' | 'settings' | 'import-csv' | 'inbox-sort' | null
+type Modal = 'add-bookmark' | 'add-folder' | 'add-tag' | 'settings' | 'import' | 'import-csv' | 'inbox-sort' | null
 
 // ─── Loading skeleton ─────────────────────────────────────────────────────────
 
@@ -154,6 +155,7 @@ export default function App() {
   const [addHovered, setAddHovered] = useState(false)
   const [searchFocused, setSearchFocused] = useState(false)
   const [ctxMenu, setCtxMenu] = useState<CtxMenuState | null>(null)
+  const [csvDropPath, setCsvDropPath] = useState<string | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
 
   const [viewMode, setViewMode] = useState<ViewMode>(() =>
@@ -664,22 +666,23 @@ export default function App() {
               )}
 
               <button
-                onClick={() => setModal('import-csv')}
-                className="rounded-lg transition-colors duration-150 flex-none cursor-pointer"
+                onClick={() => setModal('import')}
+                className="flex items-center gap-1.5 rounded-lg transition-colors duration-150 flex-none cursor-pointer"
                 style={{
                   height: 32,
                   padding: '0 11px',
                   background: 'var(--input-bg)',
                   border: '1px solid var(--border-soft)',
-                  color: 'var(--text-1)',
+                  color: 'var(--text-2)',
                   fontSize: 12,
                   fontWeight: 500,
                   whiteSpace: 'nowrap',
                 }}
                 onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--btn-hover-bg)')}
                 onMouseLeave={(e) => (e.currentTarget.style.background = 'var(--input-bg)')}
-                aria-label="Import CSV"
+                aria-label="Import bookmarks"
               >
+                <IconImport size={13} />
                 Import
               </button>
 
@@ -745,10 +748,27 @@ export default function App() {
         <AddTagModal onAdd={handleAddTag} onClose={() => setModal(null)} />
       )}
       {modal === 'settings' && (
-        <SettingsModal onClose={() => setModal(null)} onClear={() => { setModal(null); loadAll() }} />
+        <SettingsModal
+          onClose={() => setModal(null)}
+          onClear={() => { setModal(null); loadAll() }}
+          onDone={loadAll}
+          onImportCsv={() => { setModal('import-csv') }}
+        />
+      )}
+      {modal === 'import' && (
+        <ImportModal
+          onClose={() => setModal(null)}
+          onDone={loadAll}
+          onImportCsv={(path) => { setCsvDropPath(path ?? null); setModal('import-csv') }}
+        />
       )}
       {modal === 'import-csv' && (
-        <ImportCsvModal onClose={() => setModal(null)} onDone={loadAll} />
+        <ImportCsvModal
+          onClose={() => setModal(null)}
+          onDone={loadAll}
+          csvDropPath={csvDropPath}
+          onCsvDropConsumed={() => setCsvDropPath(null)}
+        />
       )}
       {modal === 'inbox-sort' && bookmarks && (
         <InboxSortModal
