@@ -228,9 +228,10 @@ jobs:
           args: ${{ matrix.tauri-args }}
 
       - uses: actions/upload-artifact@v4
+        if: steps.tauri-build.outputs.artifactPaths != '' && steps.tauri-build.outputs.artifactPaths != '[]'
         with:
           name: binaries-${{ matrix.artifact-name }}
-          path: "${{ join(fromJSON(steps.tauri-build.outputs.artifactPaths || '[]'), '\n') }}"
+          path: "${{ join(fromJSON(steps.tauri-build.outputs.artifactPaths), '\n') }}"
           retention-days: 1
 
   release:
