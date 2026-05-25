@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3] - 2026-05-25
+
+### Bug Fixes
+
+- glob bundle dir directly instead of relying on tauri-action artifactPaths (empty without signing keys)
+
+
 ## [0.2.2] - 2026-05-25
 
 ### Bug Fixes
