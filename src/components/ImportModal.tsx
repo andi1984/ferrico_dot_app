@@ -90,7 +90,8 @@ export function ImportModal({ onClose, onDone, onImportCsv }: ImportModalProps) 
   function handleDrop(e: React.DragEvent) {
     e.preventDefault()
     setDragOver(false)
-    const file = e.dataTransfer.files[0]
+    // WebKitGTK (Linux) often populates items but not files for system drops
+    const file = e.dataTransfer.files[0] ?? e.dataTransfer.items[0]?.getAsFile() ?? null
     if (file) handleFile(file)
   }
 
@@ -106,8 +107,9 @@ export function ImportModal({ onClose, onDone, onImportCsv }: ImportModalProps) 
           tabIndex={state.phase === 'importing' ? -1 : 0}
           aria-label="Choose file to import"
           aria-disabled={state.phase === 'importing'}
+          onDragEnter={(e) => { e.preventDefault(); if (state.phase !== 'importing') setDragOver(true) }}
           onDragOver={(e) => { e.preventDefault(); if (state.phase !== 'importing') setDragOver(true) }}
-          onDragLeave={() => setDragOver(false)}
+          onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false) }}
           onDrop={state.phase !== 'importing' ? handleDrop : undefined}
           onClick={() => state.phase !== 'importing' && fileInputRef.current?.click()}
           onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && state.phase !== 'importing' && fileInputRef.current?.click()}
