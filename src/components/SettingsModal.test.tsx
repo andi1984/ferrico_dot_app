@@ -25,7 +25,7 @@ describe('SettingsModal', () => {
   })
 
   it('loads and displays the API token', async () => {
-    render(<SettingsModal onClose={() => {}} onClear={() => {}} onDone={() => {}} onImportCsv={() => {}} />)
+    render(<SettingsModal onClose={() => {}} onClear={() => {}} onDone={() => {}} onImportCsv={() => {}} onDeduplicate={() => {}} />)
     await waitFor(() => {
       expect(screen.getByText('test-token-123')).toBeInTheDocument()
     })
@@ -33,26 +33,26 @@ describe('SettingsModal', () => {
 
   it('shows a placeholder until the token loads', () => {
     vi.mocked(invoke).mockReturnValue(new Promise(() => {})) // never resolves
-    render(<SettingsModal onClose={() => {}} onClear={() => {}} onDone={() => {}} onImportCsv={() => {}} />)
+    render(<SettingsModal onClose={() => {}} onClear={() => {}} onDone={() => {}} onImportCsv={() => {}} onDeduplicate={() => {}} />)
     expect(screen.getByText('…')).toBeInTheDocument()
   })
 
   it('copies the token to clipboard when Copy is clicked', async () => {
-    render(<SettingsModal onClose={() => {}} onClear={() => {}} onDone={() => {}} onImportCsv={() => {}} />)
+    render(<SettingsModal onClose={() => {}} onClear={() => {}} onDone={() => {}} onImportCsv={() => {}} onDeduplicate={() => {}} />)
     await waitFor(() => screen.getByText('test-token-123'))
     await userEvent.click(screen.getByRole('button', { name: /copy/i }))
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('test-token-123')
   })
 
   it('shows "Copied!" feedback immediately after copying', async () => {
-    render(<SettingsModal onClose={() => {}} onClear={() => {}} onDone={() => {}} onImportCsv={() => {}} />)
+    render(<SettingsModal onClose={() => {}} onClear={() => {}} onDone={() => {}} onImportCsv={() => {}} onDeduplicate={() => {}} />)
     await waitFor(() => screen.getByText('test-token-123'))
     await userEvent.click(screen.getByRole('button', { name: /copy/i }))
     expect(screen.getByText('Copied!')).toBeInTheDocument()
   })
 
   it('calls invoke(export_opml) when the export button is clicked', async () => {
-    render(<SettingsModal onClose={() => {}} onClear={() => {}} onDone={() => {}} onImportCsv={() => {}} />)
+    render(<SettingsModal onClose={() => {}} onClear={() => {}} onDone={() => {}} onImportCsv={() => {}} onDeduplicate={() => {}} />)
     await userEvent.click(screen.getByRole('button', { name: /^opml$/i }))
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('export_opml'))
   })
