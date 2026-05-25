@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1] - 2026-05-25
+
+### Bug Fixes
+
+- generate all platform icons from source PNG; fix fromJSON empty-output crash in release workflow
+
+
 ## [0.2.0] - 2026-05-25
 
 ### Features
