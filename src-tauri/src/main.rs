@@ -24,6 +24,7 @@ use db::{
     db_get_inbox_count, db_import_bookmarks, db_move_bookmark, db_permanently_delete_bookmark,
     db_purge_expired_bin, db_restore_bookmark,
     db_get_bookmark_count, db_get_bookmarks, db_get_folders, db_get_tags,
+    db_find_duplicate_bookmarks, db_merge_bookmark_duplicates,
     now, open_db,
 };
 use error::AppError;
@@ -686,10 +687,107 @@ fn main() {
             import_bookmarks,
             suggest_inbox_sort,
             apply_inbox_sort,
+            find_duplicate_bookmarks,
+            merge_bookmark_duplicates,
+            suggest_duplicate_resolution,
             read_text_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+// ─── Deduplication ────────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn find_duplicate_bookmarks(state: State<'_, AppState>) -> Result<Vec<Vec<Bookmark>>, AppError> {
+    let db = lock_db!(state);
+    db_find_duplicate_bookmarks(&db)
+}
+
+#[derive(serde::Deserialize)]
+struct MergeInput {
+    keeper_id: String,
+    discard_ids: Vec<String>,
+}
+
+#[tauri::command]
+fn merge_bookmark_duplicates(input: MergeInput, state: State<'_, AppState>) -> Result<(), AppError> {
+    let db = lock_db!(state);
+    db_merge_bookmark_duplicates(&db, &input.keeper_id, &input.discard_ids)
+}
+
+#[derive(serde::Deserialize)]
+struct DuplicateGroupInput {
+    group_index: usize,
+    bookmarks: Vec<InboxBookmarkInput>,
+}
+
+#[derive(serde::Serialize)]
+struct DuplicateResolution {
+    group_index: usize,
+    keeper_id: String,
+}
+
+#[tauri::command]
+async fn suggest_duplicate_resolution(
+    groups: Vec<DuplicateGroupInput>,
+) -> Result<Vec<DuplicateResolution>, AppError> {
+    if groups.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let groups_text: String = groups
+        .iter()
+        .map(|g| {
+            let entries = g
+                .bookmarks
+                .iter()
+                .map(|b| {
+                    let desc = b.description.as_deref().unwrap_or("(none)");
+                    format!("  - id={} title={:?} desc={:?}", b.id, b.title, desc)
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!("Group {}:\n{}", g.group_index, entries)
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    let prompt = format!(
+        "You are helping a user deduplicate bookmarks. Each group has the same URL but different metadata.\n\n\
+         For each group, pick the best bookmark to keep (most complete title, has description, most informative).\n\n\
+         {groups_text}\n\n\
+         Respond ONLY with a JSON array:\n\
+         [{{\"group_index\": 0, \"keeper_id\": \"<id>\"}}, ...]\n\
+         Include one entry per group."
+    );
+
+    let raw = run_claude(&prompt).await?;
+    let trimmed = raw.trim();
+    let json_str = if let (Some(start), Some(end)) = (trimmed.find('['), trimmed.rfind(']')) {
+        &trimmed[start..=end]
+    } else {
+        return Err(AppError::Validation {
+            message: "Could not find JSON array in Claude response".into(),
+        });
+    };
+
+    let value: Vec<serde_json::Value> =
+        serde_json::from_str(json_str).map_err(|e| AppError::Validation {
+            message: format!("Could not parse Claude response: {e}"),
+        })?;
+
+    let resolutions: Vec<DuplicateResolution> = value
+        .into_iter()
+        .filter_map(|obj| {
+            let group_index = obj["group_index"].as_u64()? as usize;
+            let keeper_id = obj["keeper_id"].as_str()?.to_string();
+            if keeper_id.is_empty() { return None; }
+            Some(DuplicateResolution { group_index, keeper_id })
+        })
+        .collect();
+
+    Ok(resolutions)
 }
 
 #[tauri::command]

@@ -13,6 +13,7 @@ import { SettingsModal } from './components/SettingsModal'
 import { ImportCsvModal } from './components/ImportCsvModal'
 import { ImportModal } from './components/ImportModal'
 import { InboxSortModal } from './components/InboxSortModal'
+import { DeduplicateModal } from './components/DeduplicateModal'
 import { Sidebar, INBOX_DROP_TARGET } from './components/Sidebar'
 import { EmptyState } from './components/EmptyState'
 import { useDragDrop } from './useDragDrop'
@@ -20,7 +21,7 @@ import { IconClose, IconImport, IconPlus, IconSearch, IconLayoutList, IconLayout
 
 type Theme = 'dark' | 'light'
 
-type Modal = 'add-bookmark' | 'add-folder' | 'add-tag' | 'settings' | 'import' | 'import-csv' | 'inbox-sort' | null
+type Modal = 'add-bookmark' | 'add-folder' | 'add-tag' | 'settings' | 'import' | 'import-csv' | 'inbox-sort' | 'deduplicate' | null
 
 // ─── Loading skeleton ─────────────────────────────────────────────────────────
 
@@ -753,6 +754,7 @@ export default function App() {
           onClear={() => { setModal(null); loadAll() }}
           onDone={loadAll}
           onImportCsv={() => { setModal('import-csv') }}
+          onDeduplicate={() => setModal('deduplicate')}
         />
       )}
       {modal === 'import' && (
@@ -774,6 +776,13 @@ export default function App() {
         <InboxSortModal
           bookmarks={bookmarks}
           folders={folders}
+          onClose={() => setModal(null)}
+          onDone={loadAll}
+        />
+      )}
+
+      {modal === 'deduplicate' && (
+        <DeduplicateModal
           onClose={() => setModal(null)}
           onDone={loadAll}
         />
