@@ -242,7 +242,7 @@ export function SettingsModal({ onClose, onClear, onDone, onImportCsv, onDedupli
             Find and remove bookmarks with the same URL. Tags from duplicates are merged into the one you keep.
           </p>
           <button
-            onClick={() => { onDeduplicate(); onClose() }}
+            onClick={onDeduplicate}
             className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-all duration-150 cursor-pointer"
             style={{
               background: 'var(--bg-elevated)',
