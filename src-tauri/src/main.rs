@@ -748,10 +748,18 @@ fn merge_bookmark_duplicates(input: MergeInput, state: State<'_, AppState>) -> R
     db_merge_bookmark_duplicates(&db, &input.keeper_id, &input.discard_ids)
 }
 
+// Each bookmark in a duplicate group — no url (same for all entries in group)
+#[derive(serde::Deserialize)]
+struct DupBookmarkInput {
+    id: String,
+    title: String,
+    description: Option<String>,
+}
+
 #[derive(serde::Deserialize)]
 struct DuplicateGroupInput {
     group_index: usize,
-    bookmarks: Vec<InboxBookmarkInput>,
+    bookmarks: Vec<DupBookmarkInput>,
 }
 
 #[derive(serde::Serialize)]
@@ -768,30 +776,35 @@ async fn suggest_duplicate_resolution(
         return Ok(vec![]);
     }
 
+    // Compact one-line-per-group format: "0: A=<id> "Title" [desc] B=<id> "Title2""
+    let letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
     let groups_text: String = groups
         .iter()
         .map(|g| {
             let entries = g
                 .bookmarks
                 .iter()
-                .map(|b| {
-                    let desc = b.description.as_deref().unwrap_or("(none)");
-                    format!("  - id={} title={:?} desc={:?}", b.id, b.title, desc)
+                .enumerate()
+                .map(|(i, b)| {
+                    let letter = letters.get(i).copied().unwrap_or('?');
+                    let desc = if b.description.as_deref().map(|d| !d.is_empty()).unwrap_or(false) {
+                        "[desc]"
+                    } else {
+                        ""
+                    };
+                    format!("{}={} {:?} {}", letter, b.id, b.title, desc)
                 })
                 .collect::<Vec<_>>()
-                .join("\n");
-            format!("Group {}:\n{}", g.group_index, entries)
+                .join("  ");
+            format!("{}: {}", g.group_index, entries)
         })
         .collect::<Vec<_>>()
-        .join("\n\n");
+        .join("\n");
 
     let prompt = format!(
-        "You are helping a user deduplicate bookmarks. Each group has the same URL but different metadata.\n\n\
-         For each group, pick the best bookmark to keep (most complete title, has description, most informative).\n\n\
-         {groups_text}\n\n\
-         Respond ONLY with a JSON array:\n\
-         [{{\"group_index\": 0, \"keeper_id\": \"<id>\"}}, ...]\n\
-         Include one entry per group."
+        "Pick best bookmark per group. Prefer: specific title > has description > longer title.\n\
+         Reply ONLY with JSON array, one object per group: [{{\"g\":0,\"k\":\"<id>\"}}, ...]\n\n\
+         {groups_text}"
     );
 
     let raw = run_claude(&prompt).await?;
@@ -800,7 +813,7 @@ async fn suggest_duplicate_resolution(
         &trimmed[start..=end]
     } else {
         return Err(AppError::Validation {
-            message: "Could not find JSON array in Claude response".into(),
+            message: format!("No JSON array in Claude response: {}", &trimmed[..trimmed.len().min(200)]),
         });
     };
 
@@ -812,8 +825,8 @@ async fn suggest_duplicate_resolution(
     let resolutions: Vec<DuplicateResolution> = value
         .into_iter()
         .filter_map(|obj| {
-            let group_index = obj["group_index"].as_u64()? as usize;
-            let keeper_id = obj["keeper_id"].as_str()?.to_string();
+            let group_index = obj["g"].as_u64()? as usize;
+            let keeper_id = obj["k"].as_str()?.to_string();
             if keeper_id.is_empty() { return None; }
             Some(DuplicateResolution { group_index, keeper_id })
         })

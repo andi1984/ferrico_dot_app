@@ -1,7 +1,9 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { Bookmark } from '../types'
 import { IconClose, IconSparkles, IconCheck, IconLayers } from './icons'
+
+const BATCH_SIZE = 20
 
 interface DuplicateGroup {
   bookmarks: Bookmark[]
@@ -46,8 +48,9 @@ export function DeduplicateModal({ onClose, onDone }: DeduplicateModalProps) {
   const [groups, setGroups] = useState<DuplicateGroup[]>([])
   const [currentGroupIdx, setCurrentGroupIdx] = useState(0)
   const [mergedCount, setMergedCount] = useState(0)
-  const [claudeLoading, setClaudeLoading] = useState(false)
+  const [claudeProgress, setClaudeProgress] = useState<{ done: number; total: number } | null>(null)
   const [claudeError, setClaudeError] = useState<string | null>(null)
+  const cancelRef = useRef(false)
   const [applyError, setApplyError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -76,37 +79,67 @@ export function DeduplicateModal({ onClose, onDone }: DeduplicateModalProps) {
     )
   }, [])
 
+  function cancelClaude() {
+    cancelRef.current = true
+    setClaudeProgress(null)
+  }
+
   async function handleAutoPickWithClaude() {
-    setClaudeLoading(true)
+    cancelRef.current = false
     setClaudeError(null)
-    try {
-      const input = groups.map((g, i) => ({
-        group_index: i,
+    setClaudeProgress({ done: 0, total: groups.length })
+
+    let done = 0
+    const total = groups.length
+    let errorOccurred = false
+
+    for (let offset = 0; offset < total; offset += BATCH_SIZE) {
+      if (cancelRef.current) break
+
+      const batch = groups.slice(offset, offset + BATCH_SIZE)
+      const input = batch.map((g, i) => ({
+        group_index: offset + i,
         bookmarks: g.bookmarks.map((b) => ({
           id: b.id,
-          url: b.url,
           title: b.title,
           description: b.description ?? null,
         })),
       }))
-      const resolutions = await invoke<{ group_index: number; keeper_id: string }[]>(
-        'suggest_duplicate_resolution',
-        { groups: input }
-      )
-      setGroups((prev) =>
-        prev.map((g, i) => {
-          const res = resolutions.find((r) => r.group_index === i)
-          if (!res) return g
-          const valid = g.bookmarks.some((b) => b.id === res.keeper_id)
-          return valid ? { ...g, keeperId: res.keeper_id } : g
+
+      try {
+        const resolutions = await invoke<{ group_index: number; keeper_id: string }[]>(
+          'suggest_duplicate_resolution',
+          { groups: input }
+        )
+        // Apply this batch's results immediately so they're saved even if cancelled later
+        setGroups((prev) => {
+          const next = [...prev]
+          for (const r of resolutions) {
+            const g = next[r.group_index]
+            if (g && g.bookmarks.some((b) => b.id === r.keeper_id)) {
+              next[r.group_index] = { ...g, keeperId: r.keeper_id }
+            }
+          }
+          return next
         })
-      )
-    } catch (e) {
-      const raw = e instanceof Error ? e.message : typeof e === 'object' && e !== null && 'message' in e ? (e as { message: string }).message : String(e)
-      setClaudeError(raw)
-    } finally {
-      setClaudeLoading(false)
+      } catch (e) {
+        const raw = e instanceof Error ? e.message
+          : typeof e === 'object' && e !== null && 'message' in e
+          ? (e as { message: string }).message
+          : String(e)
+        setClaudeError(raw)
+        errorOccurred = true
+        break
+      }
+
+      done += batch.length
+      if (!cancelRef.current) {
+        setClaudeProgress({ done, total })
+      }
     }
+
+    if (!errorOccurred) setClaudeError(null)
+    setClaudeProgress(null)
   }
 
   async function handleMergeAll() {
@@ -278,26 +311,40 @@ export function DeduplicateModal({ onClose, onDone }: DeduplicateModalProps) {
                 </button>
               </div>
 
-              {/* AI button */}
-              <button
-                onClick={handleAutoPickWithClaude}
-                disabled={claudeLoading}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-150 cursor-pointer disabled:opacity-50"
-                style={{
-                  background: 'rgba(200,160,90,0.1)',
-                  border: '1px solid rgba(200,160,90,0.25)',
-                  color: 'var(--accent)',
-                }}
-                onMouseEnter={(e) => { if (!claudeLoading) e.currentTarget.style.background = 'rgba(200,160,90,0.18)' }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(200,160,90,0.1)' }}
-                title="Use Claude to auto-pick the best bookmark in each group"
-              >
-                {claudeLoading
-                  ? <span className="inline-block w-3 h-3 rounded-full border animate-spin flex-none" style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
-                  : <IconSparkles size={12} />
-                }
-                Auto-pick all with AI
-              </button>
+              {/* AI button / progress / cancel */}
+              {claudeProgress ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs tabnum" style={{ color: 'var(--text-muted)' }}>
+                    {claudeProgress.done}/{claudeProgress.total}
+                  </span>
+                  <span className="inline-block w-3 h-3 rounded-full border animate-spin flex-none" style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
+                  <button
+                    onClick={cancelClaude}
+                    className="text-xs px-2.5 py-1 rounded-lg cursor-pointer transition-colors duration-100"
+                    style={{ border: '1px solid var(--border-dim)', color: 'var(--text-muted)' }}
+                    onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--text-primary)')}
+                    onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
+                  >
+                    Cancel AI
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={handleAutoPickWithClaude}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-150 cursor-pointer"
+                  style={{
+                    background: 'rgba(200,160,90,0.1)',
+                    border: '1px solid rgba(200,160,90,0.25)',
+                    color: 'var(--accent)',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(200,160,90,0.18)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(200,160,90,0.1)')}
+                  title="Use Claude to auto-pick the best bookmark in each group"
+                >
+                  <IconSparkles size={12} />
+                  Auto-pick with AI
+                </button>
+              )}
             </div>
 
             {claudeError && (
