@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { ModalShell, FieldLabel } from './ModalShell'
-import { IconExport, IconImport } from './icons'
+import { IconExport, IconImport, IconLayers } from './icons'
 
 interface ImportResult {
   imported: number
@@ -30,9 +30,10 @@ export interface SettingsModalProps {
   onClear: () => void
   onDone: () => void
   onImportCsv: () => void
+  onDeduplicate: () => void
 }
 
-export function SettingsModal({ onClose, onClear, onDone, onImportCsv }: SettingsModalProps) {
+export function SettingsModal({ onClose, onClear, onDone, onImportCsv, onDeduplicate }: SettingsModalProps) {
   const [token, setToken] = useState('')
   const [copied, setCopied] = useState(false)
   const [confirmClear, setConfirmClear] = useState(false)
@@ -232,6 +233,28 @@ export function SettingsModal({ onClose, onClear, onDone, onImportCsv }: Setting
               )}
             </div>
           )}
+        </div>
+
+        {/* Deduplication */}
+        <div style={{ borderTop: '1px solid var(--border-dim)', paddingTop: '1.5rem' }}>
+          <FieldLabel>Maintenance</FieldLabel>
+          <p className="text-xs mb-3" style={{ color: 'var(--text-secondary)' }}>
+            Find and remove bookmarks with the same URL. Tags from duplicates are merged into the one you keep.
+          </p>
+          <button
+            onClick={onDeduplicate}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-all duration-150 cursor-pointer"
+            style={{
+              background: 'var(--bg-elevated)',
+              border: '1px solid var(--border-mid)',
+              color: 'var(--text-secondary)',
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--border-bright)')}
+            onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--border-mid)')}
+          >
+            <IconLayers size={13} />
+            Find duplicates…
+          </button>
         </div>
 
         {/* Danger zone */}

@@ -24,6 +24,7 @@ use db::{
     db_get_inbox_count, db_import_bookmarks, db_move_bookmark, db_permanently_delete_bookmark,
     db_purge_expired_bin, db_restore_bookmark,
     db_get_bookmark_count, db_get_bookmarks, db_get_folders, db_get_tags,
+    db_find_duplicate_bookmarks, db_merge_bookmark_duplicates,
     now, open_db,
 };
 use error::AppError;
@@ -275,19 +276,51 @@ fn clear_all_data(state: State<'_, AppState>) -> Result<(), AppError> {
 // ─── Claude CLI Helper ────────────────────────────────────────────────────────
 
 async fn run_claude(prompt: &str) -> Result<String, AppError> {
+    use tokio::io::AsyncWriteExt;
+
     let home = std::env::var("HOME").unwrap_or_default();
     let existing_path = std::env::var("PATH").unwrap_or_default();
     let extended_path =
         format!("{home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:{existing_path}");
-    let output = tokio::process::Command::new("claude")
+
+    // Pass prompt via stdin to avoid E2BIG when prompt exceeds ARG_MAX
+    let mut child = tokio::process::Command::new("claude")
         .arg("-p")
-        .arg(prompt)
+        .arg("-")
         .env("PATH", &extended_path)
-        .output()
-        .await
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .map_err(|e| AppError::Validation {
-            message: format!("claude CLI unavailable: {e}"),
+            message: format!("claude CLI not found: {e}"),
         })?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(prompt.as_bytes())
+            .await
+            .map_err(|e| AppError::Validation {
+                message: format!("failed to write to claude stdin: {e}"),
+            })?;
+    }
+
+    let output = child.wait_with_output().await.map_err(|e| AppError::Validation {
+        message: format!("claude process error: {e}"),
+    })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(AppError::Validation {
+            message: format!(
+                "claude exited {:?} — stderr: {} stdout: {}",
+                output.status.code(),
+                stderr.trim(),
+                stdout.trim()
+            ),
+        });
+    }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
@@ -686,10 +719,120 @@ fn main() {
             import_bookmarks,
             suggest_inbox_sort,
             apply_inbox_sort,
+            find_duplicate_bookmarks,
+            merge_bookmark_duplicates,
+            suggest_duplicate_resolution,
             read_text_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+// ─── Deduplication ────────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn find_duplicate_bookmarks(state: State<'_, AppState>) -> Result<Vec<Vec<Bookmark>>, AppError> {
+    let db = lock_db!(state);
+    db_find_duplicate_bookmarks(&db)
+}
+
+#[derive(serde::Deserialize)]
+struct MergeInput {
+    keeper_id: String,
+    discard_ids: Vec<String>,
+}
+
+#[tauri::command]
+fn merge_bookmark_duplicates(input: MergeInput, state: State<'_, AppState>) -> Result<(), AppError> {
+    let db = lock_db!(state);
+    db_merge_bookmark_duplicates(&db, &input.keeper_id, &input.discard_ids)
+}
+
+// Each bookmark in a duplicate group — no url (same for all entries in group)
+#[derive(serde::Deserialize)]
+struct DupBookmarkInput {
+    id: String,
+    title: String,
+    description: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct DuplicateGroupInput {
+    group_index: usize,
+    bookmarks: Vec<DupBookmarkInput>,
+}
+
+#[derive(serde::Serialize)]
+struct DuplicateResolution {
+    group_index: usize,
+    keeper_id: String,
+}
+
+#[tauri::command]
+async fn suggest_duplicate_resolution(
+    groups: Vec<DuplicateGroupInput>,
+) -> Result<Vec<DuplicateResolution>, AppError> {
+    if groups.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Compact one-line-per-group format: "0: A=<id> "Title" [desc] B=<id> "Title2""
+    let letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+    let groups_text: String = groups
+        .iter()
+        .map(|g| {
+            let entries = g
+                .bookmarks
+                .iter()
+                .enumerate()
+                .map(|(i, b)| {
+                    let letter = letters.get(i).copied().unwrap_or('?');
+                    let desc = if b.description.as_deref().map(|d| !d.is_empty()).unwrap_or(false) {
+                        "[desc]"
+                    } else {
+                        ""
+                    };
+                    format!("{}={} {:?} {}", letter, b.id, b.title, desc)
+                })
+                .collect::<Vec<_>>()
+                .join("  ");
+            format!("{}: {}", g.group_index, entries)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let prompt = format!(
+        "Pick best bookmark per group. Prefer: specific title > has description > longer title.\n\
+         Reply ONLY with JSON array, one object per group: [{{\"g\":0,\"k\":\"<id>\"}}, ...]\n\n\
+         {groups_text}"
+    );
+
+    let raw = run_claude(&prompt).await?;
+    let trimmed = raw.trim();
+    let json_str = if let (Some(start), Some(end)) = (trimmed.find('['), trimmed.rfind(']')) {
+        &trimmed[start..=end]
+    } else {
+        return Err(AppError::Validation {
+            message: format!("No JSON array in Claude response: {}", &trimmed[..trimmed.len().min(200)]),
+        });
+    };
+
+    let value: Vec<serde_json::Value> =
+        serde_json::from_str(json_str).map_err(|e| AppError::Validation {
+            message: format!("Could not parse Claude response: {e}"),
+        })?;
+
+    let resolutions: Vec<DuplicateResolution> = value
+        .into_iter()
+        .filter_map(|obj| {
+            let group_index = obj["g"].as_u64()? as usize;
+            let keeper_id = obj["k"].as_str()?.to_string();
+            if keeper_id.is_empty() { return None; }
+            Some(DuplicateResolution { group_index, keeper_id })
+        })
+        .collect();
+
+    Ok(resolutions)
 }
 
 #[tauri::command]

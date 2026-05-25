@@ -757,6 +757,67 @@ pub fn db_clear_all_data(conn: &Connection) -> Result<(), AppError> {
     Ok(())
 }
 
+// ─── Deduplication ────────────────────────────────────────────────────────────
+
+pub fn db_find_duplicate_bookmarks(conn: &Connection) -> Result<Vec<Vec<Bookmark>>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT b.id, b.url, b.title, b.description, b.favicon_url, b.feed_url, \
+                b.folder_id, b.created_at, b.updated_at, b.deleted_at \
+         FROM bookmarks b \
+         WHERE b.deleted_at IS NULL \
+           AND b.url IN ( \
+             SELECT url FROM bookmarks WHERE deleted_at IS NULL \
+             GROUP BY url HAVING COUNT(*) > 1 \
+           ) \
+         ORDER BY b.url, b.created_at",
+    )?;
+    let raws: Vec<RawBookmark> = stmt
+        .query_map([], row_to_raw)?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let bookmarks = enrich_batch(raws, conn)?;
+
+    let mut groups: Vec<Vec<Bookmark>> = Vec::new();
+    let mut current_url = String::new();
+    for b in bookmarks {
+        if b.url != current_url {
+            current_url = b.url.clone();
+            groups.push(vec![b]);
+        } else {
+            groups.last_mut().unwrap().push(b);
+        }
+    }
+
+    Ok(groups)
+}
+
+pub fn db_merge_bookmark_duplicates(
+    conn: &Connection,
+    keeper_id: &str,
+    discard_ids: &[String],
+) -> Result<(), AppError> {
+    if discard_ids.is_empty() {
+        return Ok(());
+    }
+    // Copy all tags from each discard to the keeper
+    for discard_id in discard_ids {
+        conn.execute(
+            "INSERT OR IGNORE INTO bookmark_tags (bookmark_id, tag_id) \
+             SELECT ?1, tag_id FROM bookmark_tags WHERE bookmark_id = ?2",
+            params![keeper_id, discard_id],
+        )?;
+    }
+    // Soft-delete the discards
+    let ts = now();
+    for discard_id in discard_ids {
+        conn.execute(
+            "UPDATE bookmarks SET deleted_at = ?1 WHERE id = ?2 AND deleted_at IS NULL",
+            params![ts, discard_id],
+        )?;
+    }
+    Ok(())
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
