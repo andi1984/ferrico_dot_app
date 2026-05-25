@@ -686,9 +686,15 @@ fn main() {
             import_bookmarks,
             suggest_inbox_sort,
             apply_inbox_sort,
+            read_text_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[tauri::command]
+fn read_text_file(path: String) -> Result<String, String> {
+    std::fs::read_to_string(&path).map_err(|e| e.to_string())
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────

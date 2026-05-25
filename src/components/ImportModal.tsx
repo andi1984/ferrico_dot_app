@@ -1,5 +1,6 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { ModalShell } from './ModalShell'
 import { IconImport } from './icons'
 
@@ -35,13 +36,24 @@ type State =
   | { phase: 'done'; result: ImportResult }
   | { phase: 'error'; message: string }
 
+function errMessage(err: unknown): string {
+  return typeof err === 'object' && err !== null && 'message' in err
+    ? (err as { message: string }).message
+    : String(err)
+}
+
 export function ImportModal({ onClose, onDone, onImportCsv }: ImportModalProps) {
   const [state, setState] = useState<State>({ phase: 'idle' })
   const [dragOver, setDragOver] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  async function handleFile(file: File) {
-    const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+  // Shared processing logic for both paths (file picker + Tauri drop).
+  // Kept as a ref so the Tauri useEffect closure always calls the latest version
+  // without needing to re-register the listener on every render.
+  const handleFilePathRef = useRef<(path: string, readViaInvoke: boolean, file?: File) => Promise<void>>(undefined)
+
+  handleFilePathRef.current = async (path: string, readViaInvoke: boolean, file?: File) => {
+    const ext = path.split('.').pop()?.toLowerCase() ?? ''
 
     if (ext === 'csv') {
       onClose()
@@ -57,43 +69,60 @@ export function ImportModal({ onClose, onDone, onImportCsv }: ImportModalProps) 
 
     setState({ phase: 'importing' })
 
-    const reader = new FileReader()
-    reader.onload = async (ev) => {
-      const text = ev.target?.result as string
-      try {
-        const result = await invoke<ImportResult>(
-          command,
-          ext === 'json' ? { json: text }
-          : (ext === 'opml' || ext === 'xml') ? { xml: text }
-          : { html: text },
-        )
-        setState({ phase: 'done', result })
-        if (result.imported > 0) onDone()
-      } catch (err) {
-        const message =
-          typeof err === 'object' && err !== null && 'message' in err
-            ? (err as { message: string }).message
-            : String(err)
-        setState({ phase: 'error', message })
+    try {
+      let text: string
+      if (readViaInvoke) {
+        // Tauri drop path: read via Rust (reliable on all platforms)
+        text = await invoke<string>('read_text_file', { path })
+      } else {
+        // File picker path: read via FileReader (works in WebView for user-selected files)
+        text = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onload = (ev) => resolve(ev.target?.result as string)
+          reader.onerror = () => reject(new Error('Could not read file.'))
+          reader.readAsText(file!)
+        })
       }
+
+      const result = await invoke<ImportResult>(
+        command,
+        ext === 'json' ? { json: text }
+        : (ext === 'opml' || ext === 'xml') ? { xml: text }
+        : { html: text },
+      )
+      setState({ phase: 'done', result })
+      if (result.imported > 0) onDone()
+    } catch (err) {
+      setState({ phase: 'error', message: errMessage(err) })
     }
-    reader.onerror = () => setState({ phase: 'error', message: 'Could not read file.' })
-    reader.readAsText(file)
   }
 
+  // File picker path
   function handleInputChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
-    if (file) handleFile(file)
+    if (file) handleFilePathRef.current?.(file.name, false, file)
     e.target.value = ''
   }
 
-  function handleDrop(e: React.DragEvent) {
-    e.preventDefault()
-    setDragOver(false)
-    // WebKitGTK (Linux) often populates items but not files for system drops
-    const file = e.dataTransfer.files[0] ?? e.dataTransfer.items[0]?.getAsFile() ?? null
-    if (file) handleFile(file)
-  }
+  // Register Tauri native drag-drop listener once on mount.
+  // This works reliably on Linux/WebKitGTK, macOS, and Windows where HTML5
+  // dataTransfer.files may be empty for system-level file drops.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined
+    getCurrentWebviewWindow().onDragDropEvent((event) => {
+      const p = event.payload
+      if (p.type === 'enter' || p.type === 'over') {
+        setDragOver(true)
+      } else if (p.type === 'leave') {
+        setDragOver(false)
+      } else if (p.type === 'drop') {
+        setDragOver(false)
+        const path = (p as { type: 'drop'; paths: string[] }).paths?.[0]
+        if (path) handleFilePathRef.current?.(path, true)
+      }
+    }).then(fn => { unlisten = fn })
+    return () => { unlisten?.() }
+  }, [])
 
   const canClose = state.phase !== 'importing'
 
@@ -101,7 +130,8 @@ export function ImportModal({ onClose, onDone, onImportCsv }: ImportModalProps) 
     <ModalShell title="Import Bookmarks" onClose={canClose ? onClose : () => {}}>
       <div className="p-6 flex flex-col gap-5">
 
-        {/* Drop zone */}
+        {/* Drop zone — HTML5 events used only for visual feedback.
+            Actual file processing comes from the Tauri onDragDropEvent above. */}
         <div
           role="button"
           tabIndex={state.phase === 'importing' ? -1 : 0}
@@ -110,7 +140,7 @@ export function ImportModal({ onClose, onDone, onImportCsv }: ImportModalProps) 
           onDragEnter={(e) => { e.preventDefault(); if (state.phase !== 'importing') setDragOver(true) }}
           onDragOver={(e) => { e.preventDefault(); if (state.phase !== 'importing') setDragOver(true) }}
           onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false) }}
-          onDrop={state.phase !== 'importing' ? handleDrop : undefined}
+          onDrop={(e) => e.preventDefault()} // prevent browser navigation; processing via Tauri event
           onClick={() => state.phase !== 'importing' && fileInputRef.current?.click()}
           onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && state.phase !== 'importing' && fileInputRef.current?.click()}
           className="flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed py-10 transition-all duration-150"
