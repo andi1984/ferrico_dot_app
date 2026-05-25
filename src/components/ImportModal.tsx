@@ -57,23 +57,28 @@ export function ImportModal({ onClose, onDone, onImportCsv }: ImportModalProps) 
 
     setState({ phase: 'importing' })
 
-    const text = await file.text()
-    try {
-      const result = await invoke<ImportResult>(
-        command,
-        ext === 'json' ? { json: text }
-        : (ext === 'opml' || ext === 'xml') ? { xml: text }
-        : { html: text },
-      )
-      setState({ phase: 'done', result })
-      if (result.imported > 0) onDone()
-    } catch (err) {
-      const message =
-        typeof err === 'object' && err !== null && 'message' in err
-          ? (err as { message: string }).message
-          : String(err)
-      setState({ phase: 'error', message })
+    const reader = new FileReader()
+    reader.onload = async (ev) => {
+      const text = ev.target?.result as string
+      try {
+        const result = await invoke<ImportResult>(
+          command,
+          ext === 'json' ? { json: text }
+          : (ext === 'opml' || ext === 'xml') ? { xml: text }
+          : { html: text },
+        )
+        setState({ phase: 'done', result })
+        if (result.imported > 0) onDone()
+      } catch (err) {
+        const message =
+          typeof err === 'object' && err !== null && 'message' in err
+            ? (err as { message: string }).message
+            : String(err)
+        setState({ phase: 'error', message })
+      }
     }
+    reader.onerror = () => setState({ phase: 'error', message: 'Could not read file.' })
+    reader.readAsText(file)
   }
 
   function handleInputChange(e: React.ChangeEvent<HTMLInputElement>) {
