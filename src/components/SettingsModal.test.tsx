@@ -53,7 +53,7 @@ describe('SettingsModal', () => {
 
   it('calls invoke(export_opml) when the export button is clicked', async () => {
     render(<SettingsModal onClose={() => {}} onClear={() => {}} />)
-    await userEvent.click(screen.getByRole('button', { name: /export opml/i }))
+    await userEvent.click(screen.getByRole('button', { name: /^opml$/i }))
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('export_opml'))
   })
 })

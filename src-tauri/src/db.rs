@@ -137,12 +137,13 @@ pub fn init_schema(conn: &Connection) -> Result<(), AppError> {
            PRIMARY KEY (bookmark_id, tag_id)
          );
 
-         CREATE INDEX IF NOT EXISTS idx_bookmarks_deleted ON bookmarks(deleted_at);
          CREATE INDEX IF NOT EXISTS idx_bookmarks_folder  ON bookmarks(folder_id);
          CREATE INDEX IF NOT EXISTS idx_bt_tag            ON bookmark_tags(tag_id);",
     )?;
 
-    // Migration: add deleted_at column to existing databases that predate the bin feature
+    // Migration: add deleted_at column to existing databases that predate the bin feature.
+    // The idx_bookmarks_deleted index must be created after this migration because SQLite
+    // will reject CREATE INDEX on a column that doesn't exist yet.
     let has_deleted_at: bool = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('bookmarks') WHERE name='deleted_at'",
@@ -154,6 +155,9 @@ pub fn init_schema(conn: &Connection) -> Result<(), AppError> {
     if !has_deleted_at {
         conn.execute("ALTER TABLE bookmarks ADD COLUMN deleted_at INTEGER", [])?;
     }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_bookmarks_deleted ON bookmarks(deleted_at);",
+    )?;
 
     Ok(())
 }
