@@ -57,12 +57,12 @@ describe('ImportModal', () => {
 
   // ─── File picker path ──────────────────────────────────────────────────────
 
-  it('routes .csv file picker selection to onImportCsv and closes', async () => {
+  it('routes .csv file picker selection to onImportCsv with no path', async () => {
     render(<ImportModal {...defaultProps} />)
     const input = document.querySelector('input[type="file"]') as HTMLInputElement
     await userEvent.upload(input, makeFile('bookmarks.csv'))
     expect(defaultProps.onImportCsv).toHaveBeenCalledOnce()
-    expect(defaultProps.onClose).toHaveBeenCalledOnce()
+    expect(defaultProps.onImportCsv).toHaveBeenCalledWith(undefined)
     expect(invoke).not.toHaveBeenCalled()
   })
 
@@ -140,11 +140,11 @@ describe('ImportModal', () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('import_opml', { xml: '<opml/>' }))
   })
 
-  it('routes .csv Tauri drop to onImportCsv and closes', async () => {
+  it('routes .csv Tauri drop to onImportCsv with the file path', async () => {
     render(<ImportModal {...defaultProps} />)
     await act(async () => { fireTauriDrop('/tmp/data.csv') })
     expect(defaultProps.onImportCsv).toHaveBeenCalledOnce()
-    expect(defaultProps.onClose).toHaveBeenCalledOnce()
+    expect(defaultProps.onImportCsv).toHaveBeenCalledWith('/tmp/data.csv')
     expect(invoke).not.toHaveBeenCalled()
   })
 

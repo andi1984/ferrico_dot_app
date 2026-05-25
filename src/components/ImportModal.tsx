@@ -27,7 +27,7 @@ const FORMAT_CHIPS = [
 export interface ImportModalProps {
   onClose: () => void
   onDone: () => void
-  onImportCsv: () => void
+  onImportCsv: (path?: string) => void
 }
 
 type State =
@@ -56,8 +56,10 @@ export function ImportModal({ onClose, onDone, onImportCsv }: ImportModalProps) 
     const ext = path.split('.').pop()?.toLowerCase() ?? ''
 
     if (ext === 'csv') {
-      onClose()
-      onImportCsv()
+      // Pass file path for Tauri drops (readViaInvoke=true) so ImportCsvModal
+      // can auto-load the file. File picker path passes no path — ImportCsvModal
+      // will receive the File via its own picker in that case.
+      onImportCsv(readViaInvoke ? path : undefined)
       return
     }
 

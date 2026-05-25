@@ -155,6 +155,7 @@ export default function App() {
   const [addHovered, setAddHovered] = useState(false)
   const [searchFocused, setSearchFocused] = useState(false)
   const [ctxMenu, setCtxMenu] = useState<CtxMenuState | null>(null)
+  const [csvDropPath, setCsvDropPath] = useState<string | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
 
   const [viewMode, setViewMode] = useState<ViewMode>(() =>
@@ -758,11 +759,16 @@ export default function App() {
         <ImportModal
           onClose={() => setModal(null)}
           onDone={loadAll}
-          onImportCsv={() => setModal('import-csv')}
+          onImportCsv={(path) => { setCsvDropPath(path ?? null); setModal('import-csv') }}
         />
       )}
       {modal === 'import-csv' && (
-        <ImportCsvModal onClose={() => setModal(null)} onDone={loadAll} />
+        <ImportCsvModal
+          onClose={() => setModal(null)}
+          onDone={loadAll}
+          csvDropPath={csvDropPath}
+          onCsvDropConsumed={() => setCsvDropPath(null)}
+        />
       )}
       {modal === 'inbox-sort' && bookmarks && (
         <InboxSortModal
