@@ -10,7 +10,7 @@
 
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::db::{
     self, Bookmark, CreateBookmarkInput, Folder, ImportResult, RawBookmark,
@@ -365,10 +365,24 @@ fn netscape_folder_tree(
     parent_id: Option<&str>,
     depth: usize,
 ) {
+    let mut visited = HashSet::new();
+    netscape_folder_tree_inner(out, folders, bookmarks, parent_id, depth, &mut visited);
+}
+
+fn netscape_folder_tree_inner(
+    out: &mut String,
+    folders: &[Folder],
+    bookmarks: &[Bookmark],
+    parent_id: Option<&str>,
+    depth: usize,
+    visited: &mut HashSet<String>,
+) {
     let pad = netscape_indent(depth);
 
-    // Folders under this parent
     for folder in folders.iter().filter(|f| f.parent_id.as_deref() == parent_id) {
+        if !visited.insert(folder.id.clone()) {
+            continue; // cycle in folder tree — skip to avoid infinite recursion
+        }
         out.push_str(&format!(
             "{}<DT><H3 ADD_DATE=\"{}\">{}</H3>\n",
             pad,
@@ -376,16 +390,13 @@ fn netscape_folder_tree(
             html_escape(&folder.name)
         ));
         out.push_str(&format!("{}<DL><p>\n", pad));
-        // Bookmarks in this folder
         for b in bookmarks.iter().filter(|b| b.folder_id.as_deref() == Some(folder.id.as_str())) {
             netscape_bookmark_line(out, b, depth + 1);
         }
-        // Sub-folders
-        netscape_folder_tree(out, folders, bookmarks, Some(&folder.id), depth + 1);
+        netscape_folder_tree_inner(out, folders, bookmarks, Some(&folder.id), depth + 1, visited);
         out.push_str(&format!("{}</DL><p>\n", pad));
     }
 
-    // Unfiled bookmarks (only at the root call)
     if parent_id.is_none() {
         for b in bookmarks.iter().filter(|b| b.folder_id.is_none()) {
             netscape_bookmark_line(out, b, depth);
