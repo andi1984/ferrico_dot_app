@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2] - 2026-05-25
+
+### Bug Fixes
+
+- guard upload-artifact when tauri-action produces no artifactPaths
+
+
 ## [0.2.1] - 2026-05-25
 
 ### Bug Fixes
