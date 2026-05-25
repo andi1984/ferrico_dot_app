@@ -171,8 +171,8 @@ jobs:
     name: Build (${{ matrix.artifact-name }})
     needs: prepare
     runs-on: ${{ matrix.platform }}
-    fail-fast: false
     strategy:
+      fail-fast: false
       matrix:
         include:
           - platform: ubuntu-22.04
