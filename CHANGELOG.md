@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.4] - 2026-05-26
+
+### Bug Fixes
+
+- upload Tauri bundle artifacts via tauri-action output paths
+
+
 ## [0.2.3] - 2026-05-25
 
 ### Bug Fixes
