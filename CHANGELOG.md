@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.6] - 2026-05-26
+
+### Bug Fixes
+
+- enable bundling in tauri.conf.json
+
+
 ## [0.2.5] - 2026-05-26
 
 ### Bug Fixes
