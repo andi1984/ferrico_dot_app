@@ -26,20 +26,23 @@ pub async fn check_url(client: &Client, id: String, url: String) -> CheckResult 
     CheckResult { id, is_broken, last_checked_at: ts }
 }
 
-/// Returns true for codes that indicate the URL exists, even if access is restricted.
-/// 401 = auth required, 403 = forbidden, 429 = rate-limited — the resource is live.
+/// A URL is considered reachable — and therefore NOT broken — when the server responded,
+/// regardless of whether the response signals an error on the server's side:
+///
+/// - 2xx / 3xx : healthy
+/// - 401 / 403 : auth-gated or forbidden — the resource exists
+/// - 429        : rate-limited — the resource exists
+/// - 5xx        : server-side error — the URL itself is not broken
+///
+/// Only 4xx codes outside that set (404, 410, etc.) indicate the URL is genuinely gone.
 fn is_reachable(status: u16) -> bool {
-    status < 400 || matches!(status, 401 | 403 | 429)
+    status < 400 || matches!(status, 401 | 403 | 429) || status >= 500
 }
 
-/// Checks the URL, retrying once on server errors (5xx) or network failures (timeout, connect).
-/// This avoids false positives from transient downtime.
+/// Retries once on network-level failures (timeout, connection refused) to avoid
+/// marking a bookmark broken because of a momentary network hiccup.
 async fn do_check(client: &Client, url: &str) -> Result<u16, reqwest::Error> {
     match head_or_get(client, url).await {
-        Ok(status) if status >= 500 => {
-            tokio::time::sleep(Duration::from_secs(5)).await;
-            head_or_get(client, url).await
-        }
         Err(e) if e.is_timeout() || e.is_connect() => {
             tokio::time::sleep(Duration::from_secs(5)).await;
             head_or_get(client, url).await
