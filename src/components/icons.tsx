@@ -123,3 +123,20 @@ export const IconCheck = ({ size = 14 }: { size?: number }) => (
     <polyline points="20 6 9 17 4 12" />
   </svg>
 )
+
+export const IconBrokenLink = ({ size = 14 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M9 17H7A5 5 0 0 1 7 7h2" />
+    <path d="M15 7h2a5 5 0 0 1 4.9 6" />
+    <line x1="8" y1="12" x2="12" y2="12" />
+    <line x1="2" y1="2" x2="22" y2="22" />
+  </svg>
+)
+
+export const IconAlertTriangle = ({ size = 12 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+    <line x1="12" y1="9" x2="12" y2="13" />
+    <line x1="12" y1="17" x2="12.01" y2="17" />
+  </svg>
+)

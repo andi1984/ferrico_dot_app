@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import type { Bookmark } from '../types'
 import { domainOf, formatDate } from '../utils'
 import { Favicon } from './Favicon'
-import { IconClose, IconRestore } from './icons'
+import { IconClose, IconRestore, IconAlertTriangle } from './icons'
 
 interface BookmarkRowProps {
   bookmark: Bookmark
@@ -66,6 +66,16 @@ export const BookmarkRow = memo(function BookmarkRow({ bookmark, onDelete, onCon
             >
               {bookmark.title}
             </a>
+            {bookmark.is_broken && (
+              <span
+                className="flex-none flex items-center"
+                style={{ color: 'var(--red)' }}
+                title="Broken link — URL returned an error or is unreachable"
+                aria-label="Broken link"
+              >
+                <IconAlertTriangle size={12} />
+              </span>
+            )}
           </div>
 
           {bookmark.description && (

@@ -616,7 +616,7 @@ pub fn export_opml(conn: &Connection) -> Result<String, AppError> {
     let bookmarks: Vec<RawBookmark> = {
         let mut stmt = conn.prepare(
             "SELECT id, url, title, description, favicon_url, feed_url, folder_id, \
-             created_at, updated_at, deleted_at FROM bookmarks \
+             created_at, updated_at, deleted_at, is_broken, last_checked_at FROM bookmarks \
              WHERE deleted_at IS NULL ORDER BY created_at",
         )?;
         let rows = stmt.query_map([], db::row_to_raw)?

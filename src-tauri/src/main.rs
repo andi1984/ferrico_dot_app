@@ -5,6 +5,7 @@
 
 mod db;
 mod error;
+mod health_check;
 mod io;
 mod io_validate;
 
@@ -19,12 +20,15 @@ use db::{
     InboxSortAssignment, InboxSortResult, Tag,
     db_add_bookmark, db_add_folder, db_add_tag,
     db_apply_inbox_sort, db_clear_all_data,
-    db_delete_bookmark, db_delete_folder, db_delete_tag,
+    db_delete_bookmark, db_delete_bookmarks, db_delete_folder, db_delete_tag,
     db_empty_bin, db_get_bin_bookmarks, db_get_bin_count,
-    db_get_inbox_count, db_import_bookmarks, db_move_bookmark, db_permanently_delete_bookmark,
+    db_get_broken_bookmarks, db_get_broken_count,
+    db_get_inbox_count, db_get_urls_for_health_check, db_import_bookmarks,
+    db_move_bookmark, db_permanently_delete_bookmark,
     db_purge_expired_bin, db_restore_bookmark,
     db_get_bookmark_count, db_get_bookmarks, db_get_folders, db_get_tags,
     db_find_duplicate_bookmarks, db_merge_bookmark_duplicates,
+    db_update_bookmark_health,
     now, open_db,
 };
 use error::AppError;
@@ -722,10 +726,104 @@ fn main() {
             find_duplicate_bookmarks,
             merge_bookmark_duplicates,
             suggest_duplicate_resolution,
+            scan_broken_bookmarks,
+            get_broken_bookmarks,
+            get_broken_count,
+            delete_bookmarks,
             read_text_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+// ─── Health Check ─────────────────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+struct ScanResult {
+    total: usize,
+    broken: usize,
+}
+
+#[tauri::command]
+async fn scan_broken_bookmarks(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ScanResult, AppError> {
+    let urls = {
+        let db = lock_db!(state);
+        db_get_urls_for_health_check(&db)?
+    };
+
+    let total = urls.len();
+    if total == 0 {
+        return Ok(ScanResult { total: 0, broken: 0 });
+    }
+
+    let client = health_check::build_client()
+        .map_err(|e| AppError::Validation { message: e.to_string() })?;
+
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(10));
+    let mut set = tokio::task::JoinSet::new();
+
+    for (id, url) in urls {
+        let client = client.clone();
+        let sem = sem.clone();
+        set.spawn(async move {
+            // acquire_owned only fails if the semaphore is explicitly closed, which never
+            // happens here — using expect so a logic error surfaces rather than silently
+            // dropping check results.
+            let _permit = sem.acquire_owned().await.expect("semaphore should not close");
+            health_check::check_url(&client, id, url).await
+        });
+    }
+
+    let mut results = Vec::new();
+    let mut completed = 0usize;
+
+    while let Some(task_result) = set.join_next().await {
+        if let Ok(check) = task_result {
+            results.push(check);
+        }
+        completed += 1;
+        app.emit("health-check-progress", serde_json::json!({
+            "current": completed,
+            "total": total,
+        }))
+        .ok();
+    }
+
+    let mut broken = 0usize;
+    {
+        let db = lock_db!(state);
+        for r in &results {
+            db_update_bookmark_health(&db, &r.id, r.is_broken, r.last_checked_at)?;
+            if r.is_broken {
+                broken += 1;
+            }
+        }
+    }
+
+    // Report how many bookmarks were actually checked (results.len()), not the original
+    // URL count — they differ when tasks panic and are caught by JoinSet.
+    Ok(ScanResult { total: results.len(), broken })
+}
+
+#[tauri::command]
+fn get_broken_bookmarks(state: State<'_, AppState>) -> Result<Vec<Bookmark>, AppError> {
+    let db = lock_db!(state);
+    db_get_broken_bookmarks(&db)
+}
+
+#[tauri::command]
+fn get_broken_count(state: State<'_, AppState>) -> Result<i64, AppError> {
+    let db = lock_db!(state);
+    db_get_broken_count(&db)
+}
+
+#[tauri::command]
+fn delete_bookmarks(ids: Vec<String>, state: State<'_, AppState>) -> Result<(), AppError> {
+    let db = lock_db!(state);
+    db_delete_bookmarks(&db, &ids)
 }
 
 // ─── Deduplication ────────────────────────────────────────────────────────────

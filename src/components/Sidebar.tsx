@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { Folder, Tag, Selection } from '../types'
-import { IconClose, IconPlus, IconFolder, IconAll, IconInbox, IconSettings, IconTrash } from './icons'
+import { IconClose, IconPlus, IconFolder, IconAll, IconInbox, IconSettings, IconTrash, IconBrokenLink } from './icons'
 
 // Sentinel used in [data-drop-target-id] for the Inbox row, which corresponds
 // to "unsorted" (folderId === null). The App layer maps it back to null when
@@ -14,6 +14,7 @@ export interface SidebarProps {
   bookmarkCount: number
   inboxCount?: number
   binCount: number
+  brokenCount?: number
   onSelect: (s: Selection) => void
   onAddFolder: () => void
   onDeleteFolder: (id: string) => void
@@ -149,14 +150,12 @@ export function SidebarSection({ label, onAdd }: { label: string; onAdd: () => v
   )
 }
 
-export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount = 0, binCount, onSelect, onAddFolder, onDeleteFolder, onAddTag, onDeleteTag, onOpenSettings, onFolderContext, onTagContext, dragHoverTargetId }: SidebarProps) {
+export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount = 0, binCount, brokenCount = 0, onSelect, onAddFolder, onDeleteFolder, onAddTag, onDeleteTag, onOpenSettings, onFolderContext, onTagContext, dragHoverTargetId }: SidebarProps) {
   const isActive = (s: Selection): boolean => {
     if (s.type !== selection.type) return false
-    if (s.type === 'all') return true
-    if (s.type === 'inbox') return true
     if (s.type === 'folder' && selection.type === 'folder') return s.id === selection.id
     if (s.type === 'tag' && selection.type === 'tag') return s.id === selection.id
-    return false
+    return true
   }
 
   const [settingsHovered, setSettingsHovered] = useState(false)
@@ -237,6 +236,15 @@ export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount = 
           label="Bin"
           count={binCount > 0 ? binCount : undefined}
           ariaLabel={binCount > 0 ? `Bin, ${binCount} items` : 'Bin, empty'}
+        />
+
+        <SidebarItem
+          active={isActive({ type: 'broken' })}
+          onClick={() => onSelect({ type: 'broken' })}
+          icon={<IconBrokenLink />}
+          label="Broken Links"
+          count={brokenCount > 0 ? brokenCount : undefined}
+          ariaLabel={brokenCount > 0 ? `Broken Links, ${brokenCount} items` : 'Broken Links'}
         />
 
         <SidebarSection label="Folders" onAdd={onAddFolder} />

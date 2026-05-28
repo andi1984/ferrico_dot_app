@@ -33,6 +33,8 @@ export function makeBookmark(overrides?: Partial<Bookmark>): Bookmark {
     created_at: 1700000000,
     updated_at: 1700000000,
     deleted_at: null,
+    is_broken: false,
+    last_checked_at: null,
     ...overrides,
   }
 }
