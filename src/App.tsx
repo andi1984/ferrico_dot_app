@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { subscribeToBookmarkAdded, type UnlistenFn } from './events'
+import { subscribeToBookmarkAdded, subscribeToHealthCheckProgress, type UnlistenFn } from './events'
 import type { Bookmark, Folder, Tag, Selection, ViewMode, SortKey } from './types'
 import { extractErrorMessage, duckduckgoFavicon, domainOf } from './utils'
 import { ContextMenu, type CtxMenuState } from './components/ContextMenu'
@@ -17,11 +17,13 @@ import { DeduplicateModal } from './components/DeduplicateModal'
 import { Sidebar, INBOX_DROP_TARGET } from './components/Sidebar'
 import { EmptyState } from './components/EmptyState'
 import { useDragDrop } from './useDragDrop'
-import { IconClose, IconImport, IconPlus, IconSearch, IconLayoutList, IconLayoutGrid, IconSort, IconChevronDown, IconSparkles, IconSun, IconMoon } from './components/icons'
+import { IconClose, IconImport, IconPlus, IconSearch, IconLayoutList, IconLayoutGrid, IconSort, IconChevronDown, IconSparkles, IconSun, IconMoon, IconBrokenLink } from './components/icons'
 
 type Theme = 'dark' | 'light'
 
 type Modal = 'add-bookmark' | 'add-folder' | 'add-tag' | 'settings' | 'import' | 'import-csv' | 'inbox-sort' | 'deduplicate' | null
+
+type ScanProgress = { current: number; total: number }
 
 // ─── Loading skeleton ─────────────────────────────────────────────────────────
 
@@ -151,6 +153,8 @@ export default function App() {
   const [totalCount, setTotalCount] = useState(0)
   const [inboxCount, setInboxCount] = useState(0)
   const [binCount, setBinCount] = useState(0)
+  const [brokenCount, setBrokenCount] = useState(0)
+  const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null)
   const [modal, setModal] = useState<Modal>(null)
   const [error, setError] = useState<string | null>(null)
   const [addHovered, setAddHovered] = useState(false)
@@ -185,20 +189,24 @@ export default function App() {
   const loadAll = useCallback(async () => {
     try {
       const isBin = selection.type === 'bin'
-      const [b, f, t, count, inbox, bCount] = await Promise.all([
+      const isBroken = selection.type === 'broken'
+      const [b, f, t, count, inbox, bCount, brCount] = await Promise.all([
         isBin
           ? invoke<Bookmark[]>('get_bin_bookmarks')
-          : invoke<Bookmark[]>('get_bookmarks', {
-              folderId: selection.type === 'folder' ? selection.id : null,
-              tagId: selection.type === 'tag' ? selection.id : null,
-              search: search || null,
-              inboxOnly: selection.type === 'inbox',
-            }),
+          : isBroken
+            ? invoke<Bookmark[]>('get_broken_bookmarks')
+            : invoke<Bookmark[]>('get_bookmarks', {
+                folderId: selection.type === 'folder' ? selection.id : null,
+                tagId: selection.type === 'tag' ? selection.id : null,
+                search: search || null,
+                inboxOnly: selection.type === 'inbox',
+              }),
         invoke<Folder[]>('get_folders'),
         invoke<Tag[]>('get_tags'),
         invoke<number>('get_bookmark_count'),
         invoke<number>('get_inbox_count'),
         invoke<number>('get_bin_count'),
+        invoke<number>('get_broken_count'),
       ])
       setBookmarks(b)
       setFolders(f)
@@ -206,6 +214,7 @@ export default function App() {
       setTotalCount(count)
       setInboxCount(inbox)
       setBinCount(bCount)
+      setBrokenCount(brCount)
       setError(null)
     } catch (e) {
       setError(extractErrorMessage(e))
@@ -353,6 +362,34 @@ export default function App() {
     }
   }, [loadAll])
 
+  const handleScanBrokenBookmarks = useCallback(async () => {
+    if (scanProgress) return
+    let unlisten: UnlistenFn | undefined
+    try {
+      setScanProgress({ current: 0, total: 0 })
+      unlisten = await subscribeToHealthCheckProgress(setScanProgress)
+      await invoke('scan_broken_bookmarks')
+      loadAll()
+    } catch (e) {
+      setError(extractErrorMessage(e))
+    } finally {
+      setScanProgress(null)
+      unlisten?.()
+    }
+  }, [scanProgress, loadAll])
+
+  const handleMoveAllBrokenToBin = useCallback(async () => {
+    if (!bookmarks) return
+    const ids = bookmarks.map((b) => b.id)
+    if (ids.length === 0) return
+    try {
+      await invoke('delete_bookmarks', { ids })
+      loadAll()
+    } catch (e) {
+      setError(extractErrorMessage(e))
+    }
+  }, [bookmarks, loadAll])
+
   // Toast shown during/after a bookmark move. Auto-dismisses after 2s.
   const [moveStatus, setMoveStatus] = useState<string | null>(null)
   const moveStatusTimerRef = useRef<number | null>(null)
@@ -430,12 +467,14 @@ export default function App() {
     if (selection.type === 'all') return 'All Bookmarks'
     if (selection.type === 'inbox') return 'Inbox'
     if (selection.type === 'bin') return 'Bin'
+    if (selection.type === 'broken') return 'Broken Links'
     if (selection.type === 'folder') return folders.find((f) => f.id === selection.id)?.name ?? 'Folder'
     return tags.find((t) => t.id === selection.id)?.name ?? 'Tag'
   }
 
   const loading = sortedBookmarks === null
   const isBinView = selection.type === 'bin'
+  const isBrokenView = selection.type === 'broken'
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden" style={{ background: 'var(--chrome-bg)', color: 'var(--text-1)' }}>
@@ -486,6 +525,7 @@ export default function App() {
         bookmarkCount={totalCount}
         inboxCount={inboxCount}
         binCount={binCount}
+        brokenCount={brokenCount}
         onSelect={setSelection}
         onAddFolder={() => setModal('add-folder')}
         onDeleteFolder={handleDeleteFolder}
@@ -643,6 +683,62 @@ export default function App() {
                 Empty Bin
               </button>
             )
+          ) : isBrokenView ? (
+            <>
+              {scanProgress ? (
+                <span
+                  className="flex items-center gap-1.5 mono"
+                  style={{ fontSize: 12, color: 'var(--text-3)', fontWeight: 500 }}
+                  aria-live="polite"
+                  aria-label={`Scanning ${scanProgress.current} of ${scanProgress.total}`}
+                >
+                  <IconBrokenLink size={13} />
+                  {scanProgress.total > 0
+                    ? `Checking ${scanProgress.current}/${scanProgress.total}…`
+                    : 'Starting scan…'}
+                </span>
+              ) : (
+                <button
+                  onClick={handleScanBrokenBookmarks}
+                  className="flex items-center gap-1.5 rounded-lg transition-colors duration-150 flex-none cursor-pointer"
+                  style={{
+                    height: 32,
+                    padding: '0 11px',
+                    background: 'var(--input-bg)',
+                    border: '1px solid var(--border-soft)',
+                    color: 'var(--text-2)',
+                    fontSize: 12,
+                    fontWeight: 500,
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--btn-hover-bg)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'var(--input-bg)')}
+                  aria-label="Scan all bookmarks for broken links"
+                >
+                  <IconBrokenLink size={13} />
+                  Scan Now
+                </button>
+              )}
+              {(sortedBookmarks?.length ?? 0) > 0 && !scanProgress && (
+                <button
+                  onClick={handleMoveAllBrokenToBin}
+                  className="flex items-center gap-1.5 rounded-lg transition-colors duration-150 flex-none cursor-pointer"
+                  style={{
+                    height: 32,
+                    padding: '0 11px',
+                    background: 'var(--input-bg)',
+                    border: '1px solid var(--border-soft)',
+                    color: 'var(--red)',
+                    fontSize: 12,
+                    fontWeight: 500,
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--red)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--border-soft)')}
+                  aria-label="Move all broken bookmarks to bin"
+                >
+                  Move All to Bin
+                </button>
+              )}
+            </>
           ) : (
             <>
               {selection.type === 'inbox' && (bookmarks?.length ?? 0) > 0 && (
@@ -717,13 +813,18 @@ export default function App() {
               ? <div className="flex items-center justify-center h-full" style={{ color: 'var(--text-muted)' }}>
                   <p className="text-sm">Bin is empty</p>
                 </div>
-              : <EmptyState onAdd={() => setModal('add-bookmark')} />
+              : isBrokenView
+                ? <div className="flex flex-col items-center justify-center h-full gap-3" style={{ color: 'var(--text-muted)' }}>
+                    <p className="text-sm">No broken links found</p>
+                    <p className="text-xs" style={{ color: 'var(--text-3)' }}>Use "Scan Now" to check all bookmarks</p>
+                  </div>
+                : <EmptyState onAdd={() => setModal('add-bookmark')} />
           ) : viewMode === 'grid' ? (
             <BookmarkGrid
               bookmarks={sortedBookmarks}
               onDelete={isBinView ? handleDeleteBookmarkForever : handleDeleteBookmark}
               onContext={isBinView ? openBinBookmarkContext : openBookmarkContext}
-              onDragPointerDown={!isBinView ? drag.startDrag : undefined}
+              onDragPointerDown={!isBinView && !isBrokenView ? drag.startDrag : undefined}
             />
           ) : (
             <BookmarkList
@@ -732,7 +833,7 @@ export default function App() {
               onContext={isBinView ? openBinBookmarkContext : openBookmarkContext}
               isBinView={isBinView}
               onRestore={handleRestoreBookmark}
-              onDragPointerDown={!isBinView ? drag.startDrag : undefined}
+              onDragPointerDown={!isBinView && !isBrokenView ? drag.startDrag : undefined}
             />
           )}
         </main>

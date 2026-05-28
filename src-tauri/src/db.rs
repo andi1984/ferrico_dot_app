@@ -21,6 +21,8 @@ pub struct Bookmark {
     pub created_at: i64,
     pub updated_at: i64,
     pub deleted_at: Option<i64>,
+    pub is_broken: bool,
+    pub last_checked_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,6 +97,8 @@ pub(crate) struct RawBookmark {
     pub created_at: i64,
     pub updated_at: i64,
     pub deleted_at: Option<i64>,
+    pub is_broken: bool,
+    pub last_checked_at: Option<i64>,
 }
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
@@ -159,6 +163,26 @@ pub fn init_schema(conn: &Connection) -> Result<(), AppError> {
         "CREATE INDEX IF NOT EXISTS idx_bookmarks_deleted ON bookmarks(deleted_at);",
     )?;
 
+    // Migration: add is_broken and last_checked_at for link health checking.
+    let has_is_broken: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('bookmarks') WHERE name='is_broken'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+    if !has_is_broken {
+        conn.execute(
+            "ALTER TABLE bookmarks ADD COLUMN is_broken INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+        conn.execute("ALTER TABLE bookmarks ADD COLUMN last_checked_at INTEGER", [])?;
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_bookmarks_broken ON bookmarks(is_broken) WHERE is_broken = 1;",
+    )?;
+
     Ok(())
 }
 
@@ -202,6 +226,8 @@ pub(crate) fn row_to_raw(row: &rusqlite::Row) -> rusqlite::Result<RawBookmark> {
         created_at: row.get(7)?,
         updated_at: row.get(8)?,
         deleted_at: row.get(9)?,
+        is_broken: row.get::<_, i64>(10).unwrap_or(0) != 0,
+        last_checked_at: row.get(11).ok().flatten(),
     })
 }
 
@@ -260,6 +286,8 @@ fn enrich_batch(raws: Vec<RawBookmark>, conn: &Connection) -> Result<Vec<Bookmar
                 created_at: r.created_at,
                 updated_at: r.updated_at,
                 deleted_at: r.deleted_at,
+                is_broken: r.is_broken,
+                last_checked_at: r.last_checked_at,
             }
         })
         .collect())
@@ -380,7 +408,7 @@ pub fn db_get_bookmarks(
 
     let sql = format!(
         "SELECT b.id, b.url, b.title, b.description, b.favicon_url, b.feed_url, \
-         b.folder_id, b.created_at, b.updated_at, b.deleted_at \
+         b.folder_id, b.created_at, b.updated_at, b.deleted_at, b.is_broken, b.last_checked_at \
          FROM bookmarks b{} WHERE {} ORDER BY b.created_at DESC",
         join,
         wheres.join(" AND ")
@@ -443,6 +471,8 @@ pub fn db_add_bookmark(
         created_at: ts,
         updated_at: ts,
         deleted_at: None,
+        is_broken: false,
+        last_checked_at: None,
     })
 }
 
@@ -460,7 +490,7 @@ pub fn db_delete_bookmark(conn: &Connection, id: &str) -> Result<(), AppError> {
 pub fn db_get_bin_bookmarks(conn: &Connection) -> Result<Vec<Bookmark>, AppError> {
     let mut stmt = conn.prepare(
         "SELECT id, url, title, description, favicon_url, feed_url, folder_id, \
-         created_at, updated_at, deleted_at FROM bookmarks \
+         created_at, updated_at, deleted_at, is_broken, last_checked_at FROM bookmarks \
          WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC",
     )?;
     let raws = stmt.query_map([], row_to_raw)?
@@ -777,7 +807,7 @@ pub fn db_clear_all_data(conn: &Connection) -> Result<(), AppError> {
 pub fn db_find_duplicate_bookmarks(conn: &Connection) -> Result<Vec<Vec<Bookmark>>, AppError> {
     let mut stmt = conn.prepare(
         "SELECT b.id, b.url, b.title, b.description, b.favicon_url, b.feed_url, \
-                b.folder_id, b.created_at, b.updated_at, b.deleted_at \
+                b.folder_id, b.created_at, b.updated_at, b.deleted_at, b.is_broken, b.last_checked_at \
          FROM bookmarks b \
          WHERE b.deleted_at IS NULL \
            AND b.url IN ( \
@@ -828,6 +858,65 @@ pub fn db_merge_bookmark_duplicates(
         conn.execute(
             "UPDATE bookmarks SET deleted_at = ?1 WHERE id = ?2 AND deleted_at IS NULL",
             params![ts, discard_id],
+        )?;
+    }
+    Ok(())
+}
+
+// ─── Health Check ─────────────────────────────────────────────────────────────
+
+pub fn db_get_broken_bookmarks(conn: &Connection) -> Result<Vec<Bookmark>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, url, title, description, favicon_url, feed_url, folder_id, \
+         created_at, updated_at, deleted_at, is_broken, last_checked_at FROM bookmarks \
+         WHERE is_broken = 1 AND deleted_at IS NULL ORDER BY last_checked_at DESC",
+    )?;
+    let raws = stmt.query_map([], row_to_raw)?.collect::<Result<Vec<_>, _>>()?;
+    enrich_batch(raws, conn)
+}
+
+pub fn db_get_broken_count(conn: &Connection) -> Result<i64, AppError> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*) FROM bookmarks WHERE is_broken = 1 AND deleted_at IS NULL",
+        [],
+        |r| r.get(0),
+    )?)
+}
+
+/// Returns (id, url) pairs for all active (non-deleted) bookmarks — used by the scan command.
+pub fn db_get_urls_for_health_check(conn: &Connection) -> Result<Vec<(String, String)>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, url FROM bookmarks WHERE deleted_at IS NULL ORDER BY created_at",
+    )?;
+    let rows = stmt
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+pub fn db_update_bookmark_health(
+    conn: &Connection,
+    id: &str,
+    is_broken: bool,
+    checked_at: i64,
+) -> Result<(), AppError> {
+    conn.execute(
+        "UPDATE bookmarks SET is_broken = ?1, last_checked_at = ?2 WHERE id = ?3",
+        params![is_broken as i64, checked_at, id],
+    )?;
+    Ok(())
+}
+
+/// Soft-deletes multiple bookmarks at once. Silently skips already-deleted ones.
+pub fn db_delete_bookmarks(conn: &Connection, ids: &[String]) -> Result<(), AppError> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let ts = now();
+    for id in ids {
+        conn.execute(
+            "UPDATE bookmarks SET deleted_at = ?1 WHERE id = ?2 AND deleted_at IS NULL",
+            params![ts, id],
         )?;
     }
     Ok(())
