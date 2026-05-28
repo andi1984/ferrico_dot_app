@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0] - 2026-05-28
+
+### Features
+
+- fuzzy search for bookmarks (title, URL, body)
+- detect and surface broken bookmark links
+
+### Bug Fixes
+
+- 5xx responses are reachable, not broken links
+- review findings + caching + false-positive protection
+
+
 ## [0.2.6] - 2026-05-26
 
 ### Bug Fixes
