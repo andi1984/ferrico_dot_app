@@ -1,3 +1,5 @@
+use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
+use nucleo_matcher::{Config, Matcher, Utf32Str};
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -406,18 +408,9 @@ pub fn db_get_bookmarks(
         params.push(fid.to_string());
     }
 
-    // Push search into SQL so we never load a full table just to filter in Rust.
-    let search_pat = search.map(|s| format!("%{}%", s.to_lowercase()));
-    if let Some(ref pat) = search_pat {
-        wheres.push(
-            "(LOWER(b.title) LIKE ? \
-              OR LOWER(b.url) LIKE ? \
-              OR LOWER(COALESCE(b.description,'')) LIKE ?)"
-                .into(),
-        );
-        params.extend([pat.clone(), pat.clone(), pat.clone()]);
-    }
-
+    // Scope filters (folder/tag/inbox) run in SQL. The text query is applied
+    // afterwards as a fuzzy rank in Rust (see below), so it is not part of the
+    // WHERE clause — fuzzy matching can't be expressed as a SQL LIKE.
     let sql = format!(
         "SELECT b.id, b.url, b.title, b.description, b.favicon_url, b.feed_url, \
          b.folder_id, b.created_at, b.updated_at, b.deleted_at, b.is_broken, b.last_checked_at \
@@ -431,7 +424,75 @@ pub fn db_get_bookmarks(
         .query_map(params_from_iter(params.iter()), row_to_raw)?
         .collect::<Result<Vec<_>, _>>()?;
 
+    // When a (non-blank) query is present, fuzzy-rank the scope-filtered
+    // candidates by relevance and drop non-matches. Tags are only hydrated for
+    // the surviving rows, so enrichment cost stays bound to the result set.
+    let raws = match search.map(str::trim).filter(|q| !q.is_empty()) {
+        None => raws,
+        Some(query) => rank_fuzzy(query, raws),
+    };
+
     enrich_batch(raws, conn)
+}
+
+// Field weights for combining per-field fuzzy scores. Title dominates; the body
+// (description) only nudges ties so a long note never outranks a title hit.
+const FUZZY_TITLE_WEIGHT: u32 = 3;
+const FUZZY_URL_WEIGHT: u32 = 2;
+const FUZZY_DESC_WEIGHT: u32 = 1;
+
+/// Fuzzy-rank `raws` against `query`, keeping only matches, best score first.
+/// Equal scores retain the input order (newest-first from the SQL `ORDER BY`),
+/// since `sort_by` is stable.
+fn rank_fuzzy(query: &str, raws: Vec<RawBookmark>) -> Vec<RawBookmark> {
+    let mut matcher = Matcher::new(Config::DEFAULT);
+    // Always case-insensitive (preserves the old `LOWER(..) LIKE` semantics);
+    // smart unicode normalization so e.g. "cafe" still matches "café".
+    let pattern = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
+    let mut buf: Vec<char> = Vec::new();
+
+    let mut scored: Vec<(u32, RawBookmark)> = raws
+        .into_iter()
+        .filter_map(|raw| {
+            fuzzy_score(&mut matcher, &pattern, &mut buf, &raw).map(|score| (score, raw))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.into_iter().map(|(_, raw)| raw).collect()
+}
+
+/// Combined fuzzy relevance of one bookmark. Scores title, url and description
+/// independently and sums the fields that matched (each weighted). Returns
+/// `None` only when no field matches at all, so the row can be filtered out.
+fn fuzzy_score(
+    matcher: &mut Matcher,
+    pattern: &Pattern,
+    buf: &mut Vec<char>,
+    raw: &RawBookmark,
+) -> Option<u32> {
+    let title = score_field(matcher, pattern, buf, &raw.title, FUZZY_TITLE_WEIGHT);
+    let url = score_field(matcher, pattern, buf, &raw.url, FUZZY_URL_WEIGHT);
+    let desc = raw
+        .description
+        .as_deref()
+        .and_then(|d| score_field(matcher, pattern, buf, d, FUZZY_DESC_WEIGHT));
+
+    [title, url, desc]
+        .into_iter()
+        .flatten()
+        .reduce(|a, b| a.saturating_add(b))
+}
+
+fn score_field(
+    matcher: &mut Matcher,
+    pattern: &Pattern,
+    buf: &mut Vec<char>,
+    text: &str,
+    weight: u32,
+) -> Option<u32> {
+    pattern
+        .score(Utf32Str::new(text, buf), matcher)
+        .map(|s| s.saturating_mul(weight))
 }
 
 pub fn db_get_bookmark_count(conn: &Connection) -> Result<i64, AppError> {
@@ -1264,6 +1325,114 @@ mod tests {
         mk_bookmark(&conn, "https://rust-lang.org", "The Rust Language");
         let results = db_get_bookmarks(&conn, None, None, Some("RUST"), false).unwrap();
         assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn fuzzy_search_matches_subsequence() {
+        let conn = mem();
+        mk_bookmark(&conn, "https://react.dev", "React Documentation");
+        mk_bookmark(&conn, "https://python.org", "Python");
+
+        // Non-contiguous subsequence with gaps ("rctdoc" → "ReaCT DOCumentation").
+        // A substring LIKE would miss this entirely.
+        let results = db_get_bookmarks(&conn, None, None, Some("rctdoc"), false).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "React Documentation");
+    }
+
+    #[test]
+    fn fuzzy_search_tolerates_dropped_character() {
+        let conn = mem();
+        mk_bookmark(&conn, "https://docs.rs", "Documentation");
+        mk_bookmark(&conn, "https://python.org", "Python");
+
+        // A dropped-letter typo (missing "en") still matches as a subsequence.
+        let results = db_get_bookmarks(&conn, None, None, Some("documtation"), false).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Documentation");
+    }
+
+    #[test]
+    fn fuzzy_search_matches_out_of_order_words() {
+        let conn = mem();
+        mk_bookmark(&conn, "https://tokio.rs", "async rust runtime");
+        mk_bookmark(&conn, "https://go.dev", "Go concurrency");
+
+        // Words given in the opposite order to the title.
+        let results = db_get_bookmarks(&conn, None, None, Some("rust async"), false).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "async rust runtime");
+    }
+
+    #[test]
+    fn fuzzy_search_matches_body_only() {
+        let conn = mem();
+        db_add_bookmark(
+            &conn,
+            CreateBookmarkInput {
+                url: "https://example.com".to_string(),
+                title: "Untitled clip".to_string(),
+                description: Some("notes on borrow checker lifetimes".to_string()),
+                favicon_url: None,
+                feed_url: None,
+                folder_id: None,
+                tag_ids: None,
+            },
+        )
+        .unwrap();
+        mk_bookmark(&conn, "https://other.com", "Other");
+
+        // The term only appears in the description/body.
+        let results = db_get_bookmarks(&conn, None, None, Some("borrow checker"), false).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Untitled clip");
+    }
+
+    #[test]
+    fn fuzzy_search_ranks_title_above_body() {
+        let conn = mem();
+        // Body-only match.
+        db_add_bookmark(
+            &conn,
+            CreateBookmarkInput {
+                url: "https://blog.example.com".to_string(),
+                title: "Weekly digest".to_string(),
+                description: Some("a paragraph mentioning kubernetes once".to_string()),
+                favicon_url: None,
+                feed_url: None,
+                folder_id: None,
+                tag_ids: None,
+            },
+        )
+        .unwrap();
+        // Title match — should rank first.
+        mk_bookmark(&conn, "https://k8s.io", "Kubernetes");
+
+        let results = db_get_bookmarks(&conn, None, None, Some("kubernetes"), false).unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].title, "Kubernetes");
+        assert_eq!(results[1].title, "Weekly digest");
+    }
+
+    #[test]
+    fn fuzzy_search_excludes_non_matches() {
+        let conn = mem();
+        mk_bookmark(&conn, "https://rust-lang.org", "Rust");
+        mk_bookmark(&conn, "https://go.dev", "Go");
+
+        let results = db_get_bookmarks(&conn, None, None, Some("zzzqqq"), false).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn fuzzy_search_blank_query_returns_all() {
+        let conn = mem();
+        mk_bookmark(&conn, "https://a.com", "A");
+        mk_bookmark(&conn, "https://b.com", "B");
+
+        // Whitespace-only query is treated as no query (returns everything).
+        let results = db_get_bookmarks(&conn, None, None, Some("   "), false).unwrap();
+        assert_eq!(results.len(), 2);
     }
 
     #[test]

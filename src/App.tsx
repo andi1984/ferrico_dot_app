@@ -262,6 +262,9 @@ export default function App() {
 
   const sortedBookmarks = useMemo(() => {
     if (!bookmarks) return null
+    // While searching, the backend returns results in fuzzy-relevance order;
+    // preserve it. The sort dropdown only applies when there's no active query.
+    if (search) return bookmarks
     const arr = [...bookmarks]
     switch (sortKey) {
       case 'date-desc': return arr.sort((a, b) => b.created_at - a.created_at)
@@ -271,7 +274,7 @@ export default function App() {
       case 'domain-asc': return arr.sort((a, b) => domainOf(a.url).localeCompare(domainOf(b.url)))
       default: return arr
     }
-  }, [bookmarks, sortKey])
+  }, [bookmarks, sortKey, search])
 
   const handleAddBookmark = useCallback(async (data: {
     url: string; title: string; description: string
