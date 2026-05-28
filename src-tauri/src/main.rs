@@ -769,8 +769,11 @@ async fn scan_broken_bookmarks(
         let client = client.clone();
         let sem = sem.clone();
         set.spawn(async move {
-            let _permit = sem.acquire_owned().await.ok()?;
-            Some(health_check::check_url(&client, id, url).await)
+            // acquire_owned only fails if the semaphore is explicitly closed, which never
+            // happens here — using expect so a logic error surfaces rather than silently
+            // dropping check results.
+            let _permit = sem.acquire_owned().await.expect("semaphore should not close");
+            health_check::check_url(&client, id, url).await
         });
     }
 
@@ -778,7 +781,7 @@ async fn scan_broken_bookmarks(
     let mut completed = 0usize;
 
     while let Some(task_result) = set.join_next().await {
-        if let Ok(Some(check)) = task_result {
+        if let Ok(check) = task_result {
             results.push(check);
         }
         completed += 1;
@@ -800,7 +803,9 @@ async fn scan_broken_bookmarks(
         }
     }
 
-    Ok(ScanResult { total, broken })
+    // Report how many bookmarks were actually checked (results.len()), not the original
+    // URL count — they differ when tasks panic and are caught by JoinSet.
+    Ok(ScanResult { total: results.len(), broken })
 }
 
 #[tauri::command]

@@ -369,7 +369,7 @@ export default function App() {
       setScanProgress({ current: 0, total: 0 })
       unlisten = await subscribeToHealthCheckProgress(setScanProgress)
       await invoke('scan_broken_bookmarks')
-      loadAll()
+      await loadAll()
     } catch (e) {
       setError(extractErrorMessage(e))
     } finally {
@@ -379,8 +379,10 @@ export default function App() {
   }, [scanProgress, loadAll])
 
   const handleMoveAllBrokenToBin = useCallback(async () => {
-    if (!bookmarks) return
-    const ids = bookmarks.map((b) => b.id)
+    // Guard: only operate on the broken view — bookmarks state is shared across views
+    // and could be stale from a concurrent loadAll if the selection changed.
+    if (!bookmarks || selection.type !== 'broken') return
+    const ids = bookmarks.filter((b) => b.is_broken).map((b) => b.id)
     if (ids.length === 0) return
     try {
       await invoke('delete_bookmarks', { ids })
@@ -388,7 +390,7 @@ export default function App() {
     } catch (e) {
       setError(extractErrorMessage(e))
     }
-  }, [bookmarks, loadAll])
+  }, [bookmarks, selection, loadAll])
 
   // Toast shown during/after a bookmark move. Auto-dismisses after 2s.
   const [moveStatus, setMoveStatus] = useState<string | null>(null)

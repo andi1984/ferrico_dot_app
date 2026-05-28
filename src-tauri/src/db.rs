@@ -164,6 +164,8 @@ pub fn init_schema(conn: &Connection) -> Result<(), AppError> {
     )?;
 
     // Migration: add is_broken and last_checked_at for link health checking.
+    // Each column is checked independently — a partial migration may leave one present
+    // but not the other, and a combined `if` would silently skip the missing one.
     let has_is_broken: bool = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('bookmarks') WHERE name='is_broken'",
@@ -177,6 +179,16 @@ pub fn init_schema(conn: &Connection) -> Result<(), AppError> {
             "ALTER TABLE bookmarks ADD COLUMN is_broken INTEGER NOT NULL DEFAULT 0",
             [],
         )?;
+    }
+    let has_last_checked_at: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('bookmarks') WHERE name='last_checked_at'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+    if !has_last_checked_at {
         conn.execute("ALTER TABLE bookmarks ADD COLUMN last_checked_at INTEGER", [])?;
     }
     conn.execute_batch(
@@ -226,8 +238,8 @@ pub(crate) fn row_to_raw(row: &rusqlite::Row) -> rusqlite::Result<RawBookmark> {
         created_at: row.get(7)?,
         updated_at: row.get(8)?,
         deleted_at: row.get(9)?,
-        is_broken: row.get::<_, i64>(10).unwrap_or(0) != 0,
-        last_checked_at: row.get(11).ok().flatten(),
+        is_broken: row.get::<_, i64>(10)? != 0,
+        last_checked_at: row.get(11)?,
     })
 }
 
@@ -883,13 +895,26 @@ pub fn db_get_broken_count(conn: &Connection) -> Result<i64, AppError> {
     )?)
 }
 
-/// Returns (id, url) pairs for all active (non-deleted) bookmarks — used by the scan command.
+/// How long a healthy (is_broken = 0) result is cached before we re-check.
+/// Known-broken bookmarks are always re-checked regardless of this threshold.
+const RECHECK_HEALTHY_AFTER_SECS: i64 = 24 * 3600;
+
+/// Returns (id, url) pairs that need checking:
+/// - always: known-broken bookmarks (they may have been fixed)
+/// - always: never-checked bookmarks
+/// - only if stale: healthy bookmarks not checked within RECHECK_HEALTHY_AFTER_SECS
 pub fn db_get_urls_for_health_check(conn: &Connection) -> Result<Vec<(String, String)>, AppError> {
+    let cutoff = now() - RECHECK_HEALTHY_AFTER_SECS;
     let mut stmt = conn.prepare(
-        "SELECT id, url FROM bookmarks WHERE deleted_at IS NULL ORDER BY created_at",
+        "SELECT id, url FROM bookmarks \
+         WHERE deleted_at IS NULL \
+           AND (is_broken = 1 OR last_checked_at IS NULL OR last_checked_at < ?1) \
+         ORDER BY is_broken DESC, created_at",
     )?;
     let rows = stmt
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+        .query_map(params![cutoff], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
 }
@@ -907,18 +932,20 @@ pub fn db_update_bookmark_health(
     Ok(())
 }
 
-/// Soft-deletes multiple bookmarks at once. Silently skips already-deleted ones.
+/// Soft-deletes multiple bookmarks atomically. Already-deleted IDs are silently skipped.
 pub fn db_delete_bookmarks(conn: &Connection, ids: &[String]) -> Result<(), AppError> {
     if ids.is_empty() {
         return Ok(());
     }
+    let tx = conn.unchecked_transaction()?;
     let ts = now();
     for id in ids {
-        conn.execute(
+        tx.execute(
             "UPDATE bookmarks SET deleted_at = ?1 WHERE id = ?2 AND deleted_at IS NULL",
             params![ts, id],
         )?;
     }
+    tx.commit()?;
     Ok(())
 }
 
