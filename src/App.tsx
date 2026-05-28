@@ -775,7 +775,7 @@ export default function App() {
                   padding: '0 11px',
                   background: 'var(--input-bg)',
                   border: '1px solid var(--border-soft)',
-                  color: 'var(--text-2)',
+                  color: 'var(--text-1)',
                   fontSize: 12,
                   fontWeight: 500,
                   whiteSpace: 'nowrap',
