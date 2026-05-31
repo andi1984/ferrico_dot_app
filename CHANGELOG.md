@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0] - 2026-05-31
+
+### Features
+
+- clickable tags open the tag detail view
+- context-aware tag suggestions and page preview
+
+### Performance
+
+- cut click latency with split loads, single sidebar query, optimistic UI
+
+
 ## [0.3.0] - 2026-05-28
 
 ### Features
