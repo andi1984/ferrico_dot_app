@@ -17,13 +17,13 @@ use axum::{
 };
 use db::{
     Bookmark, CreateBookmarkInput, Folder, ImportResult, ImportRowInput,
-    InboxSortAssignment, InboxSortResult, Tag,
+    InboxSortAssignment, InboxSortResult, SidebarData, Tag,
     db_add_bookmark, db_add_folder, db_add_tag,
     db_apply_inbox_sort, db_clear_all_data,
     db_delete_bookmark, db_delete_bookmarks, db_delete_folder, db_delete_tag,
     db_empty_bin, db_get_bin_bookmarks, db_get_bin_count,
     db_get_broken_bookmarks, db_get_broken_count,
-    db_get_inbox_count, db_get_urls_for_health_check, db_import_bookmarks,
+    db_get_inbox_count, db_get_sidebar, db_get_urls_for_health_check, db_import_bookmarks,
     db_move_bookmark, db_permanently_delete_bookmark,
     db_purge_expired_bin, db_restore_bookmark,
     db_get_bookmark_count, db_get_bookmarks, db_get_folders, db_get_tags,
@@ -121,6 +121,12 @@ fn apply_inbox_sort(
 fn get_bookmark_count(state: State<'_, AppState>) -> Result<i64, AppError> {
     let db = lock_db!(state);
     db_get_bookmark_count(&db)
+}
+
+#[tauri::command]
+fn get_sidebar(state: State<'_, AppState>) -> Result<SidebarData, AppError> {
+    let db = lock_db!(state);
+    db_get_sidebar(&db)
 }
 
 #[tauri::command]
@@ -724,6 +730,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_bookmarks,
             get_bookmark_count,
+            get_sidebar,
             get_inbox_count,
             add_bookmark,
             delete_bookmark,

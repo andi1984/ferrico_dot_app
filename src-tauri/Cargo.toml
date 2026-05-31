@@ -26,6 +26,11 @@ nucleo-matcher = "0.3"
 tower = { version = "0.4", features = ["util"] }
 
 [profile.release]
-opt-level = "z"
+opt-level = 3
 lto = true
 codegen-units = 1
+
+# Speed up the hot paths (SQLite/serde/fuzzy matcher) even in dev builds, while
+# keeping our own crate fast to recompile.
+[profile.dev.package."*"]
+opt-level = 2

@@ -1,4 +1,8 @@
-@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;450;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap');
+/* Geist / Geist Mono are loaded from a remote @import previously, but the app's
+   CSP (style-src 'self' 'unsafe-inline') blocks fonts.googleapis.com, so it
+   never actually loaded in the bundled app — it only cost a render-blocking
+   network attempt at startup. The font stacks in --font-display/--font-mono
+   already fall back to the native UI fonts. */
 @import "tailwindcss";
 
 /* ─── Theme tokens ──────────────────────────────────────────────────────────

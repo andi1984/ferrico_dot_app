@@ -103,12 +103,41 @@ pub(crate) struct RawBookmark {
     pub last_checked_at: Option<i64>,
 }
 
+/// Sidebar badge counts. Computed in a single table scan rather than four
+/// separate `COUNT(*)` queries, then shipped to the frontend in one payload.
+#[derive(Debug, Serialize)]
+pub struct Counts {
+    pub total: i64,
+    pub inbox: i64,
+    pub bin: i64,
+    pub broken: i64,
+}
+
+/// Everything the sidebar needs in one round trip: folder + tag lists and all
+/// badge counts. Folded into a single command so navigation never has to fire a
+/// fan-out of independent `invoke`s that each contend on the DB mutex.
+#[derive(Debug, Serialize)]
+pub struct SidebarData {
+    pub folders: Vec<Folder>,
+    pub tags: Vec<Tag>,
+    pub counts: Counts,
+}
+
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
 pub fn init_schema(conn: &Connection) -> Result<(), AppError> {
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
          PRAGMA foreign_keys = ON;
+         -- Performance pragmas. synchronous=NORMAL is safe under WAL (only risks
+         -- losing the last commit on OS crash, never corruption) and removes an
+         -- fsync from every write. The rest keep temp data and the page cache in
+         -- memory and let readers mmap the file instead of syscalling per page.
+         PRAGMA synchronous = NORMAL;
+         PRAGMA temp_store = MEMORY;
+         PRAGMA cache_size = -16384;
+         PRAGMA mmap_size = 134217728;
+         PRAGMA busy_timeout = 5000;
 
          CREATE TABLE IF NOT EXISTS folders (
            id         TEXT PRIMARY KEY,
@@ -144,6 +173,7 @@ pub fn init_schema(conn: &Connection) -> Result<(), AppError> {
          );
 
          CREATE INDEX IF NOT EXISTS idx_bookmarks_folder  ON bookmarks(folder_id);
+         CREATE INDEX IF NOT EXISTS idx_bookmarks_created ON bookmarks(created_at);
          CREATE INDEX IF NOT EXISTS idx_bt_tag            ON bookmark_tags(tag_id);",
     )?;
 
@@ -497,6 +527,31 @@ fn score_field(
 
 pub fn db_get_bookmark_count(conn: &Connection) -> Result<i64, AppError> {
     Ok(conn.query_row("SELECT COUNT(*) FROM bookmarks WHERE deleted_at IS NULL", [], |r| r.get(0))?)
+}
+
+/// All four sidebar counts in one scan of the bookmarks table. `COUNT(*) FILTER`
+/// lets SQLite tally every bucket in a single pass instead of four queries.
+pub fn db_get_counts(conn: &Connection) -> Result<Counts, AppError> {
+    conn.query_row(
+        "SELECT \
+           COUNT(*) FILTER (WHERE deleted_at IS NULL) AS total, \
+           COUNT(*) FILTER (WHERE deleted_at IS NULL AND folder_id IS NULL) AS inbox, \
+           COUNT(*) FILTER (WHERE deleted_at IS NOT NULL) AS bin, \
+           COUNT(*) FILTER (WHERE deleted_at IS NULL AND is_broken = 1) AS broken \
+         FROM bookmarks",
+        [],
+        |r| Ok(Counts { total: r.get(0)?, inbox: r.get(1)?, bin: r.get(2)?, broken: r.get(3)? }),
+    )
+    .map_err(Into::into)
+}
+
+/// Folders, tags and counts for the sidebar, gathered under a single mutex lock.
+pub fn db_get_sidebar(conn: &Connection) -> Result<SidebarData, AppError> {
+    Ok(SidebarData {
+        folders: db_get_folders(conn)?,
+        tags: db_get_tags(conn)?,
+        counts: db_get_counts(conn)?,
+    })
 }
 
 pub fn db_add_bookmark(
