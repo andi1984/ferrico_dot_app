@@ -69,6 +69,20 @@ describe('BookmarkRow', () => {
     expect(screen.getByText('+1')).toBeInTheDocument()
   })
 
+  it('calls onTagClick with the tag id when a tag is clicked', () => {
+    const onTagClick = vi.fn()
+    render(
+      <BookmarkRow
+        bookmark={makeBookmark({ tags: [makeTag({ id: 'tag-7', name: 'Alpha' })] })}
+        onDelete={() => {}}
+        onContext={() => {}}
+        onTagClick={onTagClick}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Filter by tag Alpha' }))
+    expect(onTagClick).toHaveBeenCalledWith('tag-7')
+  })
+
   it('calls onDelete with the bookmark id when delete button is clicked', () => {
     const onDelete = vi.fn()
     render(

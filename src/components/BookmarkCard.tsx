@@ -9,6 +9,7 @@ interface BookmarkCardProps {
   bookmark: Bookmark
   onDelete: (id: string) => void
   onContext: (e: React.MouseEvent, bookmark: Bookmark) => void
+  onTagClick?: (tagId: string) => void
   onDragPointerDown?: (e: React.PointerEvent, bookmark: Bookmark) => void
 }
 
@@ -31,6 +32,7 @@ export const BookmarkCard = memo(function BookmarkCard({
   bookmark,
   onDelete,
   onContext,
+  onTagClick,
   onDragPointerDown,
 }: BookmarkCardProps) {
   function openUrl(e: React.MouseEvent | React.KeyboardEvent) {
@@ -129,13 +131,20 @@ export const BookmarkCard = memo(function BookmarkCard({
         {bookmark.tags.length > 0 && (
           <div className="flex flex-wrap gap-1 mb-2" data-no-drag>
             {bookmark.tags.slice(0, 3).map((tag) => (
-              <span
+              <button
                 key={tag.id}
-                className="tag-pill cursor-default truncate"
-                style={{ background: tag.color + '22', color: tag.color, maxWidth: 88 }}
+                type="button"
+                data-no-drag
+                onClick={(e) => { e.stopPropagation(); onTagClick?.(tag.id) }}
+                className="tag-pill cursor-pointer truncate transition-colors duration-100"
+                style={{ background: tag.color + '22', color: tag.color, maxWidth: 88, border: 'none' }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = tag.color + '38')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = tag.color + '22')}
+                aria-label={`Filter by tag ${tag.name}`}
+                title={`Filter by tag: ${tag.name}`}
               >
                 {tag.name}
-              </span>
+              </button>
             ))}
             {bookmark.tags.length > 3 && (
               <span className="mono" style={{ fontSize: 10.5, color: 'var(--text-3)' }}>

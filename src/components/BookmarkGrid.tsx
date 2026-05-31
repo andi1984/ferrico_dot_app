@@ -13,6 +13,7 @@ interface BookmarkGridProps {
   bookmarks: Bookmark[]
   onDelete: (id: string) => void
   onContext: (e: React.MouseEvent, bookmark: Bookmark) => void
+  onTagClick?: (tagId: string) => void
   onDragPointerDown?: (e: React.PointerEvent, bookmark: Bookmark) => void
 }
 
@@ -26,6 +27,7 @@ export const BookmarkGrid = memo(function BookmarkGrid({
   bookmarks,
   onDelete,
   onContext,
+  onTagClick,
   onDragPointerDown,
 }: BookmarkGridProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -95,6 +97,7 @@ export const BookmarkGrid = memo(function BookmarkGrid({
                   bookmark={bookmark}
                   onDelete={onDelete}
                   onContext={onContext}
+                  onTagClick={onTagClick}
                   onDragPointerDown={onDragPointerDown}
                 />
               ))}

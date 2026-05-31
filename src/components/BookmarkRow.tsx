@@ -9,12 +9,13 @@ interface BookmarkRowProps {
   bookmark: Bookmark
   onDelete: (id: string) => void
   onContext: (e: React.MouseEvent, bookmark: Bookmark) => void
+  onTagClick?: (tagId: string) => void
   isBinView?: boolean
   onRestore?: (id: string) => void
   onDragPointerDown?: (e: React.PointerEvent, bookmark: Bookmark) => void
 }
 
-export const BookmarkRow = memo(function BookmarkRow({ bookmark, onDelete, onContext, isBinView, onRestore, onDragPointerDown }: BookmarkRowProps) {
+export const BookmarkRow = memo(function BookmarkRow({ bookmark, onDelete, onContext, onTagClick, isBinView, onRestore, onDragPointerDown }: BookmarkRowProps) {
   function openUrl(e: React.MouseEvent | React.KeyboardEvent) {
     e.preventDefault()
     invoke('open_url', { url: bookmark.url }).catch(() => {})
@@ -100,14 +101,20 @@ export const BookmarkRow = memo(function BookmarkRow({ bookmark, onDelete, onCon
               {domainOf(bookmark.url)}
             </span>
             {bookmark.tags.slice(0, 3).map((tag) => (
-              <span
+              <button
                 key={tag.id}
+                type="button"
                 data-no-drag
-                className="tag-pill cursor-default truncate"
-                style={{ background: tag.color + '22', color: tag.color, maxWidth: 96 }}
+                onClick={(e) => { e.stopPropagation(); onTagClick?.(tag.id) }}
+                className="tag-pill cursor-pointer truncate transition-colors duration-100"
+                style={{ background: tag.color + '22', color: tag.color, maxWidth: 96, border: 'none' }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = tag.color + '38')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = tag.color + '22')}
+                aria-label={`Filter by tag ${tag.name}`}
+                title={`Filter by tag: ${tag.name}`}
               >
                 {tag.name}
-              </span>
+              </button>
             ))}
             {bookmark.tags.length > 3 && (
               <span
