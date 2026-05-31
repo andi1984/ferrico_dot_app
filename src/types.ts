@@ -37,6 +37,19 @@ export type Selection =
   | { type: 'tag'; id: string }
   | { type: 'bin' }
 
+export interface Counts {
+  total: number
+  inbox: number
+  bin: number
+  broken: number
+}
+
+export interface SidebarData {
+  folders: Folder[]
+  tags: Tag[]
+  counts: Counts
+}
+
 export type ViewMode = 'list' | 'grid'
 
 export type SortKey = 'date-desc' | 'date-asc' | 'title-asc' | 'title-desc' | 'domain-asc'

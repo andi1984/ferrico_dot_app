@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { subscribeToBookmarkAdded, subscribeToHealthCheckProgress, type UnlistenFn } from './events'
-import type { Bookmark, Folder, Tag, Selection, ViewMode, SortKey } from './types'
+import type { Bookmark, Folder, Tag, Selection, ViewMode, SortKey, SidebarData } from './types'
 import { extractErrorMessage, duckduckgoFavicon, domainOf } from './utils'
 import { ContextMenu, type CtxMenuState } from './components/ContextMenu'
 import { BookmarkList } from './components/BookmarkList'
@@ -142,6 +142,16 @@ function SortDropdown({ value, onChange }: { value: SortKey; onChange: (k: SortK
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 
+// Stable cache key for the list cache: identifies the exact query behind the
+// current view (selection scope + active search text).
+function listCacheKey(selection: Selection, search: string): string {
+  const base =
+    selection.type === 'folder' ? `folder:${selection.id}`
+      : selection.type === 'tag' ? `tag:${selection.id}`
+        : selection.type
+  return `${base}|${search}`
+}
+
 export default function App() {
   // null = first load not yet complete; [] = loaded, no results
   const [bookmarks, setBookmarks] = useState<Bookmark[] | null>(null)
@@ -186,35 +196,35 @@ export default function App() {
     return () => clearTimeout(t)
   }, [searchInput])
 
-  const loadAll = useCallback(async () => {
+  // Per-view list cache: last fetched rows keyed by selection+search, cleared on
+  // any mutation (see refresh) so it never serves stale rows across edits.
+  const listCache = useRef<Map<string, Bookmark[]>>(new Map())
+
+  // Fetch only the visible list. This is the navigation hot path — a single
+  // IPC call (and a single DB-mutex lock) so clicking a folder/tag/view paints
+  // as soon as that one query returns, instead of waiting on a fan-out of
+  // folders + tags + four counts that don't change when you just switch view.
+  const loadBookmarks = useCallback(async () => {
+    const key = listCacheKey(selection, search)
+    // Paint this view's last-known rows instantly, then refetch and reconcile —
+    // re-visiting a folder/tag/view feels immediate instead of waiting on IPC.
+    const cached = listCache.current.get(key)
+    if (cached) setBookmarks(cached)
     try {
       const isBin = selection.type === 'bin'
       const isBroken = selection.type === 'broken'
-      const [b, f, t, count, inbox, bCount, brCount] = await Promise.all([
-        isBin
-          ? invoke<Bookmark[]>('get_bin_bookmarks')
-          : isBroken
-            ? invoke<Bookmark[]>('get_broken_bookmarks')
-            : invoke<Bookmark[]>('get_bookmarks', {
-                folderId: selection.type === 'folder' ? selection.id : null,
-                tagId: selection.type === 'tag' ? selection.id : null,
-                search: search || null,
-                inboxOnly: selection.type === 'inbox',
-              }),
-        invoke<Folder[]>('get_folders'),
-        invoke<Tag[]>('get_tags'),
-        invoke<number>('get_bookmark_count'),
-        invoke<number>('get_inbox_count'),
-        invoke<number>('get_bin_count'),
-        invoke<number>('get_broken_count'),
-      ])
+      const b = await (isBin
+        ? invoke<Bookmark[]>('get_bin_bookmarks')
+        : isBroken
+          ? invoke<Bookmark[]>('get_broken_bookmarks')
+          : invoke<Bookmark[]>('get_bookmarks', {
+              folderId: selection.type === 'folder' ? selection.id : null,
+              tagId: selection.type === 'tag' ? selection.id : null,
+              search: search || null,
+              inboxOnly: selection.type === 'inbox',
+            }))
+      listCache.current.set(key, b)
       setBookmarks(b)
-      setFolders(f)
-      setTags(t)
-      setTotalCount(count)
-      setInboxCount(inbox)
-      setBinCount(bCount)
-      setBrokenCount(brCount)
       setError(null)
     } catch (e) {
       setError(extractErrorMessage(e))
@@ -223,18 +233,55 @@ export default function App() {
     }
   }, [selection, search])
 
-  useEffect(() => { loadAll() }, [loadAll])
+  // Sidebar folder/tag lists + badge counts. Independent of the current view,
+  // so it's loaded once on mount and only re-fetched after a mutation — never
+  // on plain navigation. One command, one lock (see `get_sidebar` in Rust).
+  const loadSidebar = useCallback(async () => {
+    try {
+      const s = await invoke<SidebarData>('get_sidebar')
+      setFolders(s.folders)
+      setTags(s.tags)
+      setTotalCount(s.counts.total)
+      setInboxCount(s.counts.inbox)
+      setBinCount(s.counts.bin)
+      setBrokenCount(s.counts.broken)
+    } catch (e) {
+      setError(extractErrorMessage(e))
+    }
+  }, [])
+
+  // Full refresh after a mutation (add/delete/move/import/…): reconcile both the
+  // visible list and the sidebar.
+  const refresh = useCallback(() => {
+    listCache.current.clear() // any edit invalidates every cached view
+    loadBookmarks()
+    loadSidebar()
+  }, [loadBookmarks, loadSidebar])
+
+  // Optimistically drop rows from the visible list so deletes/moves feel
+  // instant; `refresh()` afterwards reconciles counts and the true result.
+  const removeLocal = useCallback((ids: string[]) => {
+    const drop = new Set(ids)
+    setBookmarks((prev) => (prev ? prev.filter((b) => !drop.has(b.id)) : prev))
+  }, [])
+
+  useEffect(() => { loadBookmarks() }, [loadBookmarks])
+  useEffect(() => { loadSidebar() }, [loadSidebar])
 
   // Purge bin items older than 30 days on startup
   useEffect(() => {
     invoke('purge_expired_bin', { days: 30 }).catch(() => {})
   }, [])
 
-  // Reload when browser extension adds a bookmark via the HTTP API
+  // Reload when browser extension adds a bookmark via the HTTP API. The handler
+  // reads the latest `refresh` from a ref so the Tauri listener is registered
+  // exactly once, not torn down and re-created on every navigation.
+  const refreshRef = useRef(refresh)
+  useEffect(() => { refreshRef.current = refresh }, [refresh])
   useEffect(() => {
     let active = true
     let unlisten: UnlistenFn | undefined
-    subscribeToBookmarkAdded(loadAll)
+    subscribeToBookmarkAdded(() => refreshRef.current())
       .then((fn) => {
         if (active) unlisten = fn
         else fn()
@@ -244,7 +291,7 @@ export default function App() {
       active = false
       unlisten?.()
     }
-  }, [loadAll])
+  }, [])
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -283,87 +330,93 @@ export default function App() {
     try {
       await invoke('add_bookmark', { input: { ...data, favicon_url: duckduckgoFavicon(data.url) || null } })
       setModal(null)
-      loadAll()
+      refresh()
     } catch (e) {
       setError(extractErrorMessage(e))
     }
-  }, [loadAll])
+  }, [refresh])
 
   const handleDeleteBookmark = useCallback(async (id: string) => {
+    removeLocal([id]) // optimistic — row vanishes immediately
     try {
       await invoke('delete_bookmark', { id })
-      loadAll()
+      refresh()
     } catch (e) {
       setError(extractErrorMessage(e))
+      refresh() // failed → bring the row back
     }
-  }, [loadAll])
+  }, [refresh, removeLocal])
 
   const handleAddFolder = useCallback(async (name: string) => {
     try {
       await invoke('add_folder', { name, parentId: null })
       setModal(null)
-      loadAll()
+      loadSidebar()
     } catch (e) {
       setError(extractErrorMessage(e))
     }
-  }, [loadAll])
+  }, [loadSidebar])
 
   const handleDeleteFolder = useCallback(async (id: string) => {
     try {
       await invoke('delete_folder', { id })
       if (selection.type === 'folder' && selection.id === id) setSelection({ type: 'all' })
-      loadAll()
+      refresh()
     } catch (e) {
       setError(extractErrorMessage(e))
     }
-  }, [loadAll, selection])
+  }, [refresh, selection])
 
   const handleAddTag = useCallback(async (name: string, color: string) => {
     try {
       await invoke('add_tag', { name, color })
       setModal(null)
-      loadAll()
+      loadSidebar()
     } catch (e) {
       setError(extractErrorMessage(e))
     }
-  }, [loadAll])
+  }, [loadSidebar])
 
   const handleDeleteTag = useCallback(async (id: string) => {
     try {
       await invoke('delete_tag', { id })
       if (selection.type === 'tag' && selection.id === id) setSelection({ type: 'all' })
-      loadAll()
+      refresh()
     } catch (e) {
       setError(extractErrorMessage(e))
     }
-  }, [loadAll, selection])
+  }, [refresh, selection])
 
   const handleRestoreBookmark = useCallback(async (id: string) => {
+    removeLocal([id]) // optimistic — leaves the current (bin) view
     try {
       await invoke('restore_bookmark', { id })
-      loadAll()
+      refresh()
     } catch (e) {
       setError(extractErrorMessage(e))
+      refresh()
     }
-  }, [loadAll])
+  }, [refresh, removeLocal])
 
   const handleDeleteBookmarkForever = useCallback(async (id: string) => {
+    removeLocal([id]) // optimistic
     try {
       await invoke('permanently_delete_bookmark', { id })
-      loadAll()
+      refresh()
     } catch (e) {
       setError(extractErrorMessage(e))
+      refresh()
     }
-  }, [loadAll])
+  }, [refresh, removeLocal])
 
   const handleEmptyBin = useCallback(async () => {
     try {
       await invoke('empty_bin')
-      loadAll()
+      refresh()
     } catch (e) {
       setError(extractErrorMessage(e))
     }
-  }, [loadAll])
+  }, [refresh])
 
   const handleScanBrokenBookmarks = useCallback(async () => {
     if (scanProgress) return
@@ -372,28 +425,30 @@ export default function App() {
       setScanProgress({ current: 0, total: 0 })
       unlisten = await subscribeToHealthCheckProgress(setScanProgress)
       await invoke('scan_broken_bookmarks')
-      await loadAll()
+      refresh()
     } catch (e) {
       setError(extractErrorMessage(e))
     } finally {
       setScanProgress(null)
       unlisten?.()
     }
-  }, [scanProgress, loadAll])
+  }, [scanProgress, refresh])
 
   const handleMoveAllBrokenToBin = useCallback(async () => {
     // Guard: only operate on the broken view — bookmarks state is shared across views
-    // and could be stale from a concurrent loadAll if the selection changed.
+    // and could be stale from a concurrent refresh if the selection changed.
     if (!bookmarks || selection.type !== 'broken') return
     const ids = bookmarks.filter((b) => b.is_broken).map((b) => b.id)
     if (ids.length === 0) return
+    removeLocal(ids) // optimistic — broken view empties at once
     try {
       await invoke('delete_bookmarks', { ids })
-      loadAll()
+      refresh()
     } catch (e) {
       setError(extractErrorMessage(e))
+      refresh()
     }
-  }, [bookmarks, selection, loadAll])
+  }, [bookmarks, selection, refresh, removeLocal])
 
   // Toast shown during/after a bookmark move. Auto-dismisses after 2s.
   const [moveStatus, setMoveStatus] = useState<string | null>(null)
@@ -415,16 +470,23 @@ export default function App() {
     const folderId = targetId === INBOX_DROP_TARGET ? null : targetId
     const destinationName =
       folderId === null ? 'Inbox' : (folders.find((f) => f.id === folderId)?.name ?? 'folder')
+    // If the move takes the bookmark out of the view we're looking at, drop it
+    // from the list immediately so the drag feels like it lands instantly.
+    const leavesView =
+      (selection.type === 'inbox' && folderId !== null) ||
+      (selection.type === 'folder' && folderId !== selection.id)
+    if (leavesView) removeLocal([bookmark.id])
     showMoveStatus(`Moving "${bookmark.title}" to ${destinationName}…`)
     try {
       await invoke('move_bookmark', { id: bookmark.id, folderId })
       showMoveStatus(`Moved "${bookmark.title}" to ${destinationName}`, true)
-      loadAll()
+      refresh()
     } catch (e) {
       setMoveStatus(null)
       setError(extractErrorMessage(e))
+      refresh()
     }
-  }, [folders, loadAll, showMoveStatus])
+  }, [folders, selection, refresh, removeLocal, showMoveStatus])
 
   const drag = useDragDrop<Bookmark>({ onDrop: handleMoveBookmark })
 
@@ -857,8 +919,8 @@ export default function App() {
       {modal === 'settings' && (
         <SettingsModal
           onClose={() => setModal(null)}
-          onClear={() => { setModal(null); loadAll() }}
-          onDone={loadAll}
+          onClear={() => { setModal(null); refresh() }}
+          onDone={refresh}
           onImportCsv={() => { setModal('import-csv') }}
           onDeduplicate={() => setModal('deduplicate')}
         />
@@ -866,14 +928,14 @@ export default function App() {
       {modal === 'import' && (
         <ImportModal
           onClose={() => setModal(null)}
-          onDone={loadAll}
+          onDone={refresh}
           onImportCsv={(path) => { setCsvDropPath(path ?? null); setModal('import-csv') }}
         />
       )}
       {modal === 'import-csv' && (
         <ImportCsvModal
           onClose={() => setModal(null)}
-          onDone={loadAll}
+          onDone={refresh}
           csvDropPath={csvDropPath}
           onCsvDropConsumed={() => setCsvDropPath(null)}
         />
@@ -883,14 +945,14 @@ export default function App() {
           bookmarks={bookmarks}
           folders={folders}
           onClose={() => setModal(null)}
-          onDone={loadAll}
+          onDone={refresh}
         />
       )}
 
       {modal === 'deduplicate' && (
         <DeduplicateModal
           onClose={() => setModal(null)}
-          onDone={loadAll}
+          onDone={refresh}
         />
       )}
 
