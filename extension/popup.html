@@ -515,6 +515,161 @@
     .status.success { color: #10b981; }
     .status.error   { color: #ef4444; }
 
+    /* ── Page preview card ─────────────────────────────────── */
+
+    .page-preview {
+      display: flex;
+      gap: 10px;
+      padding: 12px 16px;
+      border-bottom: 1px solid #1e293b;
+      background: #0b1424;
+    }
+
+    .preview-shot {
+      width: 72px;
+      height: 54px;
+      border-radius: 6px;
+      object-fit: cover;
+      object-position: top;
+      flex-shrink: 0;
+      background: #1e293b;
+      border: 1px solid #1e3a5f;
+    }
+
+    .preview-shot.placeholder {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #334155;
+    }
+
+    .preview-meta {
+      min-width: 0;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 3px;
+    }
+
+    .preview-title-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .preview-favicon {
+      width: 14px;
+      height: 14px;
+      border-radius: 3px;
+      flex-shrink: 0;
+    }
+
+    .preview-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: #f1f5f9;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .preview-url {
+      font-size: 11px;
+      color: #64748b;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* ── Tag suggestions ───────────────────────────────────── */
+
+    .suggestions {
+      display: none;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin-top: 7px;
+      align-items: center;
+    }
+
+    .suggestions.has-items { display: flex; }
+
+    .sugg-label {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #475569;
+      width: 100%;
+      margin-bottom: 1px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .sugg-spinner {
+      width: 9px;
+      height: 9px;
+      border: 1.5px solid #334155;
+      border-top-color: #6366f1;
+      border-radius: 50%;
+      animation: sugg-spin 0.6s linear infinite;
+    }
+
+    @keyframes sugg-spin { to { transform: rotate(360deg); } }
+
+    .sugg-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 9px 3px 7px;
+      border-radius: 20px;
+      background: #1e293b;
+      border: 1px dashed #334155;
+      color: #cbd5e1;
+      font-size: 11px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.12s, border-color 0.12s, color 0.12s;
+      user-select: none;
+      max-width: 150px;
+    }
+
+    .sugg-chip:hover {
+      background: #293548;
+      border-color: #475569;
+      color: #f1f5f9;
+    }
+
+    .sugg-chip .sugg-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .sugg-chip .sugg-plus {
+      color: #818cf8;
+      display: flex;
+      flex-shrink: 0;
+    }
+
+    .sugg-chip .sugg-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .sugg-chip.is-new {
+      border-style: dashed;
+      border-color: color-mix(in srgb, #6366f1 35%, #334155);
+    }
+    .sugg-chip.is-new:hover {
+      border-color: #6366f1;
+      background: color-mix(in srgb, #6366f1 12%, #1e293b);
+    }
+
     /* ── No token ──────────────────────────────────────────── */
 
     .no-token { padding: 20px 16px; text-align: center; }

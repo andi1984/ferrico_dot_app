@@ -10,7 +10,7 @@ mod io;
 mod io_validate;
 
 use axum::{
-    extract::State as AxumState,
+    extract::{Query, State as AxumState},
     http::{HeaderMap, StatusCode},
     routing::{get, post},
     Json, Router,
@@ -27,6 +27,7 @@ use db::{
     db_move_bookmark, db_permanently_delete_bookmark,
     db_purge_expired_bin, db_restore_bookmark,
     db_get_bookmark_count, db_get_bookmarks, db_get_folders, db_get_tags,
+    db_related_tags,
     db_find_duplicate_bookmarks, db_merge_bookmark_duplicates,
     db_update_bookmark_health,
     now, open_db,
@@ -560,6 +561,35 @@ async fn http_get_tags(
     db_get_tags(&db).map(Json).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
+#[derive(Deserialize)]
+struct RelatedTagsQuery {
+    /// Comma-separated tag ids the user has already selected.
+    ids: Option<String>,
+}
+
+/// Suggest tags co-occurring with the already-selected ones (`?ids=a,b,c`).
+/// Powers the extension's context-aware tag suggestions.
+async fn http_related_tags(
+    AxumState(state): AxumState<HttpState>,
+    headers: HeaderMap,
+    Query(q): Query<RelatedTagsQuery>,
+) -> Result<Json<Vec<Tag>>, StatusCode> {
+    if !auth_ok(&headers, &state.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let ids: Vec<String> = q
+        .ids
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    db_related_tags(&db, &ids, 8)
+        .map(Json)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
 async fn http_add_folder(
     AxumState(state): AxumState<HttpState>,
     headers: HeaderMap,
@@ -633,6 +663,7 @@ async fn start_http_server(db: Arc<Mutex<Connection>>, token: String, app_handle
         .route("/bookmarks", post(http_add_bookmark))
         .route("/folders", get(http_get_folders).post(http_add_folder))
         .route("/tags", get(http_get_tags).post(http_add_tag))
+        .route("/tags/related", get(http_related_tags))
         .with_state(state)
         .layer(cors);
 
