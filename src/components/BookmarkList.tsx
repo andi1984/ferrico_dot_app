@@ -7,6 +7,7 @@ interface BookmarkListProps {
   bookmarks: Bookmark[]
   onDelete: (id: string) => void
   onContext: (e: React.MouseEvent, bookmark: Bookmark) => void
+  onTagClick?: (tagId: string) => void
   isBinView?: boolean
   onRestore?: (id: string) => void
   onDragPointerDown?: (e: React.PointerEvent, bookmark: Bookmark) => void
@@ -57,7 +58,7 @@ function buildItems(bookmarks: Bookmark[], isBinView: boolean): ListItem[] {
   return items
 }
 
-export const BookmarkList = memo(function BookmarkList({ bookmarks, onDelete, onContext, isBinView, onRestore, onDragPointerDown }: BookmarkListProps) {
+export const BookmarkList = memo(function BookmarkList({ bookmarks, onDelete, onContext, onTagClick, isBinView, onRestore, onDragPointerDown }: BookmarkListProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
 
   const items = useMemo(() => buildItems(bookmarks, !!isBinView), [bookmarks, isBinView])
@@ -110,6 +111,7 @@ export const BookmarkList = memo(function BookmarkList({ bookmarks, onDelete, on
                   bookmark={it.bookmark}
                   onDelete={onDelete}
                   onContext={onContext}
+                  onTagClick={onTagClick}
                   isBinView={isBinView}
                   onRestore={onRestore}
                   onDragPointerDown={onDragPointerDown}

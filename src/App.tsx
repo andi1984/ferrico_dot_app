@@ -463,6 +463,10 @@ export default function App() {
     setCtxMenu({ x: e.clientX, y: e.clientY, items: [{ label: 'Delete Folder', danger: true, action: () => handleDeleteFolder(folder.id) }] })
   }, [handleDeleteFolder])
 
+  const handleTagClick = useCallback((tagId: string) => {
+    setSelection({ type: 'tag', id: tagId })
+  }, [])
+
   const openTagContext = useCallback((e: React.MouseEvent, tag: Tag) => {
     e.preventDefault()
     setCtxMenu({ x: e.clientX, y: e.clientY, items: [{ label: 'Delete Tag', danger: true, action: () => handleDeleteTag(tag.id) }] })
@@ -829,6 +833,7 @@ export default function App() {
               bookmarks={sortedBookmarks}
               onDelete={isBinView ? handleDeleteBookmarkForever : handleDeleteBookmark}
               onContext={isBinView ? openBinBookmarkContext : openBookmarkContext}
+              onTagClick={handleTagClick}
               onDragPointerDown={!isBinView && !isBrokenView ? drag.startDrag : undefined}
             />
           ) : (
@@ -836,6 +841,7 @@ export default function App() {
               bookmarks={sortedBookmarks}
               onDelete={isBinView ? handleDeleteBookmarkForever : handleDeleteBookmark}
               onContext={isBinView ? openBinBookmarkContext : openBookmarkContext}
+              onTagClick={handleTagClick}
               isBinView={isBinView}
               onRestore={handleRestoreBookmark}
               onDragPointerDown={!isBinView && !isBrokenView ? drag.startDrag : undefined}
