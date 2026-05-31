@@ -814,6 +814,62 @@ pub fn db_get_tags(conn: &Connection) -> Result<Vec<Tag>, AppError> {
     Ok(tags)
 }
 
+/// Suggest tags that frequently co-occur with the given `tag_ids` across the
+/// user's *active* (non-binned) bookmarks. Used by the browser extension to
+/// propose context-aware tags once the user has picked at least one.
+///
+/// Ranking: by the number of shared bookmarks (descending), then name. The
+/// input tags themselves are excluded from the result. `bookmark_count` carries
+/// the co-occurrence count so callers can show / weight it.
+pub fn db_related_tags(
+    conn: &Connection,
+    tag_ids: &[String],
+    limit: usize,
+) -> Result<Vec<Tag>, AppError> {
+    if tag_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = (1..=tag_ids.len())
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    // Two IN-lists referencing the same ids: seed tags (bt_in) and the tags to
+    // exclude from the output (bt_other). We bind the id slice twice.
+    let limit_ph = tag_ids.len() * 2 + 1;
+    let sql = format!(
+        "SELECT t.id, t.name, t.color, t.created_at, COUNT(*) AS cooccur \
+         FROM bookmark_tags bt_in \
+         JOIN bookmark_tags bt_other ON bt_other.bookmark_id = bt_in.bookmark_id \
+         JOIN bookmarks b ON b.id = bt_in.bookmark_id AND b.deleted_at IS NULL \
+         JOIN tags t ON t.id = bt_other.tag_id \
+         WHERE bt_in.tag_id IN ({placeholders}) \
+           AND bt_other.tag_id NOT IN ({placeholders}) \
+         GROUP BY t.id \
+         ORDER BY cooccur DESC, t.name \
+         LIMIT ?{limit_ph}"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let bound = tag_ids
+        .iter()
+        .map(|s| s.as_str())
+        .chain(tag_ids.iter().map(|s| s.as_str()))
+        .map(|s| s.to_string())
+        .chain(std::iter::once(limit.to_string()))
+        .collect::<Vec<_>>();
+    let tags = stmt
+        .query_map(params_from_iter(bound.iter()), |row| {
+            Ok(Tag {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                color: row.get(2)?,
+                created_at: row.get(3)?,
+                bookmark_count: Some(row.get(4)?),
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(tags)
+}
+
 pub fn db_add_tag(
     conn: &Connection,
     name: String,
@@ -1648,6 +1704,76 @@ mod tests {
         let conn = mem();
         let err = db_delete_tag(&conn, "nonexistent").unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
+    }
+
+    #[test]
+    fn related_tags_ranks_by_cooccurrence() {
+        let conn = mem();
+        let rust = mk_tag(&conn, "rust");
+        let prog = mk_tag(&conn, "programming");
+        let web = mk_tag(&conn, "web");
+        let cooking = mk_tag(&conn, "cooking");
+
+        let with_tags = |url: &str, tag_ids: Vec<String>| {
+            db_add_bookmark(
+                &conn,
+                CreateBookmarkInput {
+                    url: url.to_string(),
+                    title: "t".to_string(),
+                    description: None,
+                    favicon_url: None,
+                    feed_url: None,
+                    folder_id: None,
+                    tag_ids: Some(tag_ids),
+                },
+            )
+            .unwrap()
+        };
+
+        // rust+programming co-occur 2x, rust+web 1x, cooking unrelated
+        with_tags("https://a.com", vec![rust.id.clone(), prog.id.clone()]);
+        with_tags("https://b.com", vec![rust.id.clone(), prog.id.clone(), web.id.clone()]);
+        with_tags("https://c.com", vec![cooking.id.clone()]);
+
+        let related = db_related_tags(&conn, &[rust.id.clone()], 10).unwrap();
+        let names: Vec<&str> = related.iter().map(|t| t.name.as_str()).collect();
+
+        // programming (2) ranks above web (1); rust excluded; cooking absent
+        assert_eq!(names, vec!["programming", "web"]);
+        assert_eq!(related[0].bookmark_count, Some(2));
+        assert_eq!(related[1].bookmark_count, Some(1));
+    }
+
+    #[test]
+    fn related_tags_excludes_seed_and_binned_bookmarks() {
+        let conn = mem();
+        let rust = mk_tag(&conn, "rust");
+        let prog = mk_tag(&conn, "programming");
+
+        let b = db_add_bookmark(
+            &conn,
+            CreateBookmarkInput {
+                url: "https://a.com".to_string(),
+                title: "t".to_string(),
+                description: None,
+                favicon_url: None,
+                feed_url: None,
+                folder_id: None,
+                tag_ids: Some(vec![rust.id.clone(), prog.id.clone()]),
+            },
+        )
+        .unwrap();
+
+        // Bin the only bookmark — its co-occurrences must no longer count.
+        db_delete_bookmark(&conn, &b.id).unwrap();
+        assert!(db_related_tags(&conn, &[rust.id.clone()], 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn related_tags_empty_input_returns_empty() {
+        let conn = mem();
+        mk_tag(&conn, "rust");
+        assert!(db_related_tags(&conn, &[], 10).unwrap().is_empty());
     }
 
     // ── OPML ──────────────────────────────────────────────────────────────────
