@@ -92,11 +92,11 @@ export function useDragDrop<T>({
     }
 
     // Core move/up logic, shared by the pointer- and mouse-event adapters.
-    // We listen to BOTH families because WebKitGTK (Tauri's Linux webview)
-    // frequently stops delivering pointermove/pointerup mid-drag, while plain
-    // mouse events keep flowing. The pendingRef-null guard makes the second
-    // family a no-op once the first has already finished the gesture, so on
-    // platforms where both fire there is no double drop.
+    // We listen to BOTH families because Tauri's webviews (WKWebView on macOS,
+    // WebKitGTK on Linux) can stop delivering pointermove/pointerup mid-drag,
+    // while plain mouse events keep flowing. The pendingRef-null guard makes the
+    // second family a no-op once the first has already finished the gesture, so
+    // on platforms where both fire there is no double drop.
     function processMove(clientX: number, clientY: number) {
       const pending = pendingRef.current
       if (!pending) return
@@ -158,6 +158,17 @@ export function useDragDrop<T>({
       cleanup()
     }
 
+    // Defense against native HTML5 drag: pressing and moving on a row can start
+    // a *native* drag (dragstart) in the webview, which captures the cursor and
+    // stops the DOM from emitting further move/up events — the gesture then dies
+    // before our threshold and no ghost shows. Cancelling dragstart while a
+    // gesture is pending keeps the move/up stream alive. (The app has no
+    // intentional native drag-out; external file drops use dragover/drop, which
+    // are unaffected.)
+    function onDragStart(e: DragEvent) {
+      if (pendingRef.current) e.preventDefault()
+    }
+
     // Swallow the synthetic click that follows a drag, so links don't navigate
     // and buttons don't fire after a drop.
     function onClickCapture(e: MouseEvent) {
@@ -173,6 +184,7 @@ export function useDragDrop<T>({
     document.addEventListener('pointercancel', onPointerCancel)
     document.addEventListener('mousemove', onMouseMove)
     document.addEventListener('mouseup', onMouseUp)
+    document.addEventListener('dragstart', onDragStart)
     document.addEventListener('click', onClickCapture, true)
     return () => {
       if (rafId !== 0) cancelAnimationFrame(rafId)
@@ -181,6 +193,7 @@ export function useDragDrop<T>({
       document.removeEventListener('pointercancel', onPointerCancel)
       document.removeEventListener('mousemove', onMouseMove)
       document.removeEventListener('mouseup', onMouseUp)
+      document.removeEventListener('dragstart', onDragStart)
       document.removeEventListener('click', onClickCapture, true)
     }
   }, [cleanup, onDrop, threshold])

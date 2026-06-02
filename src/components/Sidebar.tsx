@@ -77,7 +77,8 @@ export function SidebarItem({ active, onClick, onContext, onPointerDown, icon, l
       style={{
         padding: '6px 10px',
         paddingLeft: 10 + indentLevel * FOLDER_INDENT_STEP,
-        // Suppress native text-selection drag so the pointer-drag wins on WebKitGTK.
+        // Suppress native text-selection/drag so our pointer-drag wins in the
+        // webview (WKWebView on macOS), matching the bookmark rows.
         touchAction: onPointerDown ? 'none' : undefined,
         background: isDragTarget
           ? 'var(--accent)'
