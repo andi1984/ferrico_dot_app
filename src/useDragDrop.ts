@@ -60,15 +60,8 @@ export function useDragDrop<T>({
   const pendingRef = useRef<{ payload: T; startX: number; startY: number; pointerId: number } | null>(null)
   const activeRef = useRef(false)
   const suppressClickRef = useRef(false)
-  // Element holding pointer capture for the current gesture, released on cleanup.
-  const captureRef = useRef<{ el: Element; pointerId: number } | null>(null)
 
   const cleanup = useCallback(() => {
-    const cap = captureRef.current
-    if (cap) {
-      try { (cap.el as HTMLElement).releasePointerCapture?.(cap.pointerId) } catch { /* already released */ }
-      captureRef.current = null
-    }
     pendingRef.current = null
     activeRef.current = false
     document.body.style.cursor = ''
@@ -98,36 +91,65 @@ export function useDragDrop<T>({
       })
     }
 
-    function onPointerMove(e: PointerEvent) {
+    // Core move/up logic, shared by the pointer- and mouse-event adapters.
+    // We listen to BOTH families because WebKitGTK (Tauri's Linux webview)
+    // frequently stops delivering pointermove/pointerup mid-drag, while plain
+    // mouse events keep flowing. The pendingRef-null guard makes the second
+    // family a no-op once the first has already finished the gesture, so on
+    // platforms where both fire there is no double drop.
+    function processMove(clientX: number, clientY: number) {
       const pending = pendingRef.current
-      if (!pending || e.pointerId !== pending.pointerId) return
-      const dx = e.clientX - pending.startX
-      const dy = e.clientY - pending.startY
+      if (!pending) return
       if (!activeRef.current) {
+        const dx = clientX - pending.startX
+        const dy = clientY - pending.startY
         if (Math.hypot(dx, dy) < threshold) return
         activeRef.current = true
         document.body.style.cursor = 'grabbing'
         document.body.style.userSelect = 'none'
       }
-      pendingX = e.clientX
-      pendingY = e.clientY
+      pendingX = clientX
+      pendingY = clientY
       if (rafId === 0) rafId = requestAnimationFrame(flush)
     }
 
-    function onPointerUp(e: PointerEvent) {
+    function processUp(clientX: number, clientY: number) {
       const pending = pendingRef.current
-      if (!pending || e.pointerId !== pending.pointerId) return
-      const wasActive = activeRef.current
-      if (wasActive) {
-        const targetId = findDropTargetId(e.clientX, e.clientY)
+      if (!pending) return
+      if (activeRef.current) {
+        const targetId = findDropTargetId(clientX, clientY)
         suppressClickRef.current = true
-        // Defer so cleanup runs first and consumer can re-read fresh state.
+        // Defer so cleanup runs first and the consumer can re-read fresh state.
         const payload = pending.payload
         cleanup()
         onDrop(payload, targetId)
       } else {
         cleanup()
       }
+    }
+
+    function onPointerMove(e: PointerEvent) {
+      const pending = pendingRef.current
+      if (!pending || e.pointerId !== pending.pointerId) return
+      processMove(e.clientX, e.clientY)
+    }
+
+    function onPointerUp(e: PointerEvent) {
+      const pending = pendingRef.current
+      if (!pending || e.pointerId !== pending.pointerId) return
+      processUp(e.clientX, e.clientY)
+    }
+
+    // Mouse fallback — no pointerId to match, just drive the same core. Only the
+    // primary button matters; a non-left mouseup still ends the gesture.
+    function onMouseMove(e: MouseEvent) {
+      if (!pendingRef.current) return
+      processMove(e.clientX, e.clientY)
+    }
+
+    function onMouseUp(e: MouseEvent) {
+      if (!pendingRef.current) return
+      processUp(e.clientX, e.clientY)
     }
 
     function onPointerCancel(e: PointerEvent) {
@@ -149,12 +171,16 @@ export function useDragDrop<T>({
     document.addEventListener('pointermove', onPointerMove)
     document.addEventListener('pointerup', onPointerUp)
     document.addEventListener('pointercancel', onPointerCancel)
+    document.addEventListener('mousemove', onMouseMove)
+    document.addEventListener('mouseup', onMouseUp)
     document.addEventListener('click', onClickCapture, true)
     return () => {
       if (rafId !== 0) cancelAnimationFrame(rafId)
       document.removeEventListener('pointermove', onPointerMove)
       document.removeEventListener('pointerup', onPointerUp)
       document.removeEventListener('pointercancel', onPointerCancel)
+      document.removeEventListener('mousemove', onMouseMove)
+      document.removeEventListener('mouseup', onMouseUp)
       document.removeEventListener('click', onClickCapture, true)
     }
   }, [cleanup, onDrop, threshold])
@@ -172,17 +198,6 @@ export function useDragDrop<T>({
       pointerId: e.pointerId,
     }
     activeRef.current = false
-    // Capture the pointer on the source element. WebKitGTK (Tauri's Linux
-    // webview) otherwise stops delivering pointermove/pointerup once the press
-    // turns into a drag, so the whole gesture silently dies. Capturing keeps the
-    // event stream flowing to this element (and bubbling to our document
-    // listeners) regardless of what's under the cursor. elementFromPoint still
-    // hit-tests the real drop target, so capture doesn't affect targeting.
-    const el = e.currentTarget as HTMLElement
-    try {
-      el.setPointerCapture?.(e.pointerId)
-      captureRef.current = { el, pointerId: e.pointerId }
-    } catch { /* capture unsupported — fall back to bubbling */ }
   }, [])
 
   return { state, startDrag }
