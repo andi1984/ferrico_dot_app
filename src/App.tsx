@@ -14,12 +14,16 @@ import { ImportCsvModal } from './components/ImportCsvModal'
 import { ImportModal } from './components/ImportModal'
 import { InboxSortModal } from './components/InboxSortModal'
 import { DeduplicateModal } from './components/DeduplicateModal'
-import { Sidebar, INBOX_DROP_TARGET } from './components/Sidebar'
+import { Sidebar, INBOX_DROP_TARGET, FOLDER_ROOT_DROP_TARGET, type DragKind } from './components/Sidebar'
 import { EmptyState } from './components/EmptyState'
 import { useDragDrop } from './useDragDrop'
-import { IconClose, IconImport, IconPlus, IconSearch, IconLayoutList, IconLayoutGrid, IconSort, IconChevronDown, IconSparkles, IconSun, IconMoon, IconBrokenLink } from './components/icons'
+import { IconClose, IconImport, IconPlus, IconSearch, IconLayoutList, IconLayoutGrid, IconSort, IconChevronDown, IconSparkles, IconSun, IconMoon, IconBrokenLink, IconFolder } from './components/icons'
 
 type Theme = 'dark' | 'light'
+
+// Maximum folder nesting depth (1-based). Kept in sync with MAX_FOLDER_DEPTH in
+// src-tauri/src/db.rs — the backend is the source of truth and enforces it.
+const MAX_FOLDER_DEPTH = 3
 
 type Modal = 'add-bookmark' | 'add-folder' | 'add-tag' | 'settings' | 'import' | 'import-csv' | 'inbox-sort' | 'deduplicate' | null
 
@@ -347,15 +351,24 @@ export default function App() {
     }
   }, [refresh, removeLocal])
 
+  // Parent folder for the next "New Folder"/"New Subfolder" submission. null =
+  // top-level. Set by the folder context menu's "New Subfolder" action.
+  const [addFolderParentId, setAddFolderParentId] = useState<string | null>(null)
+
+  const closeModal = useCallback(() => {
+    setModal(null)
+    setAddFolderParentId(null)
+  }, [])
+
   const handleAddFolder = useCallback(async (name: string) => {
     try {
-      await invoke('add_folder', { name, parentId: null })
-      setModal(null)
+      await invoke('add_folder', { name, parentId: addFolderParentId })
+      closeModal()
       loadSidebar()
     } catch (e) {
       setError(extractErrorMessage(e))
     }
-  }, [loadSidebar])
+  }, [loadSidebar, addFolderParentId, closeModal])
 
   const handleDeleteFolder = useCallback(async (id: string) => {
     try {
@@ -490,6 +503,32 @@ export default function App() {
 
   const drag = useDragDrop<Bookmark>({ onDrop: handleMoveBookmark })
 
+  const handleMoveFolder = useCallback(async (folder: Folder, targetId: string | null) => {
+    // Only folder rows and the Folders header are valid folder drop targets.
+    if (!targetId || targetId === INBOX_DROP_TARGET) return
+    const parentId = targetId === FOLDER_ROOT_DROP_TARGET ? null : targetId
+    // No-op drops: onto itself, or onto the parent it already has.
+    if (parentId === folder.id) return
+    if (parentId === (folder.parent_id ?? null)) return
+    try {
+      await invoke('move_folder', { id: folder.id, parentId })
+      loadSidebar()
+    } catch (e) {
+      setError(extractErrorMessage(e))
+    }
+  }, [loadSidebar])
+
+  const folderDrag = useDragDrop<Folder>({ onDrop: handleMoveFolder })
+
+  // Combine the two drag sources for the sidebar: only one is ever active at a
+  // time. dragKind lets the sidebar light up only the targets that accept it.
+  const dragKind: DragKind = drag.state.active ? 'bookmark' : folderDrag.state.active ? 'folder' : null
+  const dragHoverTargetId = drag.state.active
+    ? drag.state.hoverTargetId
+    : folderDrag.state.active
+      ? folderDrag.state.hoverTargetId
+      : null
+
   const openBookmarkContext = useCallback((e: React.MouseEvent, bookmark: Bookmark) => {
     e.preventDefault()
     setCtxMenu({
@@ -522,8 +561,28 @@ export default function App() {
 
   const openFolderContext = useCallback((e: React.MouseEvent, folder: Folder) => {
     e.preventDefault()
-    setCtxMenu({ x: e.clientX, y: e.clientY, items: [{ label: 'Delete Folder', danger: true, action: () => handleDeleteFolder(folder.id) }] })
-  }, [handleDeleteFolder])
+    // 1-based depth: walk parent_id up to the root. Subfolders are capped at
+    // MAX_FOLDER_DEPTH levels (kept in sync with db.rs), so a folder already at
+    // the max can't host a subfolder.
+    const byId = new Map(folders.map((f) => [f.id, f]))
+    let depth = 1
+    let cur: Folder | undefined = folder
+    while (cur?.parent_id) {
+      depth += 1
+      cur = byId.get(cur.parent_id)
+      if (depth > MAX_FOLDER_DEPTH) break
+    }
+    const items: CtxMenuState['items'] = []
+    if (depth < MAX_FOLDER_DEPTH) {
+      items.push({
+        label: 'New Subfolder',
+        action: () => { setAddFolderParentId(folder.id); setModal('add-folder') },
+      })
+      items.push({ sep: true, label: '', action: () => {} })
+    }
+    items.push({ label: 'Delete Folder', danger: true, action: () => handleDeleteFolder(folder.id) })
+    setCtxMenu({ x: e.clientX, y: e.clientY, items })
+  }, [folders, handleDeleteFolder])
 
   const handleTagClick = useCallback((tagId: string) => {
     setSelection({ type: 'tag', id: tagId })
@@ -605,7 +664,9 @@ export default function App() {
         onOpenSettings={() => setModal('settings')}
         onFolderContext={openFolderContext}
         onTagContext={openTagContext}
-        dragHoverTargetId={drag.state.active ? drag.state.hoverTargetId : null}
+        onFolderPointerDown={(e, folder) => folderDrag.startDrag(e, folder)}
+        dragHoverTargetId={dragHoverTargetId}
+        dragKind={dragKind}
       />
 
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden" style={{ background: 'var(--bg)' }}>
@@ -917,7 +978,11 @@ export default function App() {
         <AddBookmarkModal folders={folders} tags={tags} onAdd={handleAddBookmark} onClose={() => setModal(null)} />
       )}
       {modal === 'add-folder' && (
-        <AddFolderModal onAdd={handleAddFolder} onClose={() => setModal(null)} />
+        <AddFolderModal
+          onAdd={handleAddFolder}
+          onClose={closeModal}
+          parentName={addFolderParentId ? folders.find((f) => f.id === addFolderParentId)?.name : undefined}
+        />
       )}
       {modal === 'add-tag' && (
         <AddTagModal onAdd={handleAddTag} onClose={() => setModal(null)} />
@@ -986,6 +1051,32 @@ export default function App() {
           }}
         >
           {drag.state.payload.title}
+        </div>
+      )}
+
+      {/* Drag ghost — follows the pointer while dragging a folder. */}
+      {folderDrag.state.active && folderDrag.state.payload && (
+        <div
+          aria-hidden="true"
+          className="fixed z-[100] rounded-lg px-3 py-2 shadow-2xl flex items-center gap-2"
+          style={{
+            top: folderDrag.state.pointerY + 12,
+            left: folderDrag.state.pointerX + 12,
+            pointerEvents: 'none',
+            background: 'var(--bg-elev-strong)',
+            color: 'var(--text-1)',
+            border: '1px solid var(--accent)',
+            maxWidth: '240px',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            opacity: 0.95,
+            fontSize: 12,
+            fontWeight: 500,
+          }}
+        >
+          <IconFolder size={13} />
+          {folderDrag.state.payload.name}
         </div>
       )}
 

@@ -23,4 +23,11 @@ describe('AddFolderModal', () => {
     await userEvent.click(screen.getByRole('button', { name: /create folder/i }))
     expect(onAdd).toHaveBeenCalledWith('Work')
   })
+
+  it('shows a subfolder title and parent hint when parentName is set', () => {
+    render(<AddFolderModal onAdd={() => {}} onClose={() => {}} parentName="Work" />)
+    expect(screen.getByText(/new subfolder/i)).toBeInTheDocument()
+    expect(screen.getByText('Work')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /create subfolder/i })).toBeInTheDocument()
+  })
 })

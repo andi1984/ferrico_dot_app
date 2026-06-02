@@ -60,8 +60,15 @@ export function useDragDrop<T>({
   const pendingRef = useRef<{ payload: T; startX: number; startY: number; pointerId: number } | null>(null)
   const activeRef = useRef(false)
   const suppressClickRef = useRef(false)
+  // Element holding pointer capture for the current gesture, released on cleanup.
+  const captureRef = useRef<{ el: Element; pointerId: number } | null>(null)
 
   const cleanup = useCallback(() => {
+    const cap = captureRef.current
+    if (cap) {
+      try { (cap.el as HTMLElement).releasePointerCapture?.(cap.pointerId) } catch { /* already released */ }
+      captureRef.current = null
+    }
     pendingRef.current = null
     activeRef.current = false
     document.body.style.cursor = ''
@@ -165,6 +172,17 @@ export function useDragDrop<T>({
       pointerId: e.pointerId,
     }
     activeRef.current = false
+    // Capture the pointer on the source element. WebKitGTK (Tauri's Linux
+    // webview) otherwise stops delivering pointermove/pointerup once the press
+    // turns into a drag, so the whole gesture silently dies. Capturing keeps the
+    // event stream flowing to this element (and bubbling to our document
+    // listeners) regardless of what's under the cursor. elementFromPoint still
+    // hit-tests the real drop target, so capture doesn't affect targeting.
+    const el = e.currentTarget as HTMLElement
+    try {
+      el.setPointerCapture?.(e.pointerId)
+      captureRef.current = { el, pointerId: e.pointerId }
+    } catch { /* capture unsupported — fall back to bubbling */ }
   }, [])
 
   return { state, startDrag }

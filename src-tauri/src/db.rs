@@ -681,29 +681,68 @@ pub fn db_purge_expired_bin(conn: &Connection, days: i64) -> Result<(), AppError
     Ok(())
 }
 
-/// Look up a top-level folder by name, or create it. Caches results so the
-/// same name only hits the DB once per import call.
+/// Resolve a folder *path* to a folder id, creating any missing levels.
+///
+/// A `/` in the name denotes nesting, so `"Work / Projects"` finds or creates
+/// `Work` at the top level and `Projects` underneath it, returning the id of the
+/// deepest segment. A plain name (no `/`) behaves as a single top-level folder.
+/// Segments are trimmed and empty ones are skipped, so `"a/ /b"` → `a → b`.
+/// Nesting is capped at [`MAX_FOLDER_DEPTH`]: extra segments collapse into the
+/// deepest allowed folder rather than erroring the whole import row.
+///
+/// Results are cached per resolved path prefix so repeated paths (and shared
+/// prefixes like `"a/b"` and `"a/c"`) only hit the DB once.
 pub(crate) fn find_or_create_folder(
     conn: &Connection,
     name: &str,
     cache: &mut HashMap<String, String>,
 ) -> Result<String, AppError> {
-    if let Some(id) = cache.get(name) {
-        return Ok(id.clone());
+    let segments: Vec<&str> = name.split('/').map(str::trim).filter(|s| !s.is_empty()).collect();
+    if segments.is_empty() {
+        return Err(AppError::Validation { message: "folder name is required".into() });
     }
-    let existing: Option<String> = conn
-        .query_row(
-            "SELECT id FROM folders WHERE name = ?1 AND parent_id IS NULL LIMIT 1",
-            params![name],
-            |r| r.get(0),
-        )
-        .optional()?;
-    let id = match existing {
-        Some(id) => id,
-        None => db_add_folder(conn, name.to_string(), None)?.id,
-    };
-    cache.insert(name.to_string(), id.clone());
-    Ok(id)
+
+    let mut parent: Option<String> = None;
+    let mut path_key = String::new();
+    for (depth, seg) in segments.into_iter().enumerate() {
+        if depth as i64 >= MAX_FOLDER_DEPTH {
+            break; // honor the nesting cap — deeper segments land in the deepest folder
+        }
+        if !path_key.is_empty() {
+            path_key.push('/');
+        }
+        path_key.push_str(seg);
+
+        if let Some(id) = cache.get(&path_key) {
+            parent = Some(id.clone());
+            continue;
+        }
+        let existing: Option<String> = match &parent {
+            Some(pid) => conn
+                .query_row(
+                    "SELECT id FROM folders WHERE name = ?1 AND parent_id = ?2 LIMIT 1",
+                    params![seg, pid],
+                    |r| r.get(0),
+                )
+                .optional()?,
+            None => conn
+                .query_row(
+                    "SELECT id FROM folders WHERE name = ?1 AND parent_id IS NULL LIMIT 1",
+                    params![seg],
+                    |r| r.get(0),
+                )
+                .optional()?,
+        };
+        let id = match existing {
+            Some(id) => id,
+            None => db_add_folder(conn, seg.to_string(), parent.clone())?.id,
+        };
+        cache.insert(path_key.clone(), id.clone());
+        parent = Some(id);
+    }
+
+    // Non-empty `segments` guarantees at least one iteration set `parent`.
+    parent.ok_or_else(|| AppError::Validation { message: "folder name is required".into() })
 }
 
 /// Parse and resolve tag names from a raw CSV cell ("rust, systems, tools").
@@ -791,6 +830,68 @@ pub fn db_get_folders(conn: &Connection) -> Result<Vec<Folder>, AppError> {
     Ok(folders)
 }
 
+/// Maximum folder nesting depth (1-based). A top-level folder is at depth 1, so
+/// `MAX_FOLDER_DEPTH = 3` allows folders → subfolders → sub-subfolders.
+pub(crate) const MAX_FOLDER_DEPTH: i64 = 3;
+
+/// 1-based depth of a folder: a root folder (parent_id IS NULL) is 1, its child
+/// is 2, and so on. Walks up the parent chain. Returns 0 if the folder is missing.
+/// The loop is bounded by `MAX_FOLDER_DEPTH + 1` so a corrupt cycle can't hang.
+fn folder_depth(conn: &Connection, id: &str) -> Result<i64, AppError> {
+    let mut depth = 0i64;
+    let mut current: Option<String> = Some(id.to_string());
+    while let Some(fid) = current {
+        let parent: Option<Option<String>> = conn
+            .query_row("SELECT parent_id FROM folders WHERE id = ?1", params![fid], |r| r.get(0))
+            .optional()?;
+        match parent {
+            Some(p) => {
+                depth += 1;
+                current = p;
+            }
+            None => break, // folder row not found — stop walking
+        }
+        if depth > MAX_FOLDER_DEPTH + 1 {
+            break;
+        }
+    }
+    Ok(depth)
+}
+
+/// Height of the subtree rooted at `id`: 1 for a leaf, 2 if it has children, etc.
+fn subtree_height(conn: &Connection, id: &str) -> Result<i64, AppError> {
+    let children: Vec<String> = conn
+        .prepare("SELECT id FROM folders WHERE parent_id = ?1")?
+        .query_map(params![id], |r| r.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut max_child = 0i64;
+    for child in children {
+        max_child = max_child.max(subtree_height(conn, &child)?);
+    }
+    Ok(1 + max_child)
+}
+
+/// True if `candidate` is `ancestor` itself or any descendant of `ancestor`.
+/// Used to reject moves that would create a cycle.
+fn is_self_or_descendant(conn: &Connection, ancestor: &str, candidate: &str) -> Result<bool, AppError> {
+    let mut current: Option<String> = Some(candidate.to_string());
+    let mut steps = 0i64;
+    while let Some(fid) = current {
+        if fid == ancestor {
+            return Ok(true);
+        }
+        current = conn
+            .query_row("SELECT parent_id FROM folders WHERE id = ?1", params![fid], |r| r.get(0))
+            .optional()?
+            .flatten();
+        steps += 1;
+        if steps > MAX_FOLDER_DEPTH + 1 {
+            break; // guard against a pre-existing cycle
+        }
+    }
+    Ok(false)
+}
+
 pub fn db_add_folder(
     conn: &Connection,
     name: String,
@@ -799,6 +900,13 @@ pub fn db_add_folder(
     if name.trim().is_empty() {
         return Err(AppError::Validation { message: "folder name is required".into() });
     }
+    if let Some(pid) = parent_id.as_deref() {
+        if folder_depth(conn, pid)? >= MAX_FOLDER_DEPTH {
+            return Err(AppError::Validation {
+                message: format!("folders can only be nested {MAX_FOLDER_DEPTH} levels deep"),
+            });
+        }
+    }
     let id = Uuid::new_v4().to_string();
     let ts = now();
     conn.execute(
@@ -806,6 +914,57 @@ pub fn db_add_folder(
         params![id, name, parent_id, ts],
     )?;
     Ok(Folder { id, name, parent_id, created_at: ts })
+}
+
+/// Re-parent a folder. `new_parent_id == None` moves it to the top level.
+/// Rejects: missing folder, self-parenting, cycles (moving a folder under one of
+/// its own descendants), and moves that would push the subtree past
+/// `MAX_FOLDER_DEPTH`.
+pub fn db_move_folder(
+    conn: &Connection,
+    id: &str,
+    new_parent_id: Option<&str>,
+) -> Result<(), AppError> {
+    let exists: bool = conn
+        .query_row("SELECT 1 FROM folders WHERE id = ?1", params![id], |_| Ok(()))
+        .optional()?
+        .is_some();
+    if !exists {
+        return Err(AppError::NotFound { message: format!("folder {id}") });
+    }
+
+    if let Some(pid) = new_parent_id {
+        if pid == id {
+            return Err(AppError::Validation { message: "a folder cannot be its own parent".into() });
+        }
+        let parent_exists: bool = conn
+            .query_row("SELECT 1 FROM folders WHERE id = ?1", params![pid], |_| Ok(()))
+            .optional()?
+            .is_some();
+        if !parent_exists {
+            return Err(AppError::NotFound { message: format!("folder {pid}") });
+        }
+        if is_self_or_descendant(conn, id, pid)? {
+            return Err(AppError::Validation {
+                message: "cannot move a folder into one of its own subfolders".into(),
+            });
+        }
+        // New depth of `id` = parent depth + 1; the deepest descendant sits
+        // (subtree_height - 1) levels below that. Keep the whole subtree in bounds.
+        let new_base_depth = folder_depth(conn, pid)? + 1;
+        let height = subtree_height(conn, id)?;
+        if new_base_depth + height - 1 > MAX_FOLDER_DEPTH {
+            return Err(AppError::Validation {
+                message: format!("folders can only be nested {MAX_FOLDER_DEPTH} levels deep"),
+            });
+        }
+    }
+
+    conn.execute(
+        "UPDATE folders SET parent_id = ?1 WHERE id = ?2",
+        params![new_parent_id, id],
+    )?;
+    Ok(())
 }
 
 pub fn db_delete_folder(conn: &Connection, id: &str) -> Result<(), AppError> {
@@ -1688,6 +1847,107 @@ mod tests {
         assert!(matches!(err, AppError::NotFound { .. }));
     }
 
+    // ── Subfolders ──────────────────────────────────────────────────────────────
+
+    /// Build a chain of folders nested `depth` levels deep, returning every id
+    /// from the root down. `depth` must be ≤ MAX_FOLDER_DEPTH.
+    fn nest_chain(conn: &Connection, depth: i64) -> Vec<String> {
+        let mut ids = Vec::new();
+        let mut parent: Option<String> = None;
+        for i in 0..depth {
+            let f = db_add_folder(conn, format!("L{i}"), parent.clone()).unwrap();
+            parent = Some(f.id.clone());
+            ids.push(f.id);
+        }
+        ids
+    }
+
+    #[test]
+    fn add_subfolder_at_max_depth_is_rejected() {
+        let conn = mem();
+        let chain = nest_chain(&conn, MAX_FOLDER_DEPTH); // deepest is at MAX_FOLDER_DEPTH
+        let leaf = chain.last().unwrap();
+        let err = db_add_folder(&conn, "too deep".to_string(), Some(leaf.clone())).unwrap_err();
+        assert!(matches!(err, AppError::Validation { .. }));
+    }
+
+    #[test]
+    fn move_folder_to_root_clears_parent() {
+        let conn = mem();
+        let parent = mk_folder(&conn, "Work");
+        let child = db_add_folder(&conn, "Projects".to_string(), Some(parent.id.clone())).unwrap();
+
+        db_move_folder(&conn, &child.id, None).unwrap();
+
+        let folders = db_get_folders(&conn).unwrap();
+        let moved = folders.iter().find(|f| f.id == child.id).unwrap();
+        assert!(moved.parent_id.is_none());
+    }
+
+    #[test]
+    fn move_folder_under_another_sets_parent() {
+        let conn = mem();
+        let a = mk_folder(&conn, "A");
+        let b = mk_folder(&conn, "B");
+
+        db_move_folder(&conn, &b.id, Some(&a.id)).unwrap();
+
+        let folders = db_get_folders(&conn).unwrap();
+        let moved = folders.iter().find(|f| f.id == b.id).unwrap();
+        assert_eq!(moved.parent_id.as_deref(), Some(a.id.as_str()));
+    }
+
+    #[test]
+    fn move_folder_into_self_is_rejected() {
+        let conn = mem();
+        let a = mk_folder(&conn, "A");
+        let err = db_move_folder(&conn, &a.id, Some(&a.id)).unwrap_err();
+        assert!(matches!(err, AppError::Validation { .. }));
+    }
+
+    #[test]
+    fn move_folder_into_own_descendant_is_rejected() {
+        let conn = mem();
+        let parent = mk_folder(&conn, "Parent");
+        let child = db_add_folder(&conn, "Child".to_string(), Some(parent.id.clone())).unwrap();
+        // Moving the parent under its own child would create a cycle.
+        let err = db_move_folder(&conn, &parent.id, Some(&child.id)).unwrap_err();
+        assert!(matches!(err, AppError::Validation { .. }));
+    }
+
+    #[test]
+    fn move_folder_exceeding_max_depth_is_rejected() {
+        let conn = mem();
+        // A two-level subtree (X → Y) cannot go under a folder already at the
+        // deepest allowed parent depth, since Y would land one level too deep.
+        let chain = nest_chain(&conn, MAX_FOLDER_DEPTH - 1);
+        let deepest_parent = chain.last().unwrap();
+        let x = mk_folder(&conn, "X");
+        db_add_folder(&conn, "Y".to_string(), Some(x.id.clone())).unwrap();
+
+        let err = db_move_folder(&conn, &x.id, Some(deepest_parent)).unwrap_err();
+        assert!(matches!(err, AppError::Validation { .. }));
+    }
+
+    #[test]
+    fn move_folder_not_found_returns_error() {
+        let conn = mem();
+        let err = db_move_folder(&conn, "nonexistent", None).unwrap_err();
+        assert!(matches!(err, AppError::NotFound { .. }));
+    }
+
+    #[test]
+    fn delete_parent_folder_cascades_to_subfolders() {
+        let conn = mem();
+        let parent = mk_folder(&conn, "Parent");
+        db_add_folder(&conn, "Child".to_string(), Some(parent.id.clone())).unwrap();
+
+        db_delete_folder(&conn, &parent.id).unwrap();
+
+        let folders = db_get_folders(&conn).unwrap();
+        assert!(folders.is_empty());
+    }
+
     // ── Tags ──────────────────────────────────────────────────────────────────
 
     #[test]
@@ -2140,6 +2400,74 @@ mod tests {
         assert_eq!(db_get_folders(&conn).unwrap().len(), 1);
         let bookmarks = db_get_bookmarks(&conn, None, None, None, false).unwrap();
         assert!(bookmarks.iter().all(|b| b.folder_id.as_deref() == Some(existing.id.as_str())));
+    }
+
+    #[test]
+    fn find_or_create_folder_splits_path_into_subfolders() {
+        let conn = mem();
+        let mut cache = HashMap::new();
+        let leaf = find_or_create_folder(&conn, "Work / Projects", &mut cache).unwrap();
+
+        let folders = db_get_folders(&conn).unwrap();
+        let work = folders.iter().find(|f| f.name == "Work").unwrap();
+        let projects = folders.iter().find(|f| f.name == "Projects").unwrap();
+        assert!(work.parent_id.is_none());
+        assert_eq!(projects.parent_id.as_deref(), Some(work.id.as_str()));
+        assert_eq!(leaf, projects.id);
+    }
+
+    #[test]
+    fn find_or_create_folder_reuses_shared_path_prefix() {
+        let conn = mem();
+        let mut cache = HashMap::new();
+        find_or_create_folder(&conn, "Work / Projects", &mut cache).unwrap();
+        find_or_create_folder(&conn, "Work / Archive", &mut cache).unwrap();
+
+        let folders = db_get_folders(&conn).unwrap();
+        // One "Work", with two distinct children — not a duplicate "Work".
+        assert_eq!(folders.iter().filter(|f| f.name == "Work").count(), 1);
+        let work = folders.iter().find(|f| f.name == "Work").unwrap();
+        let children = folders.iter().filter(|f| f.parent_id.as_deref() == Some(work.id.as_str())).count();
+        assert_eq!(children, 2);
+    }
+
+    #[test]
+    fn find_or_create_folder_caps_path_at_max_depth() {
+        let conn = mem();
+        let mut cache = HashMap::new();
+        // Four segments, cap is 3 — the 4th collapses into the deepest folder.
+        find_or_create_folder(&conn, "a / b / c / d", &mut cache).unwrap();
+        let folders = db_get_folders(&conn).unwrap();
+        assert!(folders.iter().any(|f| f.name == "c"));
+        assert!(!folders.iter().any(|f| f.name == "d"));
+    }
+
+    #[test]
+    fn find_or_create_folder_plain_name_is_top_level() {
+        let conn = mem();
+        let mut cache = HashMap::new();
+        find_or_create_folder(&conn, "Reading", &mut cache).unwrap();
+        let folders = db_get_folders(&conn).unwrap();
+        assert_eq!(folders.len(), 1);
+        assert_eq!(folders[0].name, "Reading");
+        assert!(folders[0].parent_id.is_none());
+    }
+
+    #[test]
+    fn import_bookmarks_creates_nested_folders_from_path() {
+        let conn = mem();
+        let inputs = vec![ImportRowInput {
+            url: "https://a.com".to_string(),
+            title: "A".to_string(),
+            folder_name: Some("Work / Projects".to_string()),
+            ..mk_input("", "")
+        }];
+        let result = db_import_bookmarks(&conn, inputs).unwrap();
+        assert_eq!(result.imported, 1);
+        let folders = db_get_folders(&conn).unwrap();
+        let projects = folders.iter().find(|f| f.name == "Projects").unwrap();
+        let bookmarks = db_get_bookmarks(&conn, None, None, None, false).unwrap();
+        assert_eq!(bookmarks[0].folder_id.as_deref(), Some(projects.id.as_str()));
     }
 
     #[test]

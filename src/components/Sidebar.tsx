@@ -1,11 +1,23 @@
-import { useState } from 'react'
+import { Fragment, useMemo, useState } from 'react'
 import type { Folder, Tag, Selection } from '../types'
-import { IconClose, IconPlus, IconFolder, IconAll, IconInbox, IconSettings, IconTrash, IconBrokenLink } from './icons'
+import { IconClose, IconPlus, IconFolder, IconAll, IconInbox, IconSettings, IconTrash, IconBrokenLink, IconChevronDown } from './icons'
 
 // Sentinel used in [data-drop-target-id] for the Inbox row, which corresponds
 // to "unsorted" (folderId === null). The App layer maps it back to null when
 // invoking the Tauri command.
 export const INBOX_DROP_TARGET = '__inbox__'
+
+// Sentinel drop target on the "Folders" section header. Dropping a dragged
+// folder here re-parents it to the top level (parent_id = null).
+export const FOLDER_ROOT_DROP_TARGET = '__folder_root__'
+
+// What kind of item is currently being dragged, so the sidebar can highlight
+// only the drop targets that actually accept it (folders accept both; Inbox
+// accepts bookmarks; the Folders header accepts folders).
+export type DragKind = 'bookmark' | 'folder' | null
+
+// Horizontal indent applied per nesting level for subfolders.
+const FOLDER_INDENT_STEP = 14
 
 export interface SidebarProps {
   folders: Folder[]
@@ -23,15 +35,20 @@ export interface SidebarProps {
   onOpenSettings: () => void
   onFolderContext: (e: React.MouseEvent, folder: Folder) => void
   onTagContext: (e: React.MouseEvent, tag: Tag) => void
+  // Begins a folder drag (pointer-based) so folders can be re-parented.
+  onFolderPointerDown?: (e: React.PointerEvent, folder: Folder) => void
   // ID of the drop target currently hovered during a drag (or null). Used to
   // paint a highlight on the matching SidebarItem.
   dragHoverTargetId?: string | null
+  // What is being dragged, so only valid targets light up. See DragKind.
+  dragKind?: DragKind
 }
 
-export function SidebarItem({ active, onClick, onContext, icon, label, count, onDelete, ariaLabel, dropTargetId, isDragTarget }: {
+export function SidebarItem({ active, onClick, onContext, onPointerDown, icon, label, count, onDelete, ariaLabel, dropTargetId, isDragTarget, indentLevel = 0, chevron }: {
   active: boolean
   onClick: () => void
   onContext?: (e: React.MouseEvent) => void
+  onPointerDown?: (e: React.PointerEvent) => void
   icon?: React.ReactNode
   label: string
   count?: number
@@ -39,6 +56,11 @@ export function SidebarItem({ active, onClick, onContext, icon, label, count, on
   ariaLabel?: string
   dropTargetId?: string
   isDragTarget?: boolean
+  // Nesting depth (0 = top level). Adds left padding so subfolders read as a tree.
+  indentLevel?: number
+  // Optional expand/collapse control rendered at the start of the row. When the
+  // row sits in a tree but has no children, pass a spacer to keep icons aligned.
+  chevron?: React.ReactNode
 }) {
   const [hovered, setHovered] = useState(false)
   const [deleteHovered, setDeleteHovered] = useState(false)
@@ -47,12 +69,16 @@ export function SidebarItem({ active, onClick, onContext, icon, label, count, on
     <button
       onClick={onClick}
       onContextMenu={onContext}
+      onPointerDown={onPointerDown}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => { setHovered(false); setDeleteHovered(false) }}
       data-drop-target-id={dropTargetId}
-      className="relative flex items-center gap-2.5 w-full rounded-md text-left transition-colors duration-150 group cursor-pointer"
+      className={`relative flex items-center gap-2.5 w-full rounded-md text-left transition-colors duration-150 group ${onPointerDown ? 'cursor-grab select-none' : 'cursor-pointer'}`}
       style={{
         padding: '6px 10px',
+        paddingLeft: 10 + indentLevel * FOLDER_INDENT_STEP,
+        // Suppress native text-selection drag so the pointer-drag wins on WebKitGTK.
+        touchAction: onPointerDown ? 'none' : undefined,
         background: isDragTarget
           ? 'var(--accent)'
           : active
@@ -74,6 +100,7 @@ export function SidebarItem({ active, onClick, onContext, icon, label, count, on
           style={{ width: 2.5, height: 14, background: 'var(--accent)' }}
         />
       )}
+      {chevron}
       {icon && (
         <span
           className="flex-none flex items-center justify-center"
@@ -126,11 +153,24 @@ export function SidebarItem({ active, onClick, onContext, icon, label, count, on
   )
 }
 
-export function SidebarSection({ label, onAdd }: { label: string; onAdd: () => void }) {
+export function SidebarSection({ label, onAdd, dropTargetId, isDragTarget }: {
+  label: string
+  onAdd: () => void
+  dropTargetId?: string
+  isDragTarget?: boolean
+}) {
   const [hovered, setHovered] = useState(false)
   return (
-    <div className="flex items-center justify-between px-4 mt-5 mb-1">
-      <span className="section-label">{label}</span>
+    <div
+      data-drop-target-id={dropTargetId}
+      className="flex items-center justify-between px-4 mt-5 mb-1 rounded-md"
+      style={{
+        background: isDragTarget ? 'var(--accent)' : 'transparent',
+        outline: isDragTarget ? '2px solid var(--accent-bright)' : 'none',
+        outlineOffset: '1px',
+      }}
+    >
+      <span className="section-label" style={isDragTarget ? { color: '#1a1410' } : undefined}>{label}</span>
       <button
         onClick={onAdd}
         onMouseEnter={() => setHovered(true)}
@@ -150,7 +190,32 @@ export function SidebarSection({ label, onAdd }: { label: string; onAdd: () => v
   )
 }
 
-export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount = 0, binCount, brokenCount = 0, onSelect, onAddFolder, onDeleteFolder, onAddTag, onDeleteTag, onOpenSettings, onFolderContext, onTagContext, dragHoverTargetId }: SidebarProps) {
+export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount = 0, binCount, brokenCount = 0, onSelect, onAddFolder, onDeleteFolder, onAddTag, onDeleteTag, onOpenSettings, onFolderContext, onTagContext, onFolderPointerDown, dragHoverTargetId, dragKind = null }: SidebarProps) {
+  // Group folders by parent so we can render the tree. `folders` arrives sorted
+  // by name from the DB, so siblings keep that order. A folder is a root when
+  // its parent_id is null (or points at a folder that no longer exists).
+  const childrenByParent = useMemo(() => {
+    const ids = new Set(folders.map((f) => f.id))
+    const map = new Map<string | null, Folder[]>()
+    for (const f of folders) {
+      const key = f.parent_id && ids.has(f.parent_id) ? f.parent_id : null
+      const arr = map.get(key)
+      if (arr) arr.push(f)
+      else map.set(key, [f])
+    }
+    return map
+  }, [folders])
+
+  // Collapsed folder ids. Folders are expanded by default; toggling adds/removes.
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
+  const toggleCollapsed = (id: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+
   const isActive = (s: Selection): boolean => {
     if (s.type !== selection.type) return false
     if (s.type === 'folder' && selection.type === 'folder') return s.id === selection.id
@@ -159,6 +224,52 @@ export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount = 
   }
 
   const [settingsHovered, setSettingsHovered] = useState(false)
+
+  // Render a folder and, when expanded, its subfolders — depth-first.
+  const renderFolder = (folder: Folder, level: number): React.ReactNode => {
+    const children = childrenByParent.get(folder.id) ?? []
+    const hasChildren = children.length > 0
+    const isCollapsed = collapsed.has(folder.id)
+    const chevron = (
+      <span className="flex-none flex items-center justify-center" style={{ width: 14 }}>
+        {hasChildren && (
+          <button
+            type="button"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.stopPropagation(); toggleCollapsed(folder.id) }}
+            className="flex items-center justify-center rounded cursor-pointer"
+            style={{ width: 14, height: 14, color: 'var(--text-3)' }}
+            aria-label={isCollapsed ? `Expand ${folder.name}` : `Collapse ${folder.name}`}
+            aria-expanded={!isCollapsed}
+          >
+            <span style={{ display: 'inline-flex', transition: 'transform 150ms', transform: isCollapsed ? 'rotate(-90deg)' : 'none' }}>
+              <IconChevronDown size={12} />
+            </span>
+          </button>
+        )}
+      </span>
+    )
+    return (
+      <Fragment key={folder.id}>
+        <SidebarItem
+          active={isActive({ type: 'folder', id: folder.id })}
+          onClick={() => onSelect({ type: 'folder', id: folder.id })}
+          onContext={(e) => onFolderContext(e, folder)}
+          onPointerDown={onFolderPointerDown ? (e) => onFolderPointerDown(e, folder) : undefined}
+          icon={<IconFolder />}
+          label={folder.name}
+          onDelete={() => onDeleteFolder(folder.id)}
+          dropTargetId={folder.id}
+          isDragTarget={dragHoverTargetId === folder.id}
+          indentLevel={level}
+          chevron={chevron}
+        />
+        {hasChildren && !isCollapsed && children.map((child) => renderFolder(child, level + 1))}
+      </Fragment>
+    )
+  }
+
+  const rootFolders = childrenByParent.get(null) ?? []
 
   return (
     <aside
@@ -218,7 +329,7 @@ export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount = 
           count={inboxCount}
           ariaLabel={`Inbox, ${inboxCount} unsorted`}
           dropTargetId={INBOX_DROP_TARGET}
-          isDragTarget={dragHoverTargetId === INBOX_DROP_TARGET}
+          isDragTarget={dragKind === 'bookmark' && dragHoverTargetId === INBOX_DROP_TARGET}
         />
         <SidebarItem
           active={isActive({ type: 'all' })}
@@ -247,22 +358,15 @@ export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount = 
           ariaLabel={brokenCount > 0 ? `Broken Links, ${brokenCount} items` : 'Broken Links'}
         />
 
-        <SidebarSection label="Folders" onAdd={onAddFolder} />
-        {folders.length === 0
+        <SidebarSection
+          label="Folders"
+          onAdd={onAddFolder}
+          dropTargetId={FOLDER_ROOT_DROP_TARGET}
+          isDragTarget={dragKind === 'folder' && dragHoverTargetId === FOLDER_ROOT_DROP_TARGET}
+        />
+        {rootFolders.length === 0
           ? <p className="px-3 py-1 italic" style={{ color: 'var(--text-3)', fontSize: 11.5 }}>No folders yet</p>
-          : folders.map((folder) => (
-            <SidebarItem
-              key={folder.id}
-              active={isActive({ type: 'folder', id: folder.id })}
-              onClick={() => onSelect({ type: 'folder', id: folder.id })}
-              onContext={(e) => onFolderContext(e, folder)}
-              icon={<IconFolder />}
-              label={folder.name}
-              onDelete={() => onDeleteFolder(folder.id)}
-              dropTargetId={folder.id}
-              isDragTarget={dragHoverTargetId === folder.id}
-            />
-          ))
+          : rootFolders.map((folder) => renderFolder(folder, 0))
         }
 
         <SidebarSection label="Tags" onAdd={onAddTag} />

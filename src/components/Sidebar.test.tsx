@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi } from 'vitest'
 import { Sidebar } from './Sidebar'
@@ -116,5 +116,50 @@ describe('Sidebar', () => {
     render(<Sidebar {...makeProps()} />)
     const inboxBtn = screen.getByRole('button', { name: /inbox, 0 unsorted/i })
     expect(inboxBtn).toBeInTheDocument()
+  })
+
+  describe('subfolders', () => {
+    const nested = () => [
+      makeFolder({ id: 'p', name: 'Parent' }),
+      makeFolder({ id: 'c', name: 'Child', parent_id: 'p' }),
+    ]
+
+    it('renders subfolders nested under their parent', () => {
+      render(<Sidebar {...makeProps({ folders: nested() })} />)
+      expect(screen.getByText('Parent')).toBeInTheDocument()
+      expect(screen.getByText('Child')).toBeInTheDocument()
+    })
+
+    it('shows an expand/collapse control on a folder that has children', () => {
+      render(<Sidebar {...makeProps({ folders: nested() })} />)
+      expect(screen.getByRole('button', { name: /collapse parent/i })).toBeInTheDocument()
+    })
+
+    it('hides children when the parent is collapsed', async () => {
+      render(<Sidebar {...makeProps({ folders: nested() })} />)
+      await userEvent.click(screen.getByRole('button', { name: /collapse parent/i }))
+      expect(screen.queryByText('Child')).not.toBeInTheDocument()
+      // The control now offers to expand again.
+      expect(screen.getByRole('button', { name: /expand parent/i })).toBeInTheDocument()
+    })
+
+    it('does not show a collapse control on a leaf folder', () => {
+      render(<Sidebar {...makeProps({ folders: [makeFolder({ id: 'f1', name: 'Work' })] })} />)
+      expect(screen.queryByRole('button', { name: /collapse work/i })).not.toBeInTheDocument()
+    })
+
+    it('exposes the Folders header as a folder-root drop target', () => {
+      const { container } = render(<Sidebar {...makeProps()} />)
+      expect(container.querySelector('[data-drop-target-id="__folder_root__"]')).toBeInTheDocument()
+    })
+
+    it('starts a folder drag on pointer down', () => {
+      const onFolderPointerDown = vi.fn()
+      const folders = [makeFolder({ id: 'f1', name: 'Work' })]
+      render(<Sidebar {...makeProps({ folders, onFolderPointerDown })} />)
+      const row = screen.getByRole('button', { name: 'Work' })
+      fireEvent.pointerDown(row)
+      expect(onFolderPointerDown).toHaveBeenCalled()
+    })
   })
 })
