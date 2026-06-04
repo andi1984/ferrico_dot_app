@@ -18,7 +18,7 @@ import { AiChatPanel } from './components/AiChatPanel'
 import { Sidebar, INBOX_DROP_TARGET, FOLDER_ROOT_DROP_TARGET, type DragKind } from './components/Sidebar'
 import { EmptyState } from './components/EmptyState'
 import { useDragDrop } from './useDragDrop'
-import { IconClose, IconImport, IconPlus, IconSearch, IconLayoutList, IconLayoutGrid, IconSort, IconChevronDown, IconSparkles, IconSun, IconMoon, IconBrokenLink, IconFolder, IconMessageCircle } from './components/icons'
+import { IconClose, IconImport, IconPlus, IconSearch, IconLayoutList, IconLayoutGrid, IconSort, IconChevronDown, IconSparkles, IconSun, IconMoon, IconBrokenLink, IconFolder } from './components/icons'
 
 type Theme = 'dark' | 'light'
 
