@@ -297,6 +297,10 @@ fn clear_all_data(state: State<'_, AppState>) -> Result<(), AppError> {
 // ─── Claude CLI Helper ────────────────────────────────────────────────────────
 
 async fn run_claude(prompt: &str) -> Result<String, AppError> {
+    run_claude_model(prompt, "").await
+}
+
+async fn run_claude_model(prompt: &str, model: &str) -> Result<String, AppError> {
     use tokio::io::AsyncWriteExt;
 
     let home = std::env::var("HOME").unwrap_or_default();
@@ -304,18 +308,20 @@ async fn run_claude(prompt: &str) -> Result<String, AppError> {
     let extended_path =
         format!("{home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:{existing_path}");
 
-    // Pass prompt via stdin to avoid E2BIG when prompt exceeds ARG_MAX
-    let mut child = tokio::process::Command::new("claude")
-        .arg("-p")
-        .arg("-")
-        .env("PATH", &extended_path)
+    let mut cmd = tokio::process::Command::new("claude");
+    cmd.arg("-p").arg("-");
+    if !model.is_empty() {
+        cmd.arg("--model").arg(model);
+    }
+    cmd.env("PATH", &extended_path)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| AppError::Validation {
-            message: format!("claude CLI not found: {e}"),
-        })?;
+        .stderr(std::process::Stdio::piped());
+
+    // Pass prompt via stdin to avoid E2BIG when prompt exceeds ARG_MAX
+    let mut child = cmd.spawn().map_err(|e| AppError::Validation {
+        message: format!("claude CLI not found: {e}"),
+    })?;
 
     if let Some(mut stdin) = child.stdin.take() {
         stdin
@@ -520,6 +526,109 @@ fn import_bookmarks(
 ) -> Result<ImportResult, AppError> {
     let db = lock_db!(state);
     db_import_bookmarks(&db, inputs)
+}
+
+// ─── AI Chat Search ───────────────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+struct AiSearchBookmark {
+    id: String,
+    title: String,
+    url: String,
+    description: Option<String>,
+    tags: Vec<String>,
+    folder_name: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct AiSearchResponse {
+    reply: String,
+    bookmark_ids: Vec<String>,
+}
+
+fn truncate(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        s
+    } else {
+        // Safe truncation at char boundary
+        let mut end = max;
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        &s[..end]
+    }
+}
+
+fn domain_of(url: &str) -> &str {
+    let s = url.trim_start_matches("https://").trim_start_matches("http://");
+    s.split('/').next().unwrap_or(s)
+}
+
+#[tauri::command]
+async fn ai_search(
+    query: String,
+    bookmarks: Vec<AiSearchBookmark>,
+) -> Result<AiSearchResponse, AppError> {
+    if bookmarks.is_empty() {
+        return Ok(AiSearchResponse {
+            reply: "No bookmarks to search through.".to_string(),
+            bookmark_ids: vec![],
+        });
+    }
+
+    // Compact format: index|id|title|domain|tags  — ~60 chars/line avg
+    // Cap at 400 bookmarks to stay within context limits
+    let bookmark_list: String = bookmarks
+        .iter()
+        .take(400)
+        .enumerate()
+        .map(|(i, b)| {
+            let title = truncate(b.title.trim(), 60);
+            let domain = domain_of(&b.url);
+            let domain = truncate(domain, 40);
+            let tags = b.tags.join(",");
+            let tags = truncate(&tags, 40);
+            let folder = b.folder_name.as_deref().unwrap_or("");
+            // Include a short description excerpt only when available
+            let desc_part = b
+                .description
+                .as_deref()
+                .map(|d| {
+                    let d = d.trim();
+                    if d.is_empty() { String::new() } else { format!("|{}", truncate(d, 80)) }
+                })
+                .unwrap_or_default();
+            format!("{}|{}|{}|{}|{}|{}{}", i + 1, b.id, title, domain, folder, tags, desc_part)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let prompt = format!(
+        "Bookmark search. Query: {query}\n\
+         Format: index|id|title|domain|folder|tags|desc\n\n\
+         {bookmark_list}\n\n\
+         Return JSON only: {{\"reply\":\"1-2 sentences\",\"ids\":[\"id1\",\"id2\"]}}\n\
+         Include all relevant matches. Empty ids if none match."
+    );
+
+    let raw = run_claude_model(&prompt, "claude-haiku-4-5-20251001").await?;
+    let json_str = extract_json(&raw);
+
+    #[derive(serde::Deserialize)]
+    struct RawResponse {
+        reply: String,
+        ids: Vec<String>,
+    }
+
+    let parsed: RawResponse =
+        serde_json::from_str(json_str).map_err(|e| AppError::Validation {
+            message: format!(
+                "Failed to parse AI response: {e}. Raw: {}",
+                raw.chars().take(300).collect::<String>()
+            ),
+        })?;
+
+    Ok(AiSearchResponse { reply: parsed.reply, bookmark_ids: parsed.ids })
 }
 
 // ─── HTTP Server (browser extension endpoint) ─────────────────────────────────
@@ -782,6 +891,7 @@ fn main() {
             read_text_file,
             pick_csv_file,
             pick_import_file,
+            ai_search,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

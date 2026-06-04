@@ -14,6 +14,7 @@ import { ImportCsvModal } from './components/ImportCsvModal'
 import { ImportModal } from './components/ImportModal'
 import { InboxSortModal } from './components/InboxSortModal'
 import { DeduplicateModal } from './components/DeduplicateModal'
+import { AiChatPanel } from './components/AiChatPanel'
 import { Sidebar, INBOX_DROP_TARGET, FOLDER_ROOT_DROP_TARGET, type DragKind } from './components/Sidebar'
 import { EmptyState } from './components/EmptyState'
 import { useDragDrop } from './useDragDrop'
@@ -177,6 +178,9 @@ export default function App() {
   const [csvDropPath, setCsvDropPath] = useState<string | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
 
+  const [aiChatOpen, setAiChatOpen] = useState(false)
+  const [aiFilter, setAiFilter] = useState<Set<string> | null>(null)
+
   const [viewMode, setViewMode] = useState<ViewMode>(() =>
     (localStorage.getItem('ferrico:viewMode') as ViewMode) ?? 'list'
   )
@@ -199,6 +203,9 @@ export default function App() {
     const t = setTimeout(() => setSearch(searchInput), 300)
     return () => clearTimeout(t)
   }, [searchInput])
+
+  // Clear AI filter when user changes view or types a search
+  useEffect(() => { setAiFilter(null) }, [selection, searchInput])
 
   // Per-view list cache: last fetched rows keyed by selection+search, cleared on
   // any mutation (see refresh) so it never serves stale rows across edits.
@@ -313,10 +320,11 @@ export default function App() {
 
   const sortedBookmarks = useMemo(() => {
     if (!bookmarks) return null
+    const base = aiFilter ? bookmarks.filter((b) => aiFilter.has(b.id)) : bookmarks
     // While searching, the backend returns results in fuzzy-relevance order;
     // preserve it. The sort dropdown only applies when there's no active query.
-    if (search) return bookmarks
-    const arr = [...bookmarks]
+    if (search) return base
+    const arr = [...base]
     switch (sortKey) {
       case 'date-desc': return arr.sort((a, b) => b.created_at - a.created_at)
       case 'date-asc':  return arr.sort((a, b) => a.created_at - b.created_at)
@@ -325,7 +333,7 @@ export default function App() {
       case 'domain-asc': return arr.sort((a, b) => domainOf(a.url).localeCompare(domainOf(b.url)))
       default: return arr
     }
-  }, [bookmarks, sortKey, search])
+  }, [bookmarks, sortKey, search, aiFilter])
 
   const handleAddBookmark = useCallback(async (data: {
     url: string; title: string; description: string
@@ -685,7 +693,7 @@ export default function App() {
           className="flex items-center gap-2.5 px-5 py-3 flex-none flex-wrap"
           style={{ borderBottom: '1px solid var(--border-soft)', background: 'var(--header-bg)' }}
         >
-          <div className="flex items-baseline gap-2 shrink-0 mr-auto">
+          <div className="flex items-center gap-2 shrink-0 mr-auto flex-wrap">
             <h1
               style={{
                 fontFamily: 'var(--font-display)',
@@ -701,6 +709,26 @@ export default function App() {
                 style={{ fontSize: 11.5, color: 'var(--text-3)', fontWeight: 500 }}
                 aria-label={`${sortedBookmarks?.length ?? 0} results`}
               >{(sortedBookmarks?.length ?? 0).toLocaleString()}</span>
+            )}
+            {aiFilter && (
+              <button
+                onClick={() => setAiFilter(null)}
+                className="flex items-center gap-1 rounded-full cursor-pointer transition-opacity hover:opacity-70"
+                style={{
+                  padding: '2px 8px',
+                  fontSize: 11,
+                  fontWeight: 500,
+                  background: 'var(--accent-dim)',
+                  border: '1px solid var(--accent)',
+                  color: 'var(--accent)',
+                  lineHeight: 1.6,
+                }}
+                aria-label="Clear AI filter"
+              >
+                <IconSparkles size={10} />
+                AI filter
+                <IconClose size={9} />
+              </button>
             )}
           </div>
 
@@ -895,6 +923,33 @@ export default function App() {
               )}
 
               <button
+                onClick={() => setAiChatOpen((v) => !v)}
+                className="flex items-center gap-1.5 rounded-lg transition-colors duration-150 flex-none cursor-pointer"
+                style={{
+                  height: 32,
+                  padding: '0 11px',
+                  background: aiChatOpen ? 'var(--accent-dim)' : 'var(--input-bg)',
+                  border: `1px solid ${aiChatOpen ? 'var(--accent)' : 'var(--border-soft)'}`,
+                  color: aiChatOpen ? 'var(--accent)' : 'var(--text-1)',
+                  fontSize: 12,
+                  fontWeight: 500,
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = aiChatOpen ? 'var(--accent-dim)' : 'var(--btn-hover-bg)'
+                  if (!aiChatOpen) e.currentTarget.style.borderColor = 'var(--accent)'
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = aiChatOpen ? 'var(--accent-dim)' : 'var(--input-bg)'
+                  if (!aiChatOpen) e.currentTarget.style.borderColor = 'var(--border-soft)'
+                }}
+                aria-label="AI search"
+                aria-pressed={aiChatOpen}
+              >
+                <IconSparkles size={12} />
+                Ask AI
+              </button>
+
+              <button
                 onClick={() => setModal('import')}
                 className="flex items-center gap-1.5 rounded-lg transition-colors duration-150 flex-none cursor-pointer"
                 style={{
@@ -972,6 +1027,15 @@ export default function App() {
           )}
         </main>
       </div>
+
+      {aiChatOpen && bookmarks && (
+        <AiChatPanel
+          allBookmarks={bookmarks}
+          folders={folders}
+          onResults={(ids) => setAiFilter(new Set(ids))}
+          onClose={() => setAiChatOpen(false)}
+        />
+      )}
       </div>
 
       {modal === 'add-bookmark' && (

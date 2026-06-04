@@ -87,3 +87,72 @@ cargo llvm-cov --html   # opens htmlcov/index.html
 1. Add a pure `db_*` function in `db.rs` taking `&Connection` + write tests there
 2. Add a thin Tauri command wrapper in `main.rs` using the `lock_db!` macro
 3. Register it in `invoke_handler!` in `main()`
+
+## UI conventions
+
+### Layout
+
+```
+App (flex col, full height)
+  └─ flex row (flex-1)
+       ├─ Sidebar (fixed width, collapsible)
+       ├─ Main column (flex-1 flex-col)
+       │    ├─ error bar (conditional)
+       │    ├─ header (flex row, search + controls)
+       │    └─ main content (flex-1, scrollable list/grid)
+       └─ AiChatPanel (320px, conditional, right side)
+```
+
+### CSS variables (defined in `src/index.css`)
+
+| Variable | Usage |
+|---|---|
+| `--bg` | Main background |
+| `--bg-elevated` | Card / elevated surface |
+| `--bg-elev-strong` | Dropdown / popover backgrounds |
+| `--header-bg` | Header/sidebar background |
+| `--input-bg` | Input + button resting state |
+| `--btn-hover-bg` | Button hover state |
+| `--border` | Strong border |
+| `--border-soft` | Subtle border (buttons, inputs) |
+| `--border-dim` | List row separators |
+| `--text-1` | Primary text |
+| `--text-2` | Secondary text (descriptions, labels) |
+| `--text-3` | Tertiary / placeholder |
+| `--text-muted` | Disabled / empty state text |
+| `--accent` | Brand accent (purple) — buttons, active states, links |
+| `--accent-dim` | Accent background tint |
+| `--accent-glow` | Focus ring shadow |
+| `--red` | Destructive actions |
+| `--font-display` | Display font (headings) |
+
+### Button patterns
+
+All header buttons share `height: 32, fontSize: 12, fontWeight: 500, rounded-lg`.
+
+- **Default**: `background: var(--input-bg)`, `border: 1px solid var(--border-soft)`, `color: var(--text-1)`
+  - Hover: `background: var(--btn-hover-bg)`
+- **Accent outline** (AI Sort, active toggles): `border: 1px solid var(--accent)`, `color: var(--accent)`
+  - Hover: `background: var(--accent-dim)`
+- **Filled accent** (Add button): `.btn-accent` CSS class
+- **Danger**: `color: var(--red)`, hover changes `borderColor` to `var(--red)`
+
+Never use `color: var(--text-2)` on a button — it reads as disabled.
+
+### Icons
+
+All icons live in `src/components/icons.tsx`, accept `size?: number`, set `aria-hidden="true"`.  
+Common sizes: 13px (header buttons), 14px (sidebar), 16px (default).
+
+### Skeleton / loading
+
+`<LoadingSkeleton>` (14 `<RowSkeleton>` rows) shown while `bookmarks === null` (first load).  
+After first load, stale cached rows paint instantly; fresh data reconciles silently.
+
+### AI features
+
+- `run_claude(prompt)` — calls local `claude` CLI via stdin, default model
+- `run_claude_model(prompt, model)` — same but passes `--model` flag; use `claude-haiku-4-5-20251001` for cost-sensitive tasks
+- Prompt format: compact pipe-delimited lines, minimal system instructions, JSON-only response
+- Always extract JSON with `extract_json()` helper (strips markdown fences)
+- AI search panel: `src/components/AiChatPanel.tsx`, mounts right of main column, sets `aiFilter: Set<string>` overlay on `sortedBookmarks`
