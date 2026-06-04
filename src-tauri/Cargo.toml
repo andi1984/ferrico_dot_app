@@ -31,6 +31,9 @@ rfd = "0.15"
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }
+# `test-util` enables `#[tokio::test(start_paused = true)]` so time-based retry
+# backoff in health_check collapses instantly instead of really sleeping.
+tokio = { version = "1", features = ["test-util"] }
 
 [profile.release]
 opt-level = 3
