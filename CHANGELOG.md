@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.0] - 2026-06-04
+
+### Features
+
+- add AI chat panel for natural language bookmark search
+- subfolders — nested folder tree, drag-to-reparent, path imports
+
+### Bug Fixes
+
+- remove unused IconMessageCircle import
+- use rfd native file picker on Linux/WebKitGTK
+- remove setPointerCapture that broke drag in WKWebView
+- add mouse-event fallback for WebKitGTK drag
+
+
 ## [0.4.0] - 2026-05-31
 
 ### Features
