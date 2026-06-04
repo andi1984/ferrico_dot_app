@@ -91,30 +91,35 @@ export function useDragDrop<T>({
       })
     }
 
-    function onPointerMove(e: PointerEvent) {
+    // Core move/up logic, shared by the pointer- and mouse-event adapters.
+    // We listen to BOTH families because Tauri's webviews (WKWebView on macOS,
+    // WebKitGTK on Linux) can stop delivering pointermove/pointerup mid-drag,
+    // while plain mouse events keep flowing. The pendingRef-null guard makes the
+    // second family a no-op once the first has already finished the gesture, so
+    // on platforms where both fire there is no double drop.
+    function processMove(clientX: number, clientY: number) {
       const pending = pendingRef.current
-      if (!pending || e.pointerId !== pending.pointerId) return
-      const dx = e.clientX - pending.startX
-      const dy = e.clientY - pending.startY
+      if (!pending) return
       if (!activeRef.current) {
+        const dx = clientX - pending.startX
+        const dy = clientY - pending.startY
         if (Math.hypot(dx, dy) < threshold) return
         activeRef.current = true
         document.body.style.cursor = 'grabbing'
         document.body.style.userSelect = 'none'
       }
-      pendingX = e.clientX
-      pendingY = e.clientY
+      pendingX = clientX
+      pendingY = clientY
       if (rafId === 0) rafId = requestAnimationFrame(flush)
     }
 
-    function onPointerUp(e: PointerEvent) {
+    function processUp(clientX: number, clientY: number) {
       const pending = pendingRef.current
-      if (!pending || e.pointerId !== pending.pointerId) return
-      const wasActive = activeRef.current
-      if (wasActive) {
-        const targetId = findDropTargetId(e.clientX, e.clientY)
+      if (!pending) return
+      if (activeRef.current) {
+        const targetId = findDropTargetId(clientX, clientY)
         suppressClickRef.current = true
-        // Defer so cleanup runs first and consumer can re-read fresh state.
+        // Defer so cleanup runs first and the consumer can re-read fresh state.
         const payload = pending.payload
         cleanup()
         onDrop(payload, targetId)
@@ -123,10 +128,45 @@ export function useDragDrop<T>({
       }
     }
 
+    function onPointerMove(e: PointerEvent) {
+      const pending = pendingRef.current
+      if (!pending || e.pointerId !== pending.pointerId) return
+      processMove(e.clientX, e.clientY)
+    }
+
+    function onPointerUp(e: PointerEvent) {
+      const pending = pendingRef.current
+      if (!pending || e.pointerId !== pending.pointerId) return
+      processUp(e.clientX, e.clientY)
+    }
+
+    // Mouse fallback — no pointerId to match, just drive the same core. Only the
+    // primary button matters; a non-left mouseup still ends the gesture.
+    function onMouseMove(e: MouseEvent) {
+      if (!pendingRef.current) return
+      processMove(e.clientX, e.clientY)
+    }
+
+    function onMouseUp(e: MouseEvent) {
+      if (!pendingRef.current) return
+      processUp(e.clientX, e.clientY)
+    }
+
     function onPointerCancel(e: PointerEvent) {
       const pending = pendingRef.current
       if (!pending || e.pointerId !== pending.pointerId) return
       cleanup()
+    }
+
+    // Defense against native HTML5 drag: pressing and moving on a row can start
+    // a *native* drag (dragstart) in the webview, which captures the cursor and
+    // stops the DOM from emitting further move/up events — the gesture then dies
+    // before our threshold and no ghost shows. Cancelling dragstart while a
+    // gesture is pending keeps the move/up stream alive. (The app has no
+    // intentional native drag-out; external file drops use dragover/drop, which
+    // are unaffected.)
+    function onDragStart(e: DragEvent) {
+      if (pendingRef.current) e.preventDefault()
     }
 
     // Swallow the synthetic click that follows a drag, so links don't navigate
@@ -142,12 +182,18 @@ export function useDragDrop<T>({
     document.addEventListener('pointermove', onPointerMove)
     document.addEventListener('pointerup', onPointerUp)
     document.addEventListener('pointercancel', onPointerCancel)
+    document.addEventListener('mousemove', onMouseMove)
+    document.addEventListener('mouseup', onMouseUp)
+    document.addEventListener('dragstart', onDragStart)
     document.addEventListener('click', onClickCapture, true)
     return () => {
       if (rafId !== 0) cancelAnimationFrame(rafId)
       document.removeEventListener('pointermove', onPointerMove)
       document.removeEventListener('pointerup', onPointerUp)
       document.removeEventListener('pointercancel', onPointerCancel)
+      document.removeEventListener('mousemove', onMouseMove)
+      document.removeEventListener('mouseup', onMouseUp)
+      document.removeEventListener('dragstart', onDragStart)
       document.removeEventListener('click', onClickCapture, true)
     }
   }, [cleanup, onDrop, threshold])

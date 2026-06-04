@@ -24,7 +24,7 @@ use db::{
     db_empty_bin, db_get_bin_bookmarks, db_get_bin_count,
     db_get_broken_bookmarks, db_get_broken_count,
     db_get_inbox_count, db_get_sidebar, db_get_urls_for_health_check, db_import_bookmarks,
-    db_move_bookmark, db_permanently_delete_bookmark,
+    db_move_bookmark, db_move_folder, db_permanently_delete_bookmark,
     db_purge_expired_bin, db_restore_bookmark,
     db_get_bookmark_count, db_get_bookmarks, db_get_folders, db_get_tags,
     db_related_tags,
@@ -197,6 +197,16 @@ fn add_folder(
 ) -> Result<Folder, AppError> {
     let db = lock_db!(state);
     db_add_folder(&db, name, parent_id)
+}
+
+#[tauri::command]
+fn move_folder(
+    id: String,
+    parent_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    let db = lock_db!(state);
+    db_move_folder(&db, &id, parent_id.as_deref())
 }
 
 #[tauri::command]
@@ -743,6 +753,7 @@ fn main() {
             purge_expired_bin,
             get_folders,
             add_folder,
+            move_folder,
             delete_folder,
             get_tags,
             add_tag,
