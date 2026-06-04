@@ -32,15 +32,9 @@ const defaultProps = {
   onImportCsv: vi.fn(),
 }
 
-function makeFile(name: string, content = 'data') {
-  return new File([content], name, { type: 'text/plain' })
-}
-
 beforeEach(() => {
   vi.clearAllMocks()
   dragDropListeners.length = 0
-  global.URL.createObjectURL = vi.fn().mockReturnValue('blob:test')
-  global.URL.revokeObjectURL = vi.fn()
 })
 
 // ─── Rendering ────────────────────────────────────────────────────────────────
@@ -57,46 +51,60 @@ describe('ImportModal', () => {
 
   // ─── File picker path ──────────────────────────────────────────────────────
 
-  it('routes .csv file picker selection to onImportCsv with no path', async () => {
+  it('routes .csv file picker selection to onImportCsv with the file path', async () => {
+    vi.mocked(invoke).mockResolvedValue('/tmp/bookmarks.csv')
     render(<ImportModal {...defaultProps} />)
-    const input = document.querySelector('input[type="file"]') as HTMLInputElement
-    await userEvent.upload(input, makeFile('bookmarks.csv'))
-    expect(defaultProps.onImportCsv).toHaveBeenCalledOnce()
-    expect(defaultProps.onImportCsv).toHaveBeenCalledWith(undefined)
-    expect(invoke).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: /choose file to import/i }))
+    await waitFor(() => expect(defaultProps.onImportCsv).toHaveBeenCalledOnce())
+    expect(defaultProps.onImportCsv).toHaveBeenCalledWith('/tmp/bookmarks.csv')
+    expect(invoke).toHaveBeenCalledWith('pick_import_file')
+    expect(invoke).toHaveBeenCalledTimes(1)
   })
 
   it('imports .json via file picker', async () => {
-    vi.mocked(invoke).mockResolvedValue({ imported: 42, errors: [] })
+    vi.mocked(invoke).mockImplementation(async (cmd) => {
+      if (cmd === 'pick_import_file') return '/tmp/bookmarks.json'
+      if (cmd === 'read_text_file') return '{}'
+      return { imported: 42, errors: [] }
+    })
     render(<ImportModal {...defaultProps} />)
-    const input = document.querySelector('input[type="file"]') as HTMLInputElement
-    await userEvent.upload(input, makeFile('bookmarks.json', '{}'))
+    await userEvent.click(screen.getByRole('button', { name: /choose file to import/i }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('read_text_file', { path: '/tmp/bookmarks.json' }))
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('import_json', { json: '{}' }))
     await waitFor(() => expect(screen.getByText(/42 bookmarks imported/i)).toBeInTheDocument())
     expect(defaultProps.onDone).toHaveBeenCalledOnce()
   })
 
   it('imports .html via file picker', async () => {
-    vi.mocked(invoke).mockResolvedValue({ imported: 5, errors: [] })
+    vi.mocked(invoke).mockImplementation(async (cmd) => {
+      if (cmd === 'pick_import_file') return '/tmp/bookmarks.html'
+      if (cmd === 'read_text_file') return '<html/>'
+      return { imported: 5, errors: [] }
+    })
     render(<ImportModal {...defaultProps} />)
-    const input = document.querySelector('input[type="file"]') as HTMLInputElement
-    await userEvent.upload(input, makeFile('bookmarks.html', '<html/>'))
+    await userEvent.click(screen.getByRole('button', { name: /choose file to import/i }))
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('import_netscape_html', { html: '<html/>' }))
   })
 
   it('imports .opml via file picker', async () => {
-    vi.mocked(invoke).mockResolvedValue({ imported: 3, errors: [] })
+    vi.mocked(invoke).mockImplementation(async (cmd) => {
+      if (cmd === 'pick_import_file') return '/tmp/feeds.opml'
+      if (cmd === 'read_text_file') return '<opml/>'
+      return { imported: 3, errors: [] }
+    })
     render(<ImportModal {...defaultProps} />)
-    const input = document.querySelector('input[type="file"]') as HTMLInputElement
-    await userEvent.upload(input, makeFile('feeds.opml', '<opml/>'))
+    await userEvent.click(screen.getByRole('button', { name: /choose file to import/i }))
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('import_opml', { xml: '<opml/>' }))
   })
 
   it('imports .xml via file picker', async () => {
-    vi.mocked(invoke).mockResolvedValue({ imported: 1, errors: [] })
+    vi.mocked(invoke).mockImplementation(async (cmd) => {
+      if (cmd === 'pick_import_file') return '/tmp/feeds.xml'
+      if (cmd === 'read_text_file') return '<opml/>'
+      return { imported: 1, errors: [] }
+    })
     render(<ImportModal {...defaultProps} />)
-    const input = document.querySelector('input[type="file"]') as HTMLInputElement
-    await userEvent.upload(input, makeFile('feeds.xml', '<opml/>'))
+    await userEvent.click(screen.getByRole('button', { name: /choose file to import/i }))
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('import_opml', { xml: '<opml/>' }))
   })
 
@@ -165,29 +173,38 @@ describe('ImportModal', () => {
   // ─── Error and result states ──────────────────────────────────────────────
 
   it('shows partial errors when some rows skipped', async () => {
-    vi.mocked(invoke).mockResolvedValue({ imported: 10, errors: ['Row 3: missing url', 'Row 7: invalid url'] })
+    vi.mocked(invoke).mockImplementation(async (cmd) => {
+      if (cmd === 'pick_import_file') return '/tmp/bookmarks.json'
+      if (cmd === 'read_text_file') return '{}'
+      return { imported: 10, errors: ['Row 3: missing url', 'Row 7: invalid url'] }
+    })
     render(<ImportModal {...defaultProps} />)
-    const input = document.querySelector('input[type="file"]') as HTMLInputElement
-    await userEvent.upload(input, makeFile('bookmarks.json', '{}'))
+    await userEvent.click(screen.getByRole('button', { name: /choose file to import/i }))
     await waitFor(() => expect(screen.getByText(/2 skipped/i)).toBeInTheDocument())
     expect(screen.getByText('Row 3: missing url')).toBeInTheDocument()
   })
 
   it('shows error state and Try Again on invoke failure', async () => {
-    vi.mocked(invoke).mockRejectedValue({ message: 'parse error' })
+    vi.mocked(invoke).mockImplementation(async (cmd) => {
+      if (cmd === 'pick_import_file') return '/tmp/bookmarks.json'
+      if (cmd === 'read_text_file') return '{}'
+      throw { message: 'parse error' }
+    })
     render(<ImportModal {...defaultProps} />)
-    const input = document.querySelector('input[type="file"]') as HTMLInputElement
-    await userEvent.upload(input, makeFile('bookmarks.json', '{}'))
+    await userEvent.click(screen.getByRole('button', { name: /choose file to import/i }))
     await waitFor(() => expect(screen.getByText('parse error')).toBeInTheDocument())
     expect(screen.getByRole('button', { name: /try again/i })).toBeInTheDocument()
     expect(defaultProps.onDone).not.toHaveBeenCalled()
   })
 
   it('Try Again resets to idle', async () => {
-    vi.mocked(invoke).mockRejectedValue({ message: 'parse error' })
+    vi.mocked(invoke).mockImplementation(async (cmd) => {
+      if (cmd === 'pick_import_file') return '/tmp/bookmarks.json'
+      if (cmd === 'read_text_file') return '{}'
+      throw { message: 'parse error' }
+    })
     render(<ImportModal {...defaultProps} />)
-    const input = document.querySelector('input[type="file"]') as HTMLInputElement
-    await userEvent.upload(input, makeFile('bookmarks.json', '{}'))
+    await userEvent.click(screen.getByRole('button', { name: /choose file to import/i }))
     await waitFor(() => screen.getByRole('button', { name: /try again/i }))
     await userEvent.click(screen.getByRole('button', { name: /try again/i }))
     expect(screen.getByRole('button', { name: /choose file to import/i })).toBeInTheDocument()
@@ -195,10 +212,13 @@ describe('ImportModal', () => {
   })
 
   it('Done button calls onClose', async () => {
-    vi.mocked(invoke).mockResolvedValue({ imported: 1, errors: [] })
+    vi.mocked(invoke).mockImplementation(async (cmd) => {
+      if (cmd === 'pick_import_file') return '/tmp/bookmarks.json'
+      if (cmd === 'read_text_file') return '{}'
+      return { imported: 1, errors: [] }
+    })
     render(<ImportModal {...defaultProps} />)
-    const input = document.querySelector('input[type="file"]') as HTMLInputElement
-    await userEvent.upload(input, makeFile('bookmarks.json', '{}'))
+    await userEvent.click(screen.getByRole('button', { name: /choose file to import/i }))
     await waitFor(() => screen.getByRole('button', { name: /done/i }))
     await userEvent.click(screen.getByRole('button', { name: /done/i }))
     expect(defaultProps.onClose).toHaveBeenCalledOnce()

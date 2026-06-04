@@ -780,6 +780,8 @@ fn main() {
             get_broken_count,
             delete_bookmarks,
             read_text_file,
+            pick_csv_file,
+            pick_import_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -985,6 +987,24 @@ async fn suggest_duplicate_resolution(
 #[tauri::command]
 fn read_text_file(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn pick_csv_file() -> Option<String> {
+    rfd::AsyncFileDialog::new()
+        .add_filter("CSV", &["csv"])
+        .pick_file()
+        .await
+        .map(|f| f.path().to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+async fn pick_import_file() -> Option<String> {
+    rfd::AsyncFileDialog::new()
+        .add_filter("Bookmarks", &["json", "html", "htm", "opml", "xml", "csv"])
+        .pick_file()
+        .await
+        .map(|f| f.path().to_string_lossy().into_owned())
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────

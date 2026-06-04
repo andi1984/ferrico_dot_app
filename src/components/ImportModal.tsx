@@ -45,21 +45,17 @@ function errMessage(err: unknown): string {
 export function ImportModal({ onClose, onDone, onImportCsv }: ImportModalProps) {
   const [state, setState] = useState<State>({ phase: 'idle' })
   const [dragOver, setDragOver] = useState(false)
-  const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // Shared processing logic for both paths (file picker + Tauri drop).
+  // Shared processing logic for both paths (native picker + Tauri drop).
   // Kept as a ref so the Tauri useEffect closure always calls the latest version
   // without needing to re-register the listener on every render.
-  const handleFilePathRef = useRef<(path: string, readViaInvoke: boolean, file?: File) => Promise<void>>(undefined)
+  const handleFilePathRef = useRef<(path: string) => Promise<void>>(undefined)
 
-  handleFilePathRef.current = async (path: string, readViaInvoke: boolean, file?: File) => {
+  handleFilePathRef.current = async (path: string) => {
     const ext = path.split('.').pop()?.toLowerCase() ?? ''
 
     if (ext === 'csv') {
-      // Pass file path for Tauri drops (readViaInvoke=true) so ImportCsvModal
-      // can auto-load the file. File picker path passes no path — ImportCsvModal
-      // will receive the File via its own picker in that case.
-      onImportCsv(readViaInvoke ? path : undefined)
+      onImportCsv(path)
       return
     }
 
@@ -72,20 +68,7 @@ export function ImportModal({ onClose, onDone, onImportCsv }: ImportModalProps) 
     setState({ phase: 'importing' })
 
     try {
-      let text: string
-      if (readViaInvoke) {
-        // Tauri drop path: read via Rust (reliable on all platforms)
-        text = await invoke<string>('read_text_file', { path })
-      } else {
-        // File picker path: read via FileReader (works in WebView for user-selected files)
-        text = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader()
-          reader.onload = (ev) => resolve(ev.target?.result as string)
-          reader.onerror = () => reject(new Error('Could not read file.'))
-          reader.readAsText(file!)
-        })
-      }
-
+      const text = await invoke<string>('read_text_file', { path })
       const result = await invoke<ImportResult>(
         command,
         ext === 'json' ? { json: text }
@@ -99,11 +82,10 @@ export function ImportModal({ onClose, onDone, onImportCsv }: ImportModalProps) 
     }
   }
 
-  // File picker path
-  function handleInputChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    if (file) handleFilePathRef.current?.(file.name, false, file)
-    e.target.value = ''
+  async function handleBrowseClick() {
+    if (state.phase === 'importing') return
+    const path = await invoke<string | null>('pick_import_file')
+    if (path) handleFilePathRef.current?.(path)
   }
 
   // Register Tauri native drag-drop listener once on mount.
@@ -120,7 +102,7 @@ export function ImportModal({ onClose, onDone, onImportCsv }: ImportModalProps) 
       } else if (p.type === 'drop') {
         setDragOver(false)
         const path = (p as { type: 'drop'; paths: string[] }).paths?.[0]
-        if (path) handleFilePathRef.current?.(path, true)
+        if (path) handleFilePathRef.current?.(path)
       }
     }).then(fn => { unlisten = fn })
     return () => { unlisten?.() }
@@ -143,8 +125,8 @@ export function ImportModal({ onClose, onDone, onImportCsv }: ImportModalProps) 
           onDragOver={(e) => { e.preventDefault(); if (state.phase !== 'importing') setDragOver(true) }}
           onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false) }}
           onDrop={(e) => e.preventDefault()} // prevent browser navigation; processing via Tauri event
-          onClick={() => state.phase !== 'importing' && fileInputRef.current?.click()}
-          onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && state.phase !== 'importing' && fileInputRef.current?.click()}
+          onClick={handleBrowseClick}
+          onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleBrowseClick()}
           className="flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed py-10 transition-all duration-150"
           style={{
             borderColor: dragOver ? 'var(--accent)' : state.phase === 'importing' ? 'var(--border-dim)' : 'var(--border-mid)',
@@ -239,14 +221,6 @@ export function ImportModal({ onClose, onDone, onImportCsv }: ImportModalProps) 
           </button>
         )}
 
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".json,.html,.htm,.opml,.xml,.csv"
-          className="hidden"
-          onChange={handleInputChange}
-          aria-hidden="true"
-        />
       </div>
     </ModalShell>
   )
