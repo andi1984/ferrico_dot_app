@@ -277,42 +277,48 @@ pub(crate) fn row_to_raw(row: &rusqlite::Row) -> rusqlite::Result<RawBookmark> {
 
 fn get_tags_batch(
     conn: &Connection,
-    bookmark_ids: &[String],
+    bookmark_ids: &[&str],
 ) -> Result<HashMap<String, Vec<Tag>>, AppError> {
     let mut map: HashMap<String, Vec<Tag>> = HashMap::new();
     if bookmark_ids.is_empty() {
         return Ok(map);
     }
-    let placeholders = (1..=bookmark_ids.len())
-        .map(|i| format!("?{i}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let sql = format!(
-        "SELECT bt.bookmark_id, t.id, t.name, t.color, t.created_at \
-         FROM tags t JOIN bookmark_tags bt ON bt.tag_id = t.id \
-         WHERE bt.bookmark_id IN ({placeholders}) ORDER BY t.name"
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params_from_iter(bookmark_ids.iter()), |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            Tag {
-                id: row.get(1)?,
-                name: row.get(2)?,
-                color: row.get(3)?,
-                created_at: row.get(4)?,
-                bookmark_count: None,
-            },
-        ))
-    })?;
-    for row in rows.collect::<Result<Vec<_>, _>>()? {
-        map.entry(row.0).or_default().push(row.1);
+    // SQLite caps bound parameters at SQLITE_MAX_VARIABLE_NUMBER (~32k), so chunk
+    // the id list — otherwise the "All" view errors outright on a huge library.
+    // A bookmark's rows are never split across chunks, so tag order is preserved.
+    const CHUNK: usize = 10_000;
+    for chunk in bookmark_ids.chunks(CHUNK) {
+        let placeholders = (1..=chunk.len())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT bt.bookmark_id, t.id, t.name, t.color, t.created_at \
+             FROM tags t JOIN bookmark_tags bt ON bt.tag_id = t.id \
+             WHERE bt.bookmark_id IN ({placeholders}) ORDER BY t.name"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(chunk.iter().copied()), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                Tag {
+                    id: row.get(1)?,
+                    name: row.get(2)?,
+                    color: row.get(3)?,
+                    created_at: row.get(4)?,
+                    bookmark_count: None,
+                },
+            ))
+        })?;
+        for row in rows.collect::<Result<Vec<_>, _>>()? {
+            map.entry(row.0).or_default().push(row.1);
+        }
     }
     Ok(map)
 }
 
 fn enrich_batch(raws: Vec<RawBookmark>, conn: &Connection) -> Result<Vec<Bookmark>, AppError> {
-    let ids: Vec<String> = raws.iter().map(|r| r.id.clone()).collect();
+    let ids: Vec<&str> = raws.iter().map(|r| r.id.as_str()).collect();
     let mut tags_map = get_tags_batch(conn, &ids)?;
     Ok(raws
         .into_iter()
@@ -585,7 +591,7 @@ pub fn db_add_bookmark(
         }
     }
 
-    let tags = get_tags_batch(conn, std::slice::from_ref(&id))?.remove(&id).unwrap_or_default();
+    let tags = get_tags_batch(conn, &[id.as_str()])?.remove(&id).unwrap_or_default();
 
     Ok(Bookmark {
         id,
@@ -1250,16 +1256,25 @@ pub fn db_get_urls_for_health_check(conn: &Connection) -> Result<Vec<(String, St
     Ok(rows)
 }
 
-pub fn db_update_bookmark_health(
+/// Apply many health-check results in a single transaction, reusing one prepared
+/// statement — so a scan of N bookmarks is one commit instead of N auto-commits.
+pub fn db_update_bookmark_health_batch(
     conn: &Connection,
-    id: &str,
-    is_broken: bool,
-    checked_at: i64,
+    updates: &[(String, bool, i64)],
 ) -> Result<(), AppError> {
-    conn.execute(
-        "UPDATE bookmarks SET is_broken = ?1, last_checked_at = ?2 WHERE id = ?3",
-        params![is_broken as i64, checked_at, id],
-    )?;
+    if updates.is_empty() {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    {
+        let mut stmt = tx.prepare(
+            "UPDATE bookmarks SET is_broken = ?1, last_checked_at = ?2 WHERE id = ?3",
+        )?;
+        for (id, is_broken, checked_at) in updates {
+            stmt.execute(params![*is_broken as i64, checked_at, id])?;
+        }
+    }
+    tx.commit()?;
     Ok(())
 }
 
@@ -1341,6 +1356,37 @@ mod tests {
         assert_eq!(b.title, "Example");
         assert!(b.tags.is_empty());
         assert!(b.created_at > 0);
+    }
+
+    #[test]
+    fn update_bookmark_health_batch_marks_only_listed_rows() {
+        let conn = mem();
+        let a = mk_bookmark(&conn, "https://a.com", "A");
+        let b = mk_bookmark(&conn, "https://b.com", "B");
+        let c = mk_bookmark(&conn, "https://c.com", "C");
+
+        db_update_bookmark_health_batch(
+            &conn,
+            &[(a.id.clone(), true, 1000), (b.id.clone(), false, 1001)],
+        )
+        .unwrap();
+
+        let broken = db_get_broken_bookmarks(&conn).unwrap();
+        assert_eq!(broken.len(), 1, "only A should be broken");
+        assert_eq!(broken[0].id, a.id);
+        assert_eq!(broken[0].last_checked_at, Some(1000));
+
+        // C was not in the batch — it stays untouched.
+        let all = db_get_bookmarks(&conn, None, None, None, false).unwrap();
+        let cc = all.iter().find(|x| x.id == c.id).unwrap();
+        assert!(!cc.is_broken);
+        assert_eq!(cc.last_checked_at, None);
+    }
+
+    #[test]
+    fn update_bookmark_health_batch_empty_is_noop() {
+        let conn = mem();
+        db_update_bookmark_health_batch(&conn, &[]).unwrap();
     }
 
     #[test]
