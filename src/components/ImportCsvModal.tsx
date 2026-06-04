@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import Papa from 'papaparse'
 import { IconClose } from './icons'
@@ -67,8 +67,8 @@ export function ImportCsvModal({ onClose, onDone, csvDropPath, onCsvDropConsumed
   const [result, setResult] = useState<ImportResult | null>(null)
   const [importError, setImportError] = useState<string | null>(null)
   const [dragOver, setDragOver] = useState(false)
+  const [isParsing, setIsParsing] = useState(false)
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Auto-load a CSV that was dropped via Tauri's native drag-drop
   useEffect(() => {
@@ -109,25 +109,29 @@ export function ImportCsvModal({ onClose, onDone, csvDropPath, onCsvDropConsumed
     })
   }
 
-  function parseCsvFile(file: File) {
-    // Use papaparse's async File API — reads in chunks, doesn't block the thread
-    Papa.parse<string[]>(file, {
-      header: false,
-      skipEmptyLines: true,
-      complete(res) { processParsedRows(res.data) },
-    })
-  }
-
-  function handleFileInput(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    if (file) parseCsvFile(file)
+  async function handleBrowseClick() {
+    if (isParsing) return
+    const path = await invoke<string | null>('pick_csv_file')
+    if (!path) return
+    setIsParsing(true)
+    invoke<string>('read_text_file', { path })
+      .then((text) => { setIsParsing(false); parseCsvText(text) })
+      .catch(() => setIsParsing(false))
   }
 
   function handleDrop(e: React.DragEvent) {
     e.preventDefault()
     setDragOver(false)
+    // HTML5 dataTransfer is empty on WebKitGTK; real drops arrive via csvDropPath prop
     const file = e.dataTransfer.files[0]
-    if (file) parseCsvFile(file)
+    if (!file) return
+    setIsParsing(true)
+    Papa.parse<string[]>(file, {
+      header: false,
+      skipEmptyLines: true,
+      complete(res) { setIsParsing(false); processParsedRows(res.data) },
+      error() { setIsParsing(false) },
+    })
   }
 
   async function handleImport() {
@@ -234,26 +238,35 @@ export function ImportCsvModal({ onClose, onDone, csvDropPath, onCsvDropConsumed
               Upload a CSV file. Claude will automatically suggest how its columns map to bookmark fields.
             </p>
             <div
-              onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+              onDragOver={(e) => { e.preventDefault(); if (!isParsing) setDragOver(true) }}
               onDragLeave={() => setDragOver(false)}
-              onDrop={handleDrop}
-              onClick={() => fileInputRef.current?.click()}
-              className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed py-10 cursor-pointer transition-all duration-150"
+              onDrop={(e) => { if (!isParsing) handleDrop(e) }}
+              onClick={handleBrowseClick}
+              className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed py-10 transition-all duration-150"
               style={{
+                cursor: isParsing ? 'default' : 'pointer',
                 borderColor: dragOver ? 'var(--accent)' : 'var(--border-mid)',
                 background: dragOver ? 'rgba(200,160,90,0.06)' : 'transparent',
               }}
             >
-              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ color: 'var(--text-muted)' }}>
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                <polyline points="14 2 14 8 20 8" />
-                <line x1="12" y1="18" x2="12" y2="12" />
-                <line x1="9" y1="15" x2="15" y2="15" />
-              </svg>
-              <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
-                Drop a CSV file here, or click to browse
-              </span>
-              <input ref={fileInputRef} type="file" accept=".csv,text/csv" className="hidden" onChange={handleFileInput} />
+              {isParsing ? (
+                <>
+                  <span className="inline-block w-7 h-7 rounded-full border-2 animate-spin" style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
+                  <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Parsing file…</span>
+                </>
+              ) : (
+                <>
+                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ color: 'var(--text-muted)' }}>
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                    <polyline points="14 2 14 8 20 8" />
+                    <line x1="12" y1="18" x2="12" y2="12" />
+                    <line x1="9" y1="15" x2="15" y2="15" />
+                  </svg>
+                  <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
+                    Drop a CSV file here, or click to browse
+                  </span>
+                </>
+              )}
             </div>
           </div>
         )}
