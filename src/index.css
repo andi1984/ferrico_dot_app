@@ -245,7 +245,6 @@ select option {
   box-shadow: 0 1px 3px rgba(0,0,0,0.12);
   touch-action: none;
   transition: border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
-  will-change: transform;
 }
 .bm-card:hover {
   border-color: var(--border);
