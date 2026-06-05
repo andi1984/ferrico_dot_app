@@ -107,11 +107,7 @@ header.nav{position:sticky;top:0;z-index:50;
   border-bottom:1px solid transparent;transition:border-color .2s,background .2s}
 header.nav.scrolled{border-bottom-color:var(--border-soft);background:rgba(24,23,21,.85)}
 .nav-inner{display:flex;align-items:center;justify-content:space-between;height:68px}
-.brand{display:flex;align-items:center;gap:11px;font-family:var(--font-display);font-size:21px;font-weight:600;letter-spacing:-.02em}
-.mark{width:30px;height:30px;flex:0 0 auto;border-radius:9px;
-  background:linear-gradient(150deg,var(--accent-bright),var(--accent-deep));
-  display:grid;place-items:center;box-shadow:0 4px 14px -6px rgba(204,146,104,.8),inset 0 1px 0 rgba(255,255,255,.3)}
-.mark svg{width:17px;height:17px}
+.brand{font-family:var(--font-display);font-size:21px;font-weight:600;letter-spacing:-.02em}
 .nav-links{display:flex;align-items:center;gap:30px}
 .nav-links a.lnk{font-size:14.5px;color:var(--text-2);font-weight:500;transition:color .15s}
 .nav-links a.lnk:hover{color:var(--text-1)}
@@ -290,12 +286,7 @@ footer{border-top:1px solid var(--border-soft);padding:54px 0 60px}
 <!-- ─── Nav ─── -->
 <header class="nav" id="nav">
   <div class="wrap nav-inner">
-    <a href="#" class="brand">
-      <span class="mark" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none"><path d="M6 3h11l1 4-5-1v14l-3 1V5L6 7V3z" fill="#241a12"/></svg>
-      </span>
-      Ferrico
-    </a>
+    <a href="#" class="brand">Ferrico</a>
     <nav class="nav-links" id="navlinks">
       <a class="lnk" href="#features">Features</a>
       <a class="lnk" href="#local">Local-first</a>
@@ -476,10 +467,7 @@ footer{border-top:1px solid var(--border-soft);padding:54px 0 60px}
   <div class="wrap">
     <div class="foot">
       <div>
-        <a href="#" class="brand">
-          <span class="mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M6 3h11l1 4-5-1v14l-3 1V5L6 7V3z" fill="#241a12"/></svg></span>
-          Ferrico
-        </a>
+        <a href="#" class="brand">Ferrico</a>
         <p>A fast, local-first desktop bookmark manager. Your data stays on your machine.</p>
       </div>
       <div class="foot-links">
