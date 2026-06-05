@@ -620,45 +620,6 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden" style={{ background: 'var(--chrome-bg)', color: 'var(--text-1)' }}>
-      {/* macOS-style window chrome */}
-      <div
-        className="shrink-0 flex items-center px-4 relative"
-        style={{
-          height: 38,
-          background: 'var(--chrome-bg)',
-          borderBottom: '1px solid var(--border-soft)',
-        }}
-      >
-        <div className="flex items-center gap-2" aria-hidden="true">
-          <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#ff5f57' }} />
-          <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#febc2e' }} />
-          <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#28c840' }} />
-        </div>
-        <div className="flex-1 flex items-center justify-center min-w-0 px-4">
-          <span
-            className="truncate"
-            style={{
-              fontFamily: 'var(--font-display)',
-              fontSize: 12.5,
-              fontWeight: 500,
-              color: 'var(--text-2)',
-              letterSpacing: '0.01em',
-            }}
-          >Ferrico — {selectionTitle()}</span>
-        </div>
-        <button
-          onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
-          className="flex items-center justify-center rounded-md transition-colors duration-150 cursor-pointer"
-          style={{ width: 26, height: 22, color: 'var(--text-2)' }}
-          onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--btn-hover-bg)'; e.currentTarget.style.color = 'var(--text-1)' }}
-          onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-2)' }}
-          aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-          title={theme === 'dark' ? 'Light theme' : 'Dark theme'}
-        >
-          {theme === 'dark' ? <IconSun size={13} /> : <IconMoon size={13} />}
-        </button>
-      </div>
-
       <div className="flex-1 flex min-h-0">
       <Sidebar
         folders={folders}
@@ -773,6 +734,24 @@ export default function App() {
               )
             })}
           </div>
+
+          <button
+            onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+            className="flex items-center justify-center rounded-lg transition-colors duration-150 flex-none cursor-pointer"
+            style={{
+              width: 32,
+              height: 32,
+              background: 'var(--input-bg)',
+              border: '1px solid var(--border-soft)',
+              color: 'var(--text-1)',
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--btn-hover-bg)')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'var(--input-bg)')}
+            aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+            title={theme === 'dark' ? 'Light theme' : 'Dark theme'}
+          >
+            {theme === 'dark' ? <IconSun size={13} /> : <IconMoon size={13} />}
+          </button>
 
           {isBinView ? (
             binCount > 0 && (
