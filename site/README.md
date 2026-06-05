@@ -20,11 +20,19 @@ Or serve it (so relative links behave like production):
 python3 -m http.server -d site 8000   # → http://localhost:8000
 ```
 
-## Deploy
+## Deploy (GitHub Pages)
 
-It's a static file, so any static host works. For **GitHub Pages**, point Pages
-at this `site/` directory (or copy `index.html` to the Pages root). The page
-also runs fine from a CDN or object store — no server-side anything.
+Deployment is automated by [`.github/workflows/pages.yml`](../.github/workflows/pages.yml),
+which publishes this `site/` folder to Pages on every push to `main` that touches
+it (and can be run manually from the **Actions** tab).
+
+**One-time setup:** in the repo's **Settings → Pages**, set **Source** to
+**GitHub Actions**. After the first run, the site is live at
+`https://andi1984.github.io/ferrico_dot_app/`.
+
+The page is fully self-contained (inline CSS/JS, fonts from Google Fonts, only
+anchor links), so it works unchanged under that project subpath — and on any
+other static host or CDN too.
 
 ## Editing notes
 
