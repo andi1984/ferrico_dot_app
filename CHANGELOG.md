@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.7.0] - 2026-06-05
+
+### Features
+
+- sync download links + version from latest GitHub release
+
+### Bug Fixes
+
+- remove duplicate macOS window chrome, merge into header
+- replace placeholder green square with copper bookmark mark
+- show real app version in sidebar instead of hardcoded v0.1
+
+
 ## [0.6.0] - 2026-06-05
 
 ### Features
