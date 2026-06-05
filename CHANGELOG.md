@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.6.0] - 2026-06-05
+
+### Features
+
+- add single-page landing site for Ferrico
+
+### Bug Fixes
+
+- match app branding — text wordmark, no invented icon
+- stop two more sources of false-positive broken links
+- use browser-shaped User-Agent to avoid false broken links
+
+### Performance
+
+- batch health write-back, chunk tag IN-clause, drop id clones
+- isolate search box + faster sort to cut typing/navigation lag
+
+
 ## [0.5.0] - 2026-06-04
 
 ### Features
