@@ -40,5 +40,12 @@ other static host or CDN too.
   copper `#cc9268`), defined once in `:root`.
 - The hero "screenshot" is a **hand-built HTML/CSS mock** of the app window —
   swap in a real screenshot later by replacing the `.window` block.
-- Content (version, platforms, feature list) is hard-coded; update it here when
-  the app changes.
+- **Downloads + version auto-sync** with GitHub Releases: a small client-side
+  `fetch` of `/releases/latest` points each platform card at the matching asset
+  (`.dmg` / `.AppImage` / `-setup.exe`) and stamps the live version tag. **No
+  version is hard-coded** — the badges read `Latest` in the source and are
+  filled in at runtime. No edits needed per release. If the request fails
+  (offline / API rate limit), the cards keep the `Latest` label and fall back to
+  the releases page. To re-map assets, edit the `PICK` matchers in the inline
+  script.
+- The feature list and copy are hard-coded; update them here when the app changes.
