@@ -1,6 +1,7 @@
 import { Fragment, useMemo, useState } from 'react'
 import type { Folder, Tag, Selection } from '../types'
 import { IconClose, IconPlus, IconFolder, IconAll, IconInbox, IconSettings, IconTrash, IconBrokenLink, IconChevronDown } from './icons'
+import { version as APP_VERSION } from '../../package.json'
 
 // Sentinel used in [data-drop-target-id] for the Inbox row, which corresponds
 // to "unsorted" (folderId === null). The App layer maps it back to null when
@@ -317,7 +318,7 @@ export function Sidebar({ folders, tags, selection, bookmarkCount, inboxCount = 
               marginTop: 3,
               letterSpacing: '0.02em',
             }}
-          >v0.1 · {bookmarkCount.toLocaleString()} marks</span>
+          >v{APP_VERSION} · {bookmarkCount.toLocaleString()} marks</span>
         </div>
       </div>
 
