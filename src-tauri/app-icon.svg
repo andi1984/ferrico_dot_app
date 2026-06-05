@@ -1,0 +1,44 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    Ferrico app icon: a macOS-style rounded square (824px on a 1024 canvas,
+    about 10 percent padding) in the warm-charcoal app background, with a copper
+    bookmark glyph (accent #cc9268) reading instantly as a bookmark manager.
+    Colors mirror the app tokens in src/index.css.
+  -->
+  <defs>
+    <linearGradient id="tile" x1="512" y1="100" x2="512" y2="924" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2a2724"/>
+      <stop offset="1" stop-color="#161412"/>
+    </linearGradient>
+    <linearGradient id="copper" x1="362" y1="292" x2="662" y2="732" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#dba17a"/>
+      <stop offset="0.55" stop-color="#cc9268"/>
+      <stop offset="1" stop-color="#a4633b"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="512" y1="292" x2="512" y2="520" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded-square tile -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#tile)"/>
+  <!-- Top inner highlight for a subtle bevel -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#sheen)"/>
+  <!-- Hairline edge -->
+  <rect x="100.5" y="100.5" width="823" height="823" rx="184.5" fill="none"
+        stroke="#ffffff" stroke-opacity="0.07" stroke-width="1"/>
+
+  <!-- Bookmark glyph -->
+  <g>
+    <!-- Soft drop shadow -->
+    <path d="M392 300h240a36 36 0 0 1 36 36v384a16 16 0 0 1-25.6 12.8L512 654 381.6 732.8A16 16 0 0 1 356 720V336a36 36 0 0 1 36-36z"
+          transform="translate(0,14)" fill="#000000" fill-opacity="0.28"/>
+    <!-- Bookmark body -->
+    <path d="M392 300h240a36 36 0 0 1 36 36v384a16 16 0 0 1-25.6 12.8L512 654 381.6 732.8A16 16 0 0 1 356 720V336a36 36 0 0 1 36-36z"
+          fill="url(#copper)"/>
+    <!-- Top sheen on the glyph -->
+    <path d="M392 300h240a36 36 0 0 1 36 36v40H356v-40a36 36 0 0 1 36-36z"
+          fill="#ffffff" fill-opacity="0.16"/>
+  </g>
+</svg>
