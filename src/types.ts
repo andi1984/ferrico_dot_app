@@ -19,6 +19,7 @@ export interface Bookmark {
   title: string
   description: string | null
   favicon_url: string | null
+  cover_url: string | null
   feed_url: string | null
   folder_id: string | null
   tags: Tag[]

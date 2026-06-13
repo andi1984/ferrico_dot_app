@@ -615,7 +615,7 @@ pub fn export_opml(conn: &Connection) -> Result<String, AppError> {
 
     let bookmarks: Vec<RawBookmark> = {
         let mut stmt = conn.prepare(
-            "SELECT id, url, title, description, favicon_url, feed_url, folder_id, \
+            "SELECT id, url, title, description, favicon_url, cover_url, feed_url, folder_id, \
              created_at, updated_at, deleted_at, is_broken, last_checked_at FROM bookmarks \
              WHERE deleted_at IS NULL ORDER BY created_at",
         )?;

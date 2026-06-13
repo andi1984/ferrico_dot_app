@@ -1,4 +1,4 @@
-import { memo } from 'react'
+import { memo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { Bookmark } from '../types'
 import { domainOf, formatDate, initials } from '../utils'
@@ -48,6 +48,8 @@ export const BookmarkCard = memo(function BookmarkCard({
 
   const [from, to] = PREVIEW_GRADIENTS[hash(bookmark.url) % PREVIEW_GRADIENTS.length]
   const glyph = initials(bookmark.title)
+  const [coverFailed, setCoverFailed] = useState(false)
+  const showCover = !!bookmark.cover_url && !coverFailed
 
   return (
     <div
@@ -57,28 +59,44 @@ export const BookmarkCard = memo(function BookmarkCard({
     >
       {/* Preview banner */}
       <div
-        className="relative shrink-0"
+        className="relative shrink-0 overflow-hidden"
         style={{
           aspectRatio: '16 / 9',
-          background: `linear-gradient(135deg, ${from} 0%, ${to} 100%)`,
+          background: showCover ? 'var(--bg)' : `linear-gradient(135deg, ${from} 0%, ${to} 100%)`,
           borderBottom: '1px solid var(--border-soft)',
         }}
       >
-        <div
-          className="absolute inset-0 flex items-center justify-center"
-          style={{ opacity: 0.18 }}
-          aria-hidden="true"
-        >
-          <span
+        {showCover ? (
+          <img
+            src={bookmark.cover_url!}
+            alt=""
+            aria-hidden="true"
+            onError={() => setCoverFailed(true)}
             style={{
-              fontFamily: 'var(--font-display)',
-              fontSize: 72,
-              fontWeight: 700,
-              color: 'rgba(255,255,255,0.85)',
-              letterSpacing: '-0.04em',
+              position: 'absolute',
+              inset: 0,
+              width: '100%',
+              height: '100%',
+              objectFit: 'cover',
             }}
-          >{glyph}</span>
-        </div>
+          />
+        ) : (
+          <div
+            className="absolute inset-0 flex items-center justify-center"
+            style={{ opacity: 0.18 }}
+            aria-hidden="true"
+          >
+            <span
+              style={{
+                fontFamily: 'var(--font-display)',
+                fontSize: 72,
+                fontWeight: 700,
+                color: 'rgba(255,255,255,0.85)',
+                letterSpacing: '-0.04em',
+              }}
+            >{glyph}</span>
+          </div>
+        )}
 
         <div className="absolute bottom-2.5 left-2.5">
           <Favicon
