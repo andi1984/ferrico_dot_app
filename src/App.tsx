@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { subscribeToBookmarkAdded, subscribeToHealthCheckProgress, type UnlistenFn } from './events'
+import { subscribeToBookmarkAdded, subscribeToHealthCheckProgress, subscribeToCoverUpdated, type UnlistenFn } from './events'
 import type { Bookmark, Folder, Tag, Selection, ViewMode, SortKey, SidebarData } from './types'
 import { extractErrorMessage, duckduckgoFavicon, domainOf } from './utils'
 import { ContextMenu, type CtxMenuState } from './components/ContextMenu'
@@ -296,6 +296,28 @@ export default function App() {
         else fn()
       })
       .catch((e) => console.error('[ferrico] bookmark-added listener failed:', e))
+    return () => {
+      active = false
+      unlisten?.()
+    }
+  }, [])
+
+  // Live cover updates from background scanner
+  useEffect(() => {
+    let active = true
+    let unlisten: UnlistenFn | undefined
+    subscribeToCoverUpdated(({ id, cover_url }) => {
+      setBookmarks((prev) =>
+        prev
+          ? prev.map((b) => (b.id === id ? { ...b, cover_url } : b))
+          : prev
+      )
+    })
+      .then((fn) => {
+        if (active) unlisten = fn
+        else fn()
+      })
+      .catch((e) => console.error('[ferrico] cover-updated listener failed:', e))
     return () => {
       active = false
       unlisten?.()

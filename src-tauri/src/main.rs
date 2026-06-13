@@ -8,6 +8,7 @@ mod error;
 mod health_check;
 mod io;
 mod io_validate;
+mod og_image;
 
 use axum::{
     extract::{Query, State as AxumState},
@@ -30,6 +31,7 @@ use db::{
     db_related_tags,
     db_find_duplicate_bookmarks, db_merge_bookmark_duplicates,
     db_update_bookmark_health_batch,
+    db_get_bookmarks_without_cover, db_update_cover_url,
     now, open_db,
 };
 use error::AppError;
@@ -639,6 +641,8 @@ struct ExtPayload {
     title: String,
     description: Option<String>,
     favicon_url: Option<String>,
+    #[serde(default)]
+    cover_url: Option<String>,
     feed_url: Option<String>,
     folder_id: Option<String>,
     tag_ids: Option<Vec<String>>,
@@ -770,6 +774,11 @@ async fn http_add_bookmark(
     })
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
+    if let Some(ref cover) = body.cover_url {
+        db_update_cover_url(&db, &bookmark.id, cover)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
+
     drop(db);
     state.notifier.notify();
 
@@ -803,6 +812,45 @@ async fn start_http_server(db: Arc<Mutex<Connection>>, token: String, app_handle
 }
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
+
+// ─── Background Cover Scanner ─────────────────────────────────────────────────
+
+async fn background_cover_scanner(db: Arc<Mutex<Connection>>, app: AppHandle) {
+    // Wait for app to fully start before hammering the network.
+    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+
+    let client = match og_image::build_client() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    loop {
+        let bookmarks = {
+            match db.lock() {
+                Ok(conn) => db_get_bookmarks_without_cover(&conn).unwrap_or_default(),
+                Err(_) => vec![],
+            }
+        };
+
+        for (id, url) in bookmarks {
+            if let Some(cover_url) = og_image::fetch_og_image(&client, &url).await {
+                if let Ok(conn) = db.lock() {
+                    let _ = db_update_cover_url(&conn, &id, &cover_url);
+                }
+                app.emit("cover-updated", serde_json::json!({
+                    "id": id,
+                    "cover_url": cover_url,
+                }))
+                .ok();
+            }
+            // Polite rate limit between fetches.
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+
+        // Re-check every 10 minutes for newly added bookmarks.
+        tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+    }
+}
 
 fn load_or_create_token(data_dir: &Path) -> String {
     let path = data_dir.join("settings.json");
@@ -843,7 +891,8 @@ fn main() {
         })
         .setup(move |app| {
             let handle = app.handle().clone();
-            tauri::async_runtime::spawn(start_http_server(db.clone(), api_token.clone(), handle));
+            tauri::async_runtime::spawn(start_http_server(db.clone(), api_token.clone(), handle.clone()));
+            tauri::async_runtime::spawn(background_cover_scanner(db.clone(), handle));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -888,6 +937,7 @@ fn main() {
             get_broken_bookmarks,
             get_broken_count,
             delete_bookmarks,
+            scan_cover_images,
             read_text_file,
             pick_csv_file,
             pick_import_file,
@@ -973,6 +1023,74 @@ async fn scan_broken_bookmarks(
 fn get_broken_bookmarks(state: State<'_, AppState>) -> Result<Vec<Bookmark>, AppError> {
     let db = lock_db!(state);
     db_get_broken_bookmarks(&db)
+}
+
+// ─── Cover Image Scan ─────────────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+struct CoverScanResult {
+    total: usize,
+    found: usize,
+}
+
+#[tauri::command]
+async fn scan_cover_images(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<CoverScanResult, AppError> {
+    let bookmarks = {
+        let db = lock_db!(state);
+        db_get_bookmarks_without_cover(&db)?
+    };
+
+    let total = bookmarks.len();
+    if total == 0 {
+        return Ok(CoverScanResult { total: 0, found: 0 });
+    }
+
+    let client = og_image::build_client()
+        .map_err(|e| AppError::Validation { message: e.to_string() })?;
+
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(5));
+    let mut set = tokio::task::JoinSet::new();
+
+    for (id, url) in bookmarks {
+        let client = client.clone();
+        let sem = sem.clone();
+        set.spawn(async move {
+            let _permit = sem.acquire_owned().await.expect("semaphore should not close");
+            let cover = og_image::fetch_og_image(&client, &url).await;
+            (id, cover)
+        });
+    }
+
+    let mut results: Vec<(String, Option<String>)> = Vec::new();
+    let mut completed = 0usize;
+
+    while let Some(task_result) = set.join_next().await {
+        if let Ok(pair) = task_result {
+            results.push(pair);
+        }
+        completed += 1;
+        app.emit("cover-scan-progress", serde_json::json!({
+            "current": completed,
+            "total": total,
+        }))
+        .ok();
+    }
+
+    let mut found = 0usize;
+    {
+        let db = lock_db!(state);
+        for (id, cover_url) in &results {
+            if let Some(url) = cover_url {
+                db_update_cover_url(&db, id, url)?;
+                found += 1;
+            }
+        }
+    }
+
+    Ok(CoverScanResult { total: results.len(), found })
 }
 
 #[tauri::command]

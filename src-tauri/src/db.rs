@@ -17,6 +17,7 @@ pub struct Bookmark {
     pub title: String,
     pub description: Option<String>,
     pub favicon_url: Option<String>,
+    pub cover_url: Option<String>,
     pub feed_url: Option<String>,
     pub folder_id: Option<String>,
     pub tags: Vec<Tag>,
@@ -94,6 +95,7 @@ pub(crate) struct RawBookmark {
     pub title: String,
     pub description: Option<String>,
     pub favicon_url: Option<String>,
+    pub cover_url: Option<String>,
     pub feed_url: Option<String>,
     pub folder_id: Option<String>,
     pub created_at: i64,
@@ -227,6 +229,19 @@ pub fn init_schema(conn: &Connection) -> Result<(), AppError> {
         "CREATE INDEX IF NOT EXISTS idx_bookmarks_broken ON bookmarks(is_broken) WHERE is_broken = 1;",
     )?;
 
+    // Migration: add cover_url for OG image / screenshot covers.
+    let has_cover_url: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('bookmarks') WHERE name='cover_url'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+    if !has_cover_url {
+        conn.execute("ALTER TABLE bookmarks ADD COLUMN cover_url TEXT", [])?;
+    }
+
     Ok(())
 }
 
@@ -265,13 +280,14 @@ pub(crate) fn row_to_raw(row: &rusqlite::Row) -> rusqlite::Result<RawBookmark> {
         title: row.get(2)?,
         description: row.get(3)?,
         favicon_url: row.get(4)?,
-        feed_url: row.get(5)?,
-        folder_id: row.get(6)?,
-        created_at: row.get(7)?,
-        updated_at: row.get(8)?,
-        deleted_at: row.get(9)?,
-        is_broken: row.get::<_, i64>(10)? != 0,
-        last_checked_at: row.get(11)?,
+        cover_url: row.get(5)?,
+        feed_url: row.get(6)?,
+        folder_id: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
+        deleted_at: row.get(10)?,
+        is_broken: row.get::<_, i64>(11)? != 0,
+        last_checked_at: row.get(12)?,
     })
 }
 
@@ -330,6 +346,7 @@ fn enrich_batch(raws: Vec<RawBookmark>, conn: &Connection) -> Result<Vec<Bookmar
                 title: r.title,
                 description: r.description,
                 favicon_url: r.favicon_url,
+                cover_url: r.cover_url,
                 feed_url: r.feed_url,
                 folder_id: r.folder_id,
                 tags,
@@ -448,7 +465,7 @@ pub fn db_get_bookmarks(
     // afterwards as a fuzzy rank in Rust (see below), so it is not part of the
     // WHERE clause — fuzzy matching can't be expressed as a SQL LIKE.
     let sql = format!(
-        "SELECT b.id, b.url, b.title, b.description, b.favicon_url, b.feed_url, \
+        "SELECT b.id, b.url, b.title, b.description, b.favicon_url, b.cover_url, b.feed_url, \
          b.folder_id, b.created_at, b.updated_at, b.deleted_at, b.is_broken, b.last_checked_at \
          FROM bookmarks b{} WHERE {} ORDER BY b.created_at DESC",
         join,
@@ -599,6 +616,7 @@ pub fn db_add_bookmark(
         title: input.title,
         description: input.description,
         favicon_url: input.favicon_url,
+        cover_url: None,
         feed_url: input.feed_url,
         folder_id: input.folder_id,
         tags,
@@ -623,7 +641,7 @@ pub fn db_delete_bookmark(conn: &Connection, id: &str) -> Result<(), AppError> {
 
 pub fn db_get_bin_bookmarks(conn: &Connection) -> Result<Vec<Bookmark>, AppError> {
     let mut stmt = conn.prepare(
-        "SELECT id, url, title, description, favicon_url, feed_url, folder_id, \
+        "SELECT id, url, title, description, favicon_url, cover_url, feed_url, folder_id, \
          created_at, updated_at, deleted_at, is_broken, last_checked_at FROM bookmarks \
          WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC",
     )?;
@@ -1155,7 +1173,7 @@ pub fn db_clear_all_data(conn: &Connection) -> Result<(), AppError> {
 
 pub fn db_find_duplicate_bookmarks(conn: &Connection) -> Result<Vec<Vec<Bookmark>>, AppError> {
     let mut stmt = conn.prepare(
-        "SELECT b.id, b.url, b.title, b.description, b.favicon_url, b.feed_url, \
+        "SELECT b.id, b.url, b.title, b.description, b.favicon_url, b.cover_url, b.feed_url, \
                 b.folder_id, b.created_at, b.updated_at, b.deleted_at, b.is_broken, b.last_checked_at \
          FROM bookmarks b \
          WHERE b.deleted_at IS NULL \
@@ -1216,7 +1234,7 @@ pub fn db_merge_bookmark_duplicates(
 
 pub fn db_get_broken_bookmarks(conn: &Connection) -> Result<Vec<Bookmark>, AppError> {
     let mut stmt = conn.prepare(
-        "SELECT id, url, title, description, favicon_url, feed_url, folder_id, \
+        "SELECT id, url, title, description, favicon_url, cover_url, feed_url, folder_id, \
          created_at, updated_at, deleted_at, is_broken, last_checked_at FROM bookmarks \
          WHERE is_broken = 1 AND deleted_at IS NULL ORDER BY last_checked_at DESC",
     )?;
@@ -1275,6 +1293,25 @@ pub fn db_update_bookmark_health_batch(
         }
     }
     tx.commit()?;
+    Ok(())
+}
+
+/// Returns (id, url) pairs for bookmarks that have no cover image yet.
+pub fn db_get_bookmarks_without_cover(conn: &Connection) -> Result<Vec<(String, String)>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, url FROM bookmarks WHERE deleted_at IS NULL AND cover_url IS NULL ORDER BY created_at DESC",
+    )?;
+    let rows = stmt
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+pub fn db_update_cover_url(conn: &Connection, id: &str, cover_url: &str) -> Result<(), AppError> {
+    conn.execute(
+        "UPDATE bookmarks SET cover_url = ?1 WHERE id = ?2",
+        params![cover_url, id],
+    )?;
     Ok(())
 }
 

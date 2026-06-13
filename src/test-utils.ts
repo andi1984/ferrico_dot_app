@@ -27,6 +27,7 @@ export function makeBookmark(overrides?: Partial<Bookmark>): Bookmark {
     title: 'Example',
     description: null,
     favicon_url: null,
+    cover_url: null,
     feed_url: null,
     folder_id: null,
     tags: [],

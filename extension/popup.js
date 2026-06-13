@@ -104,7 +104,7 @@ async function apiCreateTag(token, name, color) {
   return res.json()
 }
 
-async function saveBookmark(token, { url, title, description, folder_id, tag_ids }) {
+async function saveBookmark(token, { url, title, description, folder_id, tag_ids, cover_url }) {
   const res = await apiFetch('/bookmarks', token, {
     method: 'POST',
     body: JSON.stringify({
@@ -112,6 +112,7 @@ async function saveBookmark(token, { url, title, description, folder_id, tag_ids
       title,
       description: description || null,
       favicon_url: faviconUrl(url),
+      cover_url: cover_url || null,
       feed_url: null,
       folder_id: folder_id || null,
       tag_ids: tag_ids.length ? tag_ids : null,
@@ -197,6 +198,7 @@ async function scrapePageContent(tabId) {
           keywords: m('keywords'),
           desc: m('description') || m('og:description'),
           ogTitle: m('og:title'),
+          ogImage: m('og:image') || m('twitter:image'),
           headings,
           bodyText,
         }
@@ -1192,6 +1194,7 @@ function renderForm(pageInfo, folders, tags, token) {
         description,
         folder_id: folderState.folderId,
         tag_ids: selectedTagIds,
+        cover_url: content?.ogImage || null,
       })
       statusEl.textContent = 'Saved!'
       statusEl.className = 'status success'

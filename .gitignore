@@ -15,3 +15,6 @@ vitest-results.json
 .idea/
 *.swp
 Thumbs.db
+
+# Local Claude Code agent state
+.claude/
