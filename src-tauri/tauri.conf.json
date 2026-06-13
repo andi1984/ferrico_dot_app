@@ -1,6 +1,6 @@
 {
   "productName": "ferrico",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "identifier": "com.ferrico.app",
   "build": {
     "beforeBuildCommand": "bun run build",

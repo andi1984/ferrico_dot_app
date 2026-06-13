@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.8.0] - 2026-06-13
+
+### Features
+
+- auto-fetch OG/Twitter cover images for bookmarks
+- add ISO date to export filenames
+
+### Bug Fixes
+
+- add cover_url to makeBookmark test factory
+
+
 ## [0.7.0] - 2026-06-05
 
 ### Features
