@@ -9,19 +9,42 @@ pub struct CheckResult {
     pub last_checked_at: i64,
 }
 
+/// User-Agent used for health checks.
+///
+/// It MUST be browser-shaped — i.e. the `Mozilla/5.0 (…)` form with a
+/// parenthesized platform token. Many sites sit behind anti-bot layers (Akamai
+/// et al., e.g. obi.de) that answer **404** — not 403 — to any client that does
+/// not look like a browser, which would make a perfectly reachable page look
+/// broken. A bare `Ferrico/1.0 …` token, or even `Mozilla/5.0 Ferrico/1.0`
+/// without the parenthesized comment, gets the 404 treatment.
+///
+/// We follow the well-behaved-crawler convention (cf. bingbot) and still
+/// identify ourselves honestly via a `compatible;` comment plus a contact URL,
+/// rather than impersonating a specific browser version.
+const USER_AGENT: &str =
+    "Mozilla/5.0 (compatible; Ferrico/1.0; +https://github.com/andi1984/ferrico_dot_app)";
+
 pub fn build_client() -> Result<Client, reqwest::Error> {
     Client::builder()
         .timeout(Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::limited(5))
-        .user_agent("Ferrico/1.0 (link health checker)")
+        .user_agent(USER_AGENT)
         .build()
 }
 
 pub async fn check_url(client: &Client, id: String, url: String) -> CheckResult {
     let ts = now();
     let is_broken = match do_check(client, &url).await {
+        // A definite HTTP response is the only thing that can prove a link dead.
         Ok(status) => !is_reachable(status),
-        Err(_) => true,
+        // A transport-level failure (TLS-chain quirk, refused connection, DNS
+        // hiccup, or a timeout that survived the retry) means we could not
+        // complete the check — not that the page is gone. e.g. blog.bitsrc.io
+        // serves an incomplete cert chain that browsers repair via AIA fetching
+        // but our TLS stack rejects. Reserve "broken" for a server that actually
+        // answered with a gone status, rather than nuking the bookmark whenever
+        // we fail to reach or verify it.
+        Err(_) => false,
     };
     CheckResult { id, is_broken, last_checked_at: ts }
 }
@@ -52,12 +75,183 @@ async fn do_check(client: &Client, url: &str) -> Result<u16, reqwest::Error> {
 }
 
 async fn head_or_get(client: &Client, url: &str) -> Result<u16, reqwest::Error> {
-    let resp = client.head(url).send().await?;
-    let status = resp.status().as_u16();
-    // Some servers reject HEAD; fall back to GET
-    if status == 405 || status == 501 {
-        let get = client.get(url).send().await?;
-        return Ok(get.status().as_u16());
+    let head_status = client.head(url).send().await?.status().as_u16();
+    // HEAD is widely mis-implemented: some servers answer 404/405/501 (or other
+    // 4xx) to a HEAD for a page that is served perfectly over GET — e.g.
+    // codementor.io returns 404 to a HEAD. Trust a HEAD only when it already
+    // looks reachable; otherwise confirm with a GET (headers only — reqwest does
+    // not download the body) before believing the URL is gone.
+    if is_reachable(head_status) {
+        return Ok(head_status);
     }
-    Ok(status)
+    let get_status = client.get(url).send().await?.status().as_u16();
+    Ok(get_status)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::{HeaderMap, StatusCode};
+    use axum::routing::get;
+    use axum::Router;
+    use tokio::net::TcpListener;
+
+    // ── is_reachable: the status-code → broken policy ───────────────────────
+
+    #[test]
+    fn is_reachable_treats_2xx_and_3xx_as_healthy() {
+        for status in [200, 201, 204, 301, 302, 308] {
+            assert!(is_reachable(status), "{status} should be reachable");
+        }
+    }
+
+    #[test]
+    fn is_reachable_treats_404_and_410_as_broken() {
+        assert!(!is_reachable(404), "404 must count as broken");
+        assert!(!is_reachable(410), "410 must count as broken");
+    }
+
+    #[test]
+    fn is_reachable_keeps_auth_ratelimit_and_server_errors_as_reachable() {
+        // The resource exists — the request was merely refused or failed server-side.
+        for status in [401, 403, 429, 500, 502, 503] {
+            assert!(is_reachable(status), "{status} must not be treated as broken");
+        }
+    }
+
+    // ── live checks against a throwaway local server ────────────────────────
+
+    /// Spawns an HTTP server on a random localhost port. `decide` is handed the
+    /// request's User-Agent and returns the status code to respond with, letting
+    /// a test model a server that discriminates by User-Agent. Returns the URL.
+    async fn spawn_server<F>(decide: F) -> String
+    where
+        F: Fn(&str) -> StatusCode + Clone + Send + Sync + 'static,
+    {
+        let app = Router::new().route(
+            "/",
+            get(move |headers: HeaderMap| {
+                let decide = decide.clone();
+                async move {
+                    let ua = headers
+                        .get("user-agent")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("");
+                    decide(ua)
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}/")
+    }
+
+    #[tokio::test]
+    async fn healthy_page_that_blocks_bot_user_agents_is_not_marked_broken() {
+        // Reproduces obi.de: an anti-bot layer answers 404 to any client whose
+        // User-Agent is not browser-shaped (no `Mozilla/5.0 (…)` platform token)
+        // and 200 otherwise. A reachable page must NOT be reported broken merely
+        // because the checker announced itself as a bot.
+        let url = spawn_server(|ua| {
+            if ua.contains("Mozilla/5.0 (") {
+                StatusCode::OK
+            } else {
+                StatusCode::NOT_FOUND
+            }
+        })
+        .await;
+
+        let client = build_client().unwrap();
+        let result = check_url(&client, "bm-obi".to_string(), url).await;
+
+        assert!(
+            !result.is_broken,
+            "a page that only blocks bot user-agents must not be marked broken"
+        );
+    }
+
+    #[tokio::test]
+    async fn page_returning_404_for_everyone_is_marked_broken() {
+        // Control: a genuinely-gone page (404 regardless of UA) must still be
+        // detected, so the browser-shaped UA does not blind us to real dead links.
+        let url = spawn_server(|_ua| StatusCode::NOT_FOUND).await;
+
+        let client = build_client().unwrap();
+        let result = check_url(&client, "bm-gone".to_string(), url).await;
+
+        assert!(result.is_broken, "a 404-for-everyone page must be marked broken");
+    }
+
+    // ── HEAD vs GET: servers that mis-handle HEAD ───────────────────────────
+
+    /// Spawns a server that answers `head_status` to HEAD requests and
+    /// `get_status` to GET requests, modelling servers that mis-handle HEAD.
+    async fn spawn_head_get_server(head_status: StatusCode, get_status: StatusCode) -> String {
+        let app = Router::new().route(
+            "/",
+            get(move || async move { get_status }).head(move || async move { head_status }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}/")
+    }
+
+    #[tokio::test]
+    async fn page_that_404s_on_head_but_serves_get_is_not_broken() {
+        // Reproduces codementor.io: the server returns 404 to a HEAD request even
+        // though the page is served fine over GET (which is all a browser issues,
+        // hence "200 in the browser"). A HEAD that looks broken must be confirmed
+        // with a GET before the bookmark is declared broken.
+        let url = spawn_head_get_server(StatusCode::NOT_FOUND, StatusCode::OK).await;
+
+        let client = build_client().unwrap();
+        let result = check_url(&client, "bm-codementor".to_string(), url).await;
+
+        assert!(
+            !result.is_broken,
+            "a page that 404s on HEAD but serves GET must not be marked broken"
+        );
+    }
+
+    #[tokio::test]
+    async fn page_that_404s_on_both_head_and_get_is_broken() {
+        // Control: when GET also 404s the link is genuinely gone — the GET
+        // fallback must not rescue it.
+        let url = spawn_head_get_server(StatusCode::NOT_FOUND, StatusCode::NOT_FOUND).await;
+
+        let client = build_client().unwrap();
+        let result = check_url(&client, "bm-dead".to_string(), url).await;
+
+        assert!(result.is_broken, "a page that 404s on HEAD and GET must be marked broken");
+    }
+
+    // ── transport failures are not "broken" ─────────────────────────────────
+
+    #[tokio::test(start_paused = true)]
+    async fn transport_failure_does_not_mark_broken() {
+        // A connection/TLS-level failure (e.g. blog.bitsrc.io's incomplete cert
+        // chain, which browsers repair via AIA but our TLS stack rejects) means
+        // we could not complete the check — not that the page is gone. Modelled
+        // here with a closed port (connection refused). The bookmark must NOT be
+        // flagged broken on a transport failure — only a definite HTTP gone
+        // status counts. `start_paused` collapses the do_check retry backoff.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener); // close it → connecting now refuses
+        let url = format!("http://127.0.0.1:{port}/");
+
+        let client = build_client().unwrap();
+        let result = check_url(&client, "bm-unreachable".to_string(), url).await;
+
+        assert!(
+            !result.is_broken,
+            "a transport-level failure must not mark the bookmark broken"
+        );
+    }
 }

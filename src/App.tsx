@@ -17,8 +17,9 @@ import { DeduplicateModal } from './components/DeduplicateModal'
 import { AiChatPanel } from './components/AiChatPanel'
 import { Sidebar, INBOX_DROP_TARGET, FOLDER_ROOT_DROP_TARGET, type DragKind } from './components/Sidebar'
 import { EmptyState } from './components/EmptyState'
+import { SearchBox, type SearchBoxHandle } from './components/SearchBox'
 import { useDragDrop } from './useDragDrop'
-import { IconClose, IconImport, IconPlus, IconSearch, IconLayoutList, IconLayoutGrid, IconSort, IconChevronDown, IconSparkles, IconSun, IconMoon, IconBrokenLink, IconFolder } from './components/icons'
+import { IconClose, IconImport, IconPlus, IconLayoutList, IconLayoutGrid, IconSort, IconChevronDown, IconSparkles, IconSun, IconMoon, IconBrokenLink, IconFolder } from './components/icons'
 
 type Theme = 'dark' | 'light'
 
@@ -157,13 +158,16 @@ function listCacheKey(selection: Selection, search: string): string {
   return `${base}|${search}`
 }
 
+// Created once: Intl.Collator is far faster than String.localeCompare called
+// per comparison when sorting thousands of rows by title or domain.
+const collator = new Intl.Collator()
+
 export default function App() {
   // null = first load not yet complete; [] = loaded, no results
   const [bookmarks, setBookmarks] = useState<Bookmark[] | null>(null)
   const [folders, setFolders] = useState<Folder[]>([])
   const [tags, setTags] = useState<Tag[]>([])
   const [selection, setSelection] = useState<Selection>({ type: 'all' })
-  const [searchInput, setSearchInput] = useState('')
   const [search, setSearch] = useState('')
   const [totalCount, setTotalCount] = useState(0)
   const [inboxCount, setInboxCount] = useState(0)
@@ -173,10 +177,9 @@ export default function App() {
   const [modal, setModal] = useState<Modal>(null)
   const [error, setError] = useState<string | null>(null)
   const [addHovered, setAddHovered] = useState(false)
-  const [searchFocused, setSearchFocused] = useState(false)
   const [ctxMenu, setCtxMenu] = useState<CtxMenuState | null>(null)
   const [csvDropPath, setCsvDropPath] = useState<string | null>(null)
-  const searchRef = useRef<HTMLInputElement>(null)
+  const searchBoxRef = useRef<SearchBoxHandle>(null)
 
   const [aiChatOpen, setAiChatOpen] = useState(false)
   const [aiFilter, setAiFilter] = useState<Set<string> | null>(null)
@@ -199,13 +202,8 @@ export default function App() {
     localStorage.setItem('ferrico:theme', theme)
   }, [theme])
 
-  useEffect(() => {
-    const t = setTimeout(() => setSearch(searchInput), 300)
-    return () => clearTimeout(t)
-  }, [searchInput])
-
-  // Clear AI filter when user changes view or types a search
-  useEffect(() => { setAiFilter(null) }, [selection, searchInput])
+  // Clear the AI filter when the view changes or a new (debounced) search applies.
+  useEffect(() => { setAiFilter(null) }, [selection, search])
 
   // Per-view list cache: last fetched rows keyed by selection+search, cleared on
   // any mutation (see refresh) so it never serves stale rows across edits.
@@ -332,13 +330,12 @@ export default function App() {
       const mod = e.metaKey || e.ctrlKey
       if (modal) return
       if (mod && e.key === 'n') { e.preventDefault(); setModal('add-bookmark') }
-      if (mod && e.key === 'f') { e.preventDefault(); searchRef.current?.focus() }
+      if (mod && e.key === 'f') { e.preventDefault(); searchBoxRef.current?.focus() }
       if (mod && e.key === ',') { e.preventDefault(); setModal('settings') }
-      if (e.key === 'Escape' && searchInput) { setSearchInput('') }
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [modal, searchInput])
+  }, [modal])
 
   const sortedBookmarks = useMemo(() => {
     if (!bookmarks) return null
@@ -350,9 +347,16 @@ export default function App() {
     switch (sortKey) {
       case 'date-desc': return arr.sort((a, b) => b.created_at - a.created_at)
       case 'date-asc':  return arr.sort((a, b) => a.created_at - b.created_at)
-      case 'title-asc': return arr.sort((a, b) => a.title.localeCompare(b.title))
-      case 'title-desc': return arr.sort((a, b) => b.title.localeCompare(a.title))
-      case 'domain-asc': return arr.sort((a, b) => domainOf(a.url).localeCompare(domainOf(b.url)))
+      case 'title-asc': return arr.sort((a, b) => collator.compare(a.title, b.title))
+      case 'title-desc': return arr.sort((a, b) => collator.compare(b.title, a.title))
+      case 'domain-asc': {
+        // Precompute each domain once — domainOf() parses a URL, so calling it
+        // inside the comparator would re-parse it O(n log n) times.
+        return arr
+          .map((b) => ({ b, key: domainOf(b.url) }))
+          .sort((x, y) => collator.compare(x.key, y.key))
+          .map((x) => x.b)
+      }
       default: return arr
     }
   }, [bookmarks, sortKey, search, aiFilter])
@@ -638,45 +642,6 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden" style={{ background: 'var(--chrome-bg)', color: 'var(--text-1)' }}>
-      {/* macOS-style window chrome */}
-      <div
-        className="shrink-0 flex items-center px-4 relative"
-        style={{
-          height: 38,
-          background: 'var(--chrome-bg)',
-          borderBottom: '1px solid var(--border-soft)',
-        }}
-      >
-        <div className="flex items-center gap-2" aria-hidden="true">
-          <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#ff5f57' }} />
-          <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#febc2e' }} />
-          <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#28c840' }} />
-        </div>
-        <div className="flex-1 flex items-center justify-center min-w-0 px-4">
-          <span
-            className="truncate"
-            style={{
-              fontFamily: 'var(--font-display)',
-              fontSize: 12.5,
-              fontWeight: 500,
-              color: 'var(--text-2)',
-              letterSpacing: '0.01em',
-            }}
-          >Ferrico — {selectionTitle()}</span>
-        </div>
-        <button
-          onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
-          className="flex items-center justify-center rounded-md transition-colors duration-150 cursor-pointer"
-          style={{ width: 26, height: 22, color: 'var(--text-2)' }}
-          onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--btn-hover-bg)'; e.currentTarget.style.color = 'var(--text-1)' }}
-          onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-2)' }}
-          aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-          title={theme === 'dark' ? 'Light theme' : 'Dark theme'}
-        >
-          {theme === 'dark' ? <IconSun size={13} /> : <IconMoon size={13} />}
-        </button>
-      </div>
-
       <div className="flex-1 flex min-h-0">
       <Sidebar
         folders={folders}
@@ -754,60 +719,8 @@ export default function App() {
             )}
           </div>
 
-          {/* Search */}
-          <div
-            className="flex items-center gap-2 rounded-lg px-2.5 min-w-0 transition-colors duration-150"
-            style={{
-              height: 32,
-              maxWidth: 260,
-              flex: '1 1 160px',
-              minWidth: 120,
-              background: 'var(--input-bg)',
-              border: `1px solid ${searchFocused ? 'var(--accent)' : 'var(--border-soft)'}`,
-              boxShadow: searchFocused ? '0 0 0 2px var(--accent-glow)' : 'none',
-            }}
-          >
-            <span className="flex-none" style={{ color: searchFocused ? 'var(--accent)' : 'var(--text-3)' }} aria-hidden="true">
-              <IconSearch size={13} />
-            </span>
-            <input
-              ref={searchRef}
-              type="search"
-              value={searchInput}
-              onChange={(e) => setSearchInput(e.target.value)}
-              onFocus={() => setSearchFocused(true)}
-              onBlur={() => setSearchFocused(false)}
-              placeholder="Search bookmarks…"
-              aria-label="Search bookmarks"
-              className="bg-transparent flex-1 min-w-0 outline-none"
-              style={{ color: 'var(--text-1)', fontSize: 12.5 }}
-            />
-            {searchInput && (
-              <button
-                onClick={() => setSearchInput('')}
-                className="flex-none transition-colors duration-150 cursor-pointer"
-                style={{ color: 'var(--text-3)' }}
-                onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--text-2)')}
-                onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-3)')}
-                aria-label="Clear search"
-              >
-                <IconClose size={11} />
-              </button>
-            )}
-            {!searchInput && (
-              <span
-                className="mono shrink-0"
-                style={{
-                  fontSize: 10,
-                  color: 'var(--text-3)',
-                  padding: '1px 5px',
-                  border: '1px solid var(--border-soft)',
-                  borderRadius: 4,
-                }}
-                aria-hidden="true"
-              >⌘F</span>
-            )}
-          </div>
+          {/* Search — owns its per-keystroke state so typing doesn't re-render App */}
+          <SearchBox ref={searchBoxRef} onSearch={setSearch} />
 
           <SortDropdown value={sortKey} onChange={setSortKey} />
 
@@ -843,6 +756,24 @@ export default function App() {
               )
             })}
           </div>
+
+          <button
+            onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+            className="flex items-center justify-center rounded-lg transition-colors duration-150 flex-none cursor-pointer"
+            style={{
+              width: 32,
+              height: 32,
+              background: 'var(--input-bg)',
+              border: '1px solid var(--border-soft)',
+              color: 'var(--text-1)',
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--btn-hover-bg)')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'var(--input-bg)')}
+            aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+            title={theme === 'dark' ? 'Light theme' : 'Dark theme'}
+          >
+            {theme === 'dark' ? <IconSun size={13} /> : <IconMoon size={13} />}
+          </button>
 
           {isBinView ? (
             binCount > 0 && (

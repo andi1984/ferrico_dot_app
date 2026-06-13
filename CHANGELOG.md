@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.7.0] - 2026-06-05
+
+### Features
+
+- sync download links + version from latest GitHub release
+
+### Bug Fixes
+
+- remove duplicate macOS window chrome, merge into header
+- replace placeholder green square with copper bookmark mark
+- show real app version in sidebar instead of hardcoded v0.1
+
+
+## [0.6.0] - 2026-06-05
+
+### Features
+
+- add single-page landing site for Ferrico
+
+### Bug Fixes
+
+- match app branding — text wordmark, no invented icon
+- stop two more sources of false-positive broken links
+- use browser-shaped User-Agent to avoid false broken links
+
+### Performance
+
+- batch health write-back, chunk tag IN-clause, drop id clones
+- isolate search box + faster sort to cut typing/navigation lag
+
+
+## [0.5.0] - 2026-06-04
+
+### Features
+
+- add AI chat panel for natural language bookmark search
+- subfolders — nested folder tree, drag-to-reparent, path imports
+
+### Bug Fixes
+
+- remove unused IconMessageCircle import
+- use rfd native file picker on Linux/WebKitGTK
+- remove setPointerCapture that broke drag in WKWebView
+- add mouse-event fallback for WebKitGTK drag
+
+
 ## [0.4.0] - 2026-05-31
 
 ### Features

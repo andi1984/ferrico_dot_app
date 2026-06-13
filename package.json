@@ -1,7 +1,26 @@
 {
   "name": "ferrico",
-  "version": "0.4.0",
+  "version": "0.7.0",
   "type": "module",
+  "description": "A fast, local-first desktop bookmark manager built with Tauri and React.",
+  "license": "GPL-3.0-or-later",
+  "author": "Andreas Sander <mail@andi1984.de>",
+  "homepage": "https://github.com/andi1984/ferrico_dot_app#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/andi1984/ferrico_dot_app.git"
+  },
+  "bugs": {
+    "url": "https://github.com/andi1984/ferrico_dot_app/issues"
+  },
+  "keywords": [
+    "bookmark-manager",
+    "bookmarks",
+    "tauri",
+    "react",
+    "local-first",
+    "desktop-app"
+  ],
   "scripts": {
     "dev": "vite",
     "build": "vite build",

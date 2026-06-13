@@ -4,6 +4,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { Sidebar } from './Sidebar'
 import type { SidebarProps } from './Sidebar'
 import { makeFolder, makeTag } from '../test-utils'
+import pkg from '../../package.json'
 
 function makeProps(overrides?: Partial<SidebarProps>): SidebarProps {
   return {
@@ -29,6 +30,11 @@ describe('Sidebar', () => {
     render(<Sidebar {...makeProps({ bookmarkCount: 42 })} />)
     expect(screen.getByText('All Bookmarks')).toBeInTheDocument()
     expect(screen.getByText('42')).toBeInTheDocument()
+  })
+
+  it('shows the current app version from package.json in the brand block', () => {
+    render(<Sidebar {...makeProps()} />)
+    expect(screen.getByText(new RegExp(`v${pkg.version}\\b`))).toBeInTheDocument()
   })
 
   it('marks All Bookmarks as active when selection is { type: all }', () => {

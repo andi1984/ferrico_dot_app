@@ -30,7 +30,7 @@ use db::{
     db_get_bookmark_count, db_get_bookmarks, db_get_folders, db_get_tags,
     db_related_tags,
     db_find_duplicate_bookmarks, db_merge_bookmark_duplicates,
-    db_update_bookmark_health,
+    db_update_bookmark_health_batch,
     db_get_bookmarks_without_cover, db_update_cover_url,
     now, open_db,
 };
@@ -1003,15 +1003,15 @@ async fn scan_broken_bookmarks(
         .ok();
     }
 
-    let mut broken = 0usize;
+    let broken = results.iter().filter(|r| r.is_broken).count();
+    // One transaction for the whole write-back instead of N auto-commits.
+    let updates: Vec<(String, bool, i64)> = results
+        .iter()
+        .map(|r| (r.id.clone(), r.is_broken, r.last_checked_at))
+        .collect();
     {
         let db = lock_db!(state);
-        for r in &results {
-            db_update_bookmark_health(&db, &r.id, r.is_broken, r.last_checked_at)?;
-            if r.is_broken {
-                broken += 1;
-            }
-        }
+        db_update_bookmark_health_batch(&db, &updates)?;
     }
 
     // Report how many bookmarks were actually checked (results.len()), not the original

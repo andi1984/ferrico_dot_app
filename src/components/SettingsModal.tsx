@@ -60,7 +60,9 @@ export function SettingsModal({ onClose, onClear, onDone, onImportCsv, onDedupli
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `ferrico-bookmarks.${fmt.ext}`
+      // ISO 8601 date (YYYY-MM-DD) keeps exports unique and chronologically sortable.
+      const date = new Date().toISOString().slice(0, 10)
+      a.download = `ferrico-bookmarks-${date}.${fmt.ext}`
       a.click()
       URL.revokeObjectURL(url)
     } finally {
