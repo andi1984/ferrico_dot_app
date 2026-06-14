@@ -4,11 +4,11 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Ferrico — A fast, local-first bookmark manager</title>
-<meta name="description" content="Ferrico is a fast, local-first desktop bookmark manager. Organize, search, and reclaim your bookmarks — stored locally in plain SQLite. No account, no cloud, no telemetry." />
+<meta name="description" content="Ferrico is a fast, local-first desktop bookmark manager. Organize, search, and reclaim your bookmarks — stored locally in plain SQLite. No account, no telemetry, with optional sync through your own Google Drive." />
 
 <meta property="og:type" content="website" />
 <meta property="og:title" content="Ferrico — A fast, local-first bookmark manager" />
-<meta property="og:description" content="Organize, search, and reclaim your bookmarks. All stored locally. No account, no cloud, no telemetry." />
+<meta property="og:description" content="Organize, search, and reclaim your bookmarks. Stored locally, with optional sync through your own Google Drive. No account, no telemetry." />
 <meta name="theme-color" content="#1c1a18" />
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -348,7 +348,7 @@ footer{border-top:1px solid var(--border-soft);padding:54px 0 60px}
     <div class="hero-copy">
       <span class="eyebrow">Local-first bookmark manager</span>
       <h1>Your bookmarks,<br>back in <span class="serif-italic">your hands.</span></h1>
-      <p class="lede">Ferrico is a fast, native desktop app that organizes, searches, and reclaims your bookmarks — all stored in a plain SQLite file on your machine. No account. No cloud. No telemetry.</p>
+      <p class="lede">Ferrico is a fast, native desktop app that organizes, searches, and reclaims your bookmarks — all stored in a plain SQLite file on your machine. No account. No telemetry. Optional sync through your own Google Drive.</p>
       <div class="cta">
         <a class="btn btn-primary" href="#download">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 19h16"/></svg>
@@ -420,6 +420,7 @@ footer{border-top:1px solid var(--border-soft);padding:54px 0 60px}
       <div class="card reveal"><div class="ci"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg></div><h3>Trash with retention</h3><p>Deleted bookmarks move to a bin and are kept for 30 days before they’re purged — so an accidental delete is never permanent.</p></div>
       <div class="card reveal"><div class="ci"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 7h8a4 4 0 010 8h-1M16 17H8a4 4 0 010-8h1"/></svg></div><h3>Dedupe &amp; mend</h3><p>Find and merge duplicate bookmarks, and scan your whole library for broken links — surfacing the dead pages so you can clean house.</p></div>
       <div class="card reveal"><div class="ci"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z"/></svg></div><h3>Browser extension</h3><p>Save the current page straight to your library from Chrome or Firefox, over a tiny local bridge — no third-party servers in the loop.</p></div>
+      <div class="card reveal"><div class="ci"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 18a4 4 0 01-.5-7.97 5.5 5.5 0 0110.6-1.06A4.5 4.5 0 0117 18z"/><path d="M12 11v6m0 0l-2-2m2 2l2-2"/></svg></div><h3>Optional cloud sync</h3><p>Keep several machines in sync through a folder in <em>your own</em> Google Drive — no Ferrico server, and scoped so the app only ever sees the files it creates. Off by default; opt in when you want it.</p></div>
     </div>
   </div>
 </section>
@@ -429,11 +430,11 @@ footer{border-top:1px solid var(--border-soft);padding:54px 0 60px}
   <div class="band-inner">
     <div class="wrap">
       <span class="eyebrow reveal">The whole point</span>
-      <h2 class="reveal" style="margin-top:18px">Most bookmark managers lock your data in a browser, or sync it to <em>someone else’s server.</em> Ferrico keeps everything on your machine.</h2>
+      <h2 class="reveal" style="margin-top:18px">Most bookmark managers lock your data in a browser, or sync it to <em>someone else’s server.</em> Ferrico keeps everything on your machine — and when you want sync, it runs through <em>your</em> Drive, not ours.</h2>
       <div class="triad">
         <div class="reveal"><b>Plain SQLite</b><p>Your entire library is one local database file you can read, back up, or move — no proprietary format, no lock-in.</p></div>
         <div class="reveal"><b>No account</b><p>Nothing to sign up for and nothing to log in to. Open the app and it’s already yours.</p></div>
-        <div class="reveal"><b>No telemetry</b><p>Ferrico doesn’t phone home. There’s no cloud, no tracking, and nothing leaves your computer.</p></div>
+        <div class="reveal"><b>No telemetry</b><p>Ferrico doesn’t phone home — no tracking, no analytics. Nothing leaves your computer unless you opt into Drive backup, and even then it’s your account, not ours.</p></div>
       </div>
     </div>
   </div>
