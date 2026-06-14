@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { subscribeToBookmarkAdded, subscribeToHealthCheckProgress, subscribeToCoverUpdated, type UnlistenFn } from './events'
+import { subscribeToBookmarkAdded, subscribeToHealthCheckProgress, subscribeToCoverUpdated, subscribeToBackupSync, type UnlistenFn } from './events'
 import type { Bookmark, Folder, Tag, Selection, ViewMode, SortKey, SidebarData } from './types'
 import { extractErrorMessage, duckduckgoFavicon, domainOf } from './utils'
 import { ContextMenu, type CtxMenuState } from './components/ContextMenu'
@@ -10,6 +10,7 @@ import { AddBookmarkModal } from './components/AddBookmarkModal'
 import { AddFolderModal } from './components/AddFolderModal'
 import { AddTagModal } from './components/AddTagModal'
 import { SettingsModal } from './components/SettingsModal'
+import { BackupSettingsModal } from './components/BackupSettingsModal'
 import { ImportCsvModal } from './components/ImportCsvModal'
 import { ImportModal } from './components/ImportModal'
 import { InboxSortModal } from './components/InboxSortModal'
@@ -27,7 +28,7 @@ type Theme = 'dark' | 'light'
 // src-tauri/src/db.rs — the backend is the source of truth and enforces it.
 const MAX_FOLDER_DEPTH = 3
 
-type Modal = 'add-bookmark' | 'add-folder' | 'add-tag' | 'settings' | 'import' | 'import-csv' | 'inbox-sort' | 'deduplicate' | null
+type Modal = 'add-bookmark' | 'add-folder' | 'add-tag' | 'settings' | 'backup-settings' | 'import' | 'import-csv' | 'inbox-sort' | 'deduplicate' | null
 
 type ScanProgress = { current: number; total: number }
 
@@ -318,6 +319,32 @@ export default function App() {
         else fn()
       })
       .catch((e) => console.error('[ferrico] cover-updated listener failed:', e))
+    return () => {
+      active = false
+      unlisten?.()
+    }
+  }, [])
+
+  // Google Drive backup sync. A `pull` that replaces local data refreshes the
+  // visible list; `backupSyncing` drives a small in-progress indicator. The
+  // listener reads `refresh` from the ref so it registers exactly once.
+  const [backupSyncing, setBackupSyncing] = useState(false)
+  useEffect(() => {
+    let active = true
+    let unlisten: UnlistenFn | undefined
+    subscribeToBackupSync({
+      onSyncing: () => setBackupSyncing(true),
+      onSynced: ({ op, changed }) => {
+        setBackupSyncing(false)
+        if (op === 'pull' && changed) refreshRef.current()
+      },
+      onError: () => setBackupSyncing(false),
+    })
+      .then((fn) => {
+        if (active) unlisten = fn
+        else fn()
+      })
+      .catch((e) => console.error('[ferrico] backup-sync listener failed:', e))
     return () => {
       active = false
       unlisten?.()
@@ -1011,6 +1038,13 @@ export default function App() {
           onDone={refresh}
           onImportCsv={() => { setModal('import-csv') }}
           onDeduplicate={() => setModal('deduplicate')}
+          onBackup={() => setModal('backup-settings')}
+        />
+      )}
+      {modal === 'backup-settings' && (
+        <BackupSettingsModal
+          onClose={() => setModal('settings')}
+          onDone={refresh}
         />
       )}
       {modal === 'import' && (
@@ -1045,6 +1079,20 @@ export default function App() {
       )}
 
       {ctxMenu && <ContextMenu state={ctxMenu} onClose={() => setCtxMenu(null)} />}
+
+      {/* Cloud backup sync indicator */}
+      {backupSyncing && (
+        <div
+          className="fixed bottom-4 right-4 z-[90] flex items-center gap-2 rounded-lg px-3 py-2 shadow-lg text-xs"
+          style={{ background: 'var(--bg-elev-strong)', border: '1px solid var(--border-soft)', color: 'var(--text-2)' }}
+        >
+          <span
+            className="inline-block w-3 h-3 rounded-full border-2 animate-spin flex-none"
+            style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }}
+          />
+          Syncing backup…
+        </div>
+      )}
 
       {/* Drag ghost — follows the pointer while dragging a bookmark. */}
       {drag.state.active && drag.state.payload && (

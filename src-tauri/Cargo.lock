@@ -1172,9 +1172,10 @@ dependencies = [
 
 [[package]]
 name = "ferrico"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "dirs 5.0.1",
  "nucleo-matcher",
  "open",
@@ -1185,6 +1186,7 @@ dependencies = [
  "scraper",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "thiserror 1.0.69",

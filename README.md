@@ -22,11 +22,12 @@ Most bookmark managers either lock your data in a browser or sync it to someone 
 
 ## Features
 
-- 📚 **Local-first** — all data lives in a local SQLite file. No account, no telemetry, no cloud.
+- 📚 **Local-first** — all data lives in a local SQLite file. No account, no telemetry, and no cloud unless you opt into Drive backup.
 - 🗂️ **Organize** — hierarchical folders, tags with counts, and an Inbox tray for triage.
 - 🔍 **Fast fuzzy search** — search across title, URL, and page body, even in large libraries (virtualized list/grid).
 - ♻️ **Trash with retention** — deleted bookmarks move to a bin and are kept for 30 days before purging.
 - 🔁 **Import / export** — symmetric support for JSON, Netscape HTML, OPML, and CSV.
+- ☁️ **Optional cloud sync** — mirror your library through *your own* Google Drive folder to keep multiple machines in sync. No Ferrico server; `drive.file` scope only (Ferrico sees only the files it creates).
 - 🧹 **Duplicate detection** — find and merge duplicate bookmarks.
 - 🔗 **Broken-link detection** — scan your library and surface dead links.
 - 🤖 **Optional AI features** — natural-language search, automatic Inbox sorting, CSV column mapping, and duplicate-resolution suggestions, powered by your local [Claude CLI](#ai-features-optional).
@@ -98,6 +99,19 @@ Ferrico stores everything in a single SQLite database under your platform's data
 | Windows | `%APPDATA%\ferrico\ferrico.db` |
 
 To start fresh, quit Ferrico and delete that file (or use **Clear all data** in the app's danger zone).
+
+## Cloud backup & sync (optional)
+
+Ferrico is local-first, but you can optionally mirror your library through **your own Google Drive** so several machines stay in sync. There is no Ferrico-operated server: backups live in a folder *in your Drive*, written by an OAuth app *you* create, and only that app can read them.
+
+**How it works**
+
+- The lossless JSON export is stored as a single `ferrico-backup.json` in a Drive folder you pick.
+- **On launch**, Ferrico pulls the latest snapshot; **before close** (and optionally on a timer) it pushes the current state.
+- Conflict resolution is **full-snapshot last-write-wins**, using Drive's server-side `modifiedTime` as the clock (so it survives clock skew between machines). If two machines edit while *both* are offline, whichever syncs last wins — this is intended for one-machine-at-a-time use, not a CRDT-style merge.
+- The OAuth scope is [`drive.file`](https://developers.google.com/drive/api/guides/api-specific-auth): Ferrico can only ever see files it created, never the rest of your Drive. Your client ID, secret, and refresh token are stored locally in `settings.json`, never transmitted to anyone but Google.
+
+Setup needs a one-time, free Google OAuth client. Full walkthrough (Google Cloud setup, in-app config, multi-machine setup, and troubleshooting) is in **[docs/google-drive-backup.md](docs/google-drive-backup.md)**. Once configured, manage it under **Settings → Cloud Backup**.
 
 ## Development
 

@@ -5,6 +5,7 @@
 
 mod db;
 mod error;
+mod gdrive;
 mod health_check;
 mod io;
 mod io_validate;
@@ -42,7 +43,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use rusqlite::Connection;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tower_http::cors::{Any, CorsLayer};
 
 // ─── App State ────────────────────────────────────────────────────────────────
@@ -872,6 +873,90 @@ fn load_or_create_token(data_dir: &Path) -> String {
     token
 }
 
+// ─── Google Drive Backup commands ──────────────────────────────────────────────
+//
+// Thin wrappers over `gdrive::BackupEngine` (held in managed state). Network-bound
+// operations are `async`; pure config edits stay sync.
+
+#[tauri::command]
+fn backup_status(engine: State<'_, gdrive::BackupEngine>) -> Result<gdrive::BackupStatus, AppError> {
+    engine.status()
+}
+
+#[tauri::command]
+fn backup_set_credentials(
+    client_id: String,
+    client_secret: String,
+    engine: State<'_, gdrive::BackupEngine>,
+) -> Result<gdrive::BackupStatus, AppError> {
+    engine.set_credentials(client_id, client_secret)
+}
+
+#[tauri::command]
+async fn backup_connect(
+    engine: State<'_, gdrive::BackupEngine>,
+) -> Result<gdrive::BackupStatus, AppError> {
+    let engine = engine.inner().clone();
+    engine.connect().await
+}
+
+#[tauri::command]
+fn backup_disconnect(
+    engine: State<'_, gdrive::BackupEngine>,
+) -> Result<gdrive::BackupStatus, AppError> {
+    engine.disconnect()
+}
+
+#[tauri::command]
+async fn backup_list_folders(
+    engine: State<'_, gdrive::BackupEngine>,
+) -> Result<Vec<gdrive::DriveFolder>, AppError> {
+    let engine = engine.inner().clone();
+    engine.list_folders().await
+}
+
+#[tauri::command]
+async fn backup_create_folder(
+    name: String,
+    engine: State<'_, gdrive::BackupEngine>,
+) -> Result<gdrive::DriveFolder, AppError> {
+    let engine = engine.inner().clone();
+    engine.create_folder(name).await
+}
+
+#[tauri::command]
+fn backup_select_folder(
+    folder_id: String,
+    folder_name: String,
+    engine: State<'_, gdrive::BackupEngine>,
+) -> Result<gdrive::BackupStatus, AppError> {
+    engine.select_folder(folder_id, folder_name)
+}
+
+#[tauri::command]
+fn backup_set_enabled(
+    enabled: bool,
+    engine: State<'_, gdrive::BackupEngine>,
+) -> Result<gdrive::BackupStatus, AppError> {
+    engine.set_enabled(enabled)
+}
+
+#[tauri::command]
+fn backup_set_interval(
+    interval_min: u64,
+    engine: State<'_, gdrive::BackupEngine>,
+) -> Result<gdrive::BackupStatus, AppError> {
+    engine.set_interval(interval_min)
+}
+
+#[tauri::command]
+async fn backup_sync_now(
+    engine: State<'_, gdrive::BackupEngine>,
+) -> Result<gdrive::BackupStatus, AppError> {
+    let engine = engine.inner().clone();
+    engine.sync_now().await
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -892,7 +977,52 @@ fn main() {
         .setup(move |app| {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(start_http_server(db.clone(), api_token.clone(), handle.clone()));
-            tauri::async_runtime::spawn(background_cover_scanner(db.clone(), handle));
+            tauri::async_runtime::spawn(background_cover_scanner(db.clone(), handle.clone()));
+
+            // ── Google Drive backup engine + lifecycle wiring ──
+            let engine = gdrive::BackupEngine::new(db.clone(), data_dir.clone(), handle.clone());
+            app.manage(engine.clone());
+
+            // Pull-and-replace on open: wait briefly for the UI to mount, then
+            // reconcile down from Drive. The engine emits `backup-synced` so the
+            // frontend refreshes once the local DB has been replaced.
+            {
+                let engine = engine.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    engine.pull_if_active().await;
+                });
+            }
+
+            // Periodic autosave push.
+            tauri::async_runtime::spawn(engine.clone().run_autosave());
+
+            // Push-before-close: intercept the main window close, hold it open
+            // while the final backup uploads, then close for real. The atomic
+            // guard prevents the re-entrant CloseRequested (from `win.close()`)
+            // from looping.
+            if let Some(window) = app.get_webview_window("main") {
+                let engine = engine.clone();
+                let win = window.clone();
+                let closing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        use std::sync::atomic::Ordering;
+                        if closing.load(Ordering::SeqCst) || !engine.is_active() {
+                            return; // second pass, or nothing to back up — let it close
+                        }
+                        closing.store(true, Ordering::SeqCst);
+                        api.prevent_close();
+                        let engine = engine.clone();
+                        let win = win.clone();
+                        tauri::async_runtime::spawn(async move {
+                            engine.push_if_active().await;
+                            let _ = win.close();
+                        });
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -942,6 +1072,16 @@ fn main() {
             pick_csv_file,
             pick_import_file,
             ai_search,
+            backup_status,
+            backup_set_credentials,
+            backup_connect,
+            backup_disconnect,
+            backup_list_folders,
+            backup_create_folder,
+            backup_select_folder,
+            backup_set_enabled,
+            backup_set_interval,
+            backup_sync_now,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
