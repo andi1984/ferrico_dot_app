@@ -9,6 +9,7 @@ mod gdrive;
 mod health_check;
 mod io;
 mod io_validate;
+mod merge;
 mod og_image;
 
 use axum::{
