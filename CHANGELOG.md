@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0] - 2026-06-14
+
+### Features
+
+- Google Drive cloud backup & multi-machine sync
+
+
 ## [0.8.0] - 2026-06-13
 
 ### Features
