@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { ModalShell, FieldLabel } from './ModalShell'
-import { IconExport, IconImport, IconLayers } from './icons'
+import { IconExport, IconImport, IconLayers, IconRestore } from './icons'
 
 interface ImportResult {
   imported: number
@@ -31,9 +31,10 @@ export interface SettingsModalProps {
   onDone: () => void
   onImportCsv: () => void
   onDeduplicate: () => void
+  onBackup: () => void
 }
 
-export function SettingsModal({ onClose, onClear, onDone, onImportCsv, onDeduplicate }: SettingsModalProps) {
+export function SettingsModal({ onClose, onClear, onDone, onImportCsv, onDeduplicate, onBackup }: SettingsModalProps) {
   const [token, setToken] = useState('')
   const [copied, setCopied] = useState(false)
   const [confirmClear, setConfirmClear] = useState(false)
@@ -150,6 +151,29 @@ export function SettingsModal({ onClose, onClear, onDone, onImportCsv, onDedupli
               {copied ? 'Copied!' : 'Copy'}
             </button>
           </div>
+        </div>
+
+        {/* Cloud Backup */}
+        <div style={{ borderTop: '1px solid var(--border-dim)', paddingTop: '1.5rem' }}>
+          <FieldLabel>Cloud Backup</FieldLabel>
+          <p className="text-xs mb-3" style={{ color: 'var(--text-secondary)' }}>
+            Sync your bookmarks through a Google Drive folder. Pulls on launch and backs up
+            before close, so multiple machines stay in sync.
+          </p>
+          <button
+            onClick={onBackup}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-all duration-150 cursor-pointer"
+            style={{
+              background: 'var(--bg-elevated)',
+              border: '1px solid var(--border-mid)',
+              color: 'var(--text-secondary)',
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--border-bright)')}
+            onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--border-mid)')}
+          >
+            <IconRestore size={13} />
+            Configure Google Drive…
+          </button>
         </div>
 
         {/* Import & Export */}

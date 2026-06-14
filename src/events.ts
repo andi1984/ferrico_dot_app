@@ -29,3 +29,24 @@ export async function subscribeToCoverUpdated(
 ): Promise<UnlistenFn> {
   return listen<CoverUpdated>('cover-updated', (e) => handler(e.payload))
 }
+
+// ─── Google Drive backup sync ──────────────────────────────────────────────────
+
+export type BackupSyncStart = { op: 'pull' | 'push' }
+export type BackupSyncDone = { op: 'pull' | 'push'; changed: boolean }
+export type BackupSyncError = { op: 'pull' | 'push'; message: string }
+
+/** Subscribes to the backup lifecycle events. Returns a single unlisten that
+ *  tears down all three listeners. */
+export async function subscribeToBackupSync(handlers: {
+  onSyncing?: (p: BackupSyncStart) => void
+  onSynced?: (p: BackupSyncDone) => void
+  onError?: (p: BackupSyncError) => void
+}): Promise<UnlistenFn> {
+  const unlistens = await Promise.all([
+    listen<BackupSyncStart>('backup-syncing', (e) => handlers.onSyncing?.(e.payload)),
+    listen<BackupSyncDone>('backup-synced', (e) => handlers.onSynced?.(e.payload)),
+    listen<BackupSyncError>('backup-error', (e) => handlers.onError?.(e.payload)),
+  ])
+  return () => unlistens.forEach((fn) => fn())
+}

@@ -14,6 +14,9 @@ pub enum AppError {
 
     #[error("validation: {message}")]
     Validation { message: String },
+
+    #[error("backup: {message}")]
+    Backup { message: String },
 }
 
 impl From<rusqlite::Error> for AppError {

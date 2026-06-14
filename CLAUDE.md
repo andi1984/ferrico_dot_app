@@ -61,7 +61,19 @@ Blocked on this machine — requires macOS 13+ and Xcode 15.3. Current OS is mac
 - All DB logic lives in `src-tauri/src/db.rs` — pure functions taking `&Connection`
 - Tauri commands in `main.rs` are thin wrappers: lock mutex → call `db::*` function → return
 - Error type: `AppError` in `src-tauri/src/error.rs` — discriminated union `#[serde(tag = "name")]`
-  serializes as `{ name: "Db" | "Lock" | "NotFound" | "Validation", message: "..." }` to frontend
+  serializes as `{ name: "Db" | "Lock" | "NotFound" | "Validation" | "Backup", message: "..." }` to frontend
+
+### Google Drive backup (`src-tauri/src/gdrive.rs`)
+
+- Optional cloud sync via the user's own Drive. OAuth2 PKCE + loopback flow,
+  Drive v3 REST, and a `BackupEngine` that does full-snapshot **last-write-wins**
+  (clock = remote file `modifiedTime`). Backup file = `export_json` output.
+- Config (client id/secret, refresh token, folder, `last_sync`) is persisted under
+  the `"backup"` key in `settings.json`, merged so `api_token` is preserved.
+- `backup_*` commands in `main.rs` wrap the engine; `setup()` wires the lifecycle:
+  open-pull, periodic autosave, and a `CloseRequested` handler that pushes before
+  the window closes. Frontend UI: `src/components/BackupSettingsModal.tsx`.
+- User/contributor docs: `docs/google-drive-backup.md`.
 
 ## Testing
 
