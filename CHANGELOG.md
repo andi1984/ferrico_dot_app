@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.10.0] - 2026-06-15
+
+### Features
+
+- tombstones for folders/tags + sync snapshot bridge
+- add pure per-record merge engine
+
+### Bug Fixes
+
+- merge-reconcile Drive sync instead of blind overwrite
+
+
 ## [0.9.0] - 2026-06-14
 
 ### Features
