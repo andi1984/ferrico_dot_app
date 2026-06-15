@@ -139,6 +139,62 @@ pub fn export_json(conn: &Connection) -> Result<String, AppError> {
     })
 }
 
+/// Convert a legacy v1 export (active rows only, no tombstones) into a merge
+/// `SyncSnapshot`, so an existing Drive backup written by the pre-merge build
+/// upgrades cleanly the first time a merge-aware client syncs. Folder/tag
+/// `updated_at` fall back to `created_at`; nothing is marked deleted (v1 never
+/// carried tombstones) and covers are absent from v1.
+pub fn legacy_export_to_snapshot(json: &str) -> Result<crate::merge::SyncSnapshot, AppError> {
+    let json = crate::io_validate::strip_bom(json);
+    let export: JsonExport = serde_json::from_str(json).map_err(|e| AppError::Validation {
+        message: format!("invalid JSON: {e}"),
+    })?;
+    Ok(crate::merge::SyncSnapshot {
+        folders: export
+            .folders
+            .into_iter()
+            .map(|f| crate::merge::SyncFolder {
+                id: f.id,
+                name: f.name,
+                parent_id: f.parent_id,
+                created_at: f.created_at,
+                updated_at: f.created_at,
+                deleted_at: None,
+            })
+            .collect(),
+        tags: export
+            .tags
+            .into_iter()
+            .map(|t| crate::merge::SyncTag {
+                id: t.id,
+                name: t.name,
+                color: t.color,
+                created_at: t.created_at,
+                updated_at: t.created_at,
+                deleted_at: None,
+            })
+            .collect(),
+        bookmarks: export
+            .bookmarks
+            .into_iter()
+            .map(|b| crate::merge::SyncBookmark {
+                id: b.id,
+                url: b.url,
+                title: b.title,
+                description: b.description,
+                favicon_url: b.favicon_url,
+                feed_url: b.feed_url,
+                cover_url: None,
+                folder_id: b.folder_id,
+                tag_ids: b.tag_ids,
+                created_at: b.created_at,
+                updated_at: b.updated_at,
+                deleted_at: None,
+            })
+            .collect(),
+    })
+}
+
 /// Import a JSON export. Single transaction: folders → tags → bookmarks.
 /// Existing URLs are skipped silently (merge-safe).
 pub fn import_json(conn: &Connection, json: &str) -> Result<ImportResult, AppError> {

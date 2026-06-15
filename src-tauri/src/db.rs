@@ -242,6 +242,48 @@ pub fn init_schema(conn: &Connection) -> Result<(), AppError> {
         conn.execute("ALTER TABLE bookmarks ADD COLUMN cover_url TEXT", [])?;
     }
 
+    // Migration: per-record sync (multi-machine merge) needs an `updated_at`
+    // clock and a `deleted_at` tombstone on folders and tags too — bookmarks
+    // already carry both. Additive + idempotent. Existing rows backfill
+    // `updated_at` from `created_at` so the merge has a clock to compare; a
+    // freshly-migrated DB therefore loses no races against a remote that has
+    // genuinely newer edits.
+    for table in ["folders", "tags"] {
+        let has_updated_at: bool = conn
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name='updated_at'"
+                ),
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !has_updated_at {
+            conn.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0"),
+                [],
+            )?;
+            conn.execute(
+                &format!("UPDATE {table} SET updated_at = created_at WHERE updated_at = 0"),
+                [],
+            )?;
+        }
+        let has_deleted_at: bool = conn
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name='deleted_at'"
+                ),
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !has_deleted_at {
+            conn.execute(&format!("ALTER TABLE {table} ADD COLUMN deleted_at INTEGER"), [])?;
+        }
+    }
+
     Ok(())
 }
 
@@ -311,7 +353,8 @@ fn get_tags_batch(
         let sql = format!(
             "SELECT bt.bookmark_id, t.id, t.name, t.color, t.created_at \
              FROM tags t JOIN bookmark_tags bt ON bt.tag_id = t.id \
-             WHERE bt.bookmark_id IN ({placeholders}) ORDER BY t.name"
+             WHERE bt.bookmark_id IN ({placeholders}) AND t.deleted_at IS NULL \
+             ORDER BY t.name"
         );
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params_from_iter(chunk.iter().copied()), |row| {
@@ -839,8 +882,10 @@ pub fn db_import_bookmarks(
 }
 
 pub fn db_get_folders(conn: &Connection) -> Result<Vec<Folder>, AppError> {
-    let mut stmt =
-        conn.prepare("SELECT id, name, parent_id, created_at FROM folders ORDER BY name")?;
+    let mut stmt = conn.prepare(
+        "SELECT id, name, parent_id, created_at FROM folders \
+         WHERE deleted_at IS NULL ORDER BY name",
+    )?;
     let folders = stmt
         .query_map([], |row| {
             Ok(Folder {
@@ -934,7 +979,8 @@ pub fn db_add_folder(
     let id = Uuid::new_v4().to_string();
     let ts = now();
     conn.execute(
-        "INSERT INTO folders (id, name, parent_id, created_at) VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO folders (id, name, parent_id, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?4)",
         params![id, name, parent_id, ts],
     )?;
     Ok(Folder { id, name, parent_id, created_at: ts })
@@ -950,7 +996,11 @@ pub fn db_move_folder(
     new_parent_id: Option<&str>,
 ) -> Result<(), AppError> {
     let exists: bool = conn
-        .query_row("SELECT 1 FROM folders WHERE id = ?1", params![id], |_| Ok(()))
+        .query_row(
+            "SELECT 1 FROM folders WHERE id = ?1 AND deleted_at IS NULL",
+            params![id],
+            |_| Ok(()),
+        )
         .optional()?
         .is_some();
     if !exists {
@@ -962,7 +1012,11 @@ pub fn db_move_folder(
             return Err(AppError::Validation { message: "a folder cannot be its own parent".into() });
         }
         let parent_exists: bool = conn
-            .query_row("SELECT 1 FROM folders WHERE id = ?1", params![pid], |_| Ok(()))
+            .query_row(
+                "SELECT 1 FROM folders WHERE id = ?1 AND deleted_at IS NULL",
+                params![pid],
+                |_| Ok(()),
+            )
             .optional()?
             .is_some();
         if !parent_exists {
@@ -985,16 +1039,64 @@ pub fn db_move_folder(
     }
 
     conn.execute(
-        "UPDATE folders SET parent_id = ?1 WHERE id = ?2",
-        params![new_parent_id, id],
+        "UPDATE folders SET parent_id = ?1, updated_at = ?2 WHERE id = ?3",
+        params![new_parent_id, now(), id],
     )?;
     Ok(())
 }
 
+/// Soft-delete a folder and its whole subtree, detaching their bookmarks.
+///
+/// Folders used to be hard-deleted, leaning on `ON DELETE CASCADE` (subfolders)
+/// and `ON DELETE SET NULL` (bookmarks). Per-record sync needs the deletion to
+/// *propagate*, so it must leave a tombstone instead of vanishing — which also
+/// means the cascade has to be reproduced by hand: tombstone every descendant
+/// folder and move their bookmarks back to the inbox, bumping `updated_at`
+/// everywhere so the merge carries the change to the other machines.
 pub fn db_delete_folder(conn: &Connection, id: &str) -> Result<(), AppError> {
-    let n = conn.execute("DELETE FROM folders WHERE id = ?1", params![id])?;
-    if n == 0 {
+    let exists: bool = conn
+        .query_row(
+            "SELECT 1 FROM folders WHERE id = ?1 AND deleted_at IS NULL",
+            params![id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if !exists {
         return Err(AppError::NotFound { message: format!("folder {id}") });
+    }
+
+    let ts = now();
+    // Collect the subtree (self + descendants) via a breadth-first walk, bounded
+    // by the schema's max depth so a corrupt cycle can't loop forever.
+    let mut subtree = vec![id.to_string()];
+    let mut frontier = vec![id.to_string()];
+    for _ in 0..=MAX_FOLDER_DEPTH {
+        let mut next = Vec::new();
+        for fid in &frontier {
+            let children: Vec<String> = conn
+                .prepare("SELECT id FROM folders WHERE parent_id = ?1 AND deleted_at IS NULL")?
+                .query_map(params![fid], |r| r.get(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            next.extend(children);
+        }
+        if next.is_empty() {
+            break;
+        }
+        subtree.extend(next.iter().cloned());
+        frontier = next;
+    }
+
+    for fid in &subtree {
+        conn.execute(
+            "UPDATE bookmarks SET folder_id = NULL, updated_at = ?1 \
+             WHERE folder_id = ?2 AND deleted_at IS NULL",
+            params![ts, fid],
+        )?;
+        conn.execute(
+            "UPDATE folders SET deleted_at = ?1, updated_at = ?1 WHERE id = ?2",
+            params![ts, fid],
+        )?;
     }
     Ok(())
 }
@@ -1035,6 +1137,7 @@ pub fn db_get_tags(conn: &Connection) -> Result<Vec<Tag>, AppError> {
          COUNT(bt.bookmark_id) as bookmark_count \
          FROM tags t \
          LEFT JOIN bookmark_tags bt ON bt.tag_id = t.id \
+         WHERE t.deleted_at IS NULL \
          GROUP BY t.id \
          ORDER BY t.name",
     )?;
@@ -1082,6 +1185,7 @@ pub fn db_related_tags(
          JOIN tags t ON t.id = bt_other.tag_id \
          WHERE bt_in.tag_id IN ({placeholders}) \
            AND bt_other.tag_id NOT IN ({placeholders}) \
+           AND t.deleted_at IS NULL \
          GROUP BY t.id \
          ORDER BY cooccur DESC, t.name \
          LIMIT ?{limit_ph}"
@@ -1119,8 +1223,18 @@ pub fn db_add_tag(
     let id = Uuid::new_v4().to_string();
     let ts = now();
     conn.execute(
-        "INSERT OR IGNORE INTO tags (id, name, color, created_at) VALUES (?1, ?2, ?3, ?4)",
+        "INSERT OR IGNORE INTO tags (id, name, color, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?4)",
         params![id, name, color, ts],
+    )?;
+    // A previously soft-deleted tag of the same name still holds the UNIQUE(name)
+    // slot, so the insert above is ignored and the SELECT would otherwise return
+    // a tombstone. Revive it (clear the tombstone, bump the clock) so re-adding a
+    // deleted tag behaves like creating it — and the resurrection syncs out too.
+    conn.execute(
+        "UPDATE tags SET deleted_at = NULL, updated_at = ?1 \
+         WHERE name = ?2 AND deleted_at IS NOT NULL",
+        params![ts, name],
     )?;
     // SELECT after INSERT OR IGNORE so we always return the actual record (handles name conflict)
     Ok(conn.query_row(
@@ -1151,7 +1265,15 @@ pub(crate) fn db_add_tag_with_color(
 }
 
 pub fn db_delete_tag(conn: &Connection, id: &str) -> Result<(), AppError> {
-    let n = conn.execute("DELETE FROM tags WHERE id = ?1", params![id])?;
+    // Soft-delete (tombstone) so the deletion propagates through per-record sync
+    // instead of silently vanishing on one machine. The `bookmark_tags` junction
+    // rows are left in place; every read filters dead tags out, and a merge
+    // matches tags by id, so the tombstone is all the other machines need.
+    let ts = now();
+    let n = conn.execute(
+        "UPDATE tags SET deleted_at = ?1, updated_at = ?1 WHERE id = ?2 AND deleted_at IS NULL",
+        params![ts, id],
+    )?;
     if n == 0 {
         return Err(AppError::NotFound { message: format!("tag {id}") });
     }
@@ -1166,6 +1288,158 @@ pub fn db_clear_all_data(conn: &Connection) -> Result<(), AppError> {
          DELETE FROM tags;
          DELETE FROM folders;",
     )?;
+    Ok(())
+}
+
+// ─── Per-record sync snapshot (multi-machine merge) ─────────────────────────────
+
+/// Read the whole database — INCLUDING soft-deleted tombstones — as a
+/// `SyncSnapshot` for the merge engine. Unlike the user-facing JSON export
+/// (`io::export_json`, active rows only, deduped by URL), tombstones MUST travel
+/// so deletions propagate to the other machines.
+pub fn db_export_sync_snapshot(conn: &Connection) -> Result<crate::merge::SyncSnapshot, AppError> {
+    let folders = conn
+        .prepare("SELECT id, name, parent_id, created_at, updated_at, deleted_at FROM folders")?
+        .query_map([], |r| {
+            Ok(crate::merge::SyncFolder {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                parent_id: r.get(2)?,
+                created_at: r.get(3)?,
+                updated_at: r.get(4)?,
+                deleted_at: r.get(5)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let tags = conn
+        .prepare("SELECT id, name, color, created_at, updated_at, deleted_at FROM tags")?
+        .query_map([], |r| {
+            Ok(crate::merge::SyncTag {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                color: r.get(2)?,
+                created_at: r.get(3)?,
+                updated_at: r.get(4)?,
+                deleted_at: r.get(5)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // tag_ids per bookmark — every association (apply-time drops dead/absent tags).
+    let mut tags_by_bookmark: HashMap<String, Vec<String>> = HashMap::new();
+    {
+        let mut stmt = conn.prepare("SELECT bookmark_id, tag_id FROM bookmark_tags")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        for row in rows {
+            let (bid, tid) = row?;
+            tags_by_bookmark.entry(bid).or_default().push(tid);
+        }
+    }
+
+    let bookmarks = conn
+        .prepare(
+            "SELECT id, url, title, description, favicon_url, feed_url, cover_url, folder_id, \
+                    created_at, updated_at, deleted_at FROM bookmarks",
+        )?
+        .query_map([], |r| {
+            Ok(crate::merge::SyncBookmark {
+                id: r.get(0)?,
+                url: r.get(1)?,
+                title: r.get(2)?,
+                description: r.get(3)?,
+                favicon_url: r.get(4)?,
+                feed_url: r.get(5)?,
+                cover_url: r.get(6)?,
+                folder_id: r.get(7)?,
+                tag_ids: Vec::new(),
+                created_at: r.get(8)?,
+                updated_at: r.get(9)?,
+                deleted_at: r.get(10)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(|mut b| {
+            if let Some(ids) = tags_by_bookmark.remove(&b.id) {
+                b.tag_ids = ids;
+            }
+            b
+        })
+        .collect();
+
+    Ok(crate::merge::SyncSnapshot { folders, tags, bookmarks })
+}
+
+/// Replace the entire database with a merged `SyncSnapshot`, in one transaction.
+/// Tombstones are written too, so future merges still observe the deletions.
+///
+/// Two schema realities are handled here:
+/// * `tags.name` is UNIQUE across *all* rows (the inline constraint can't be made
+///   partial without a table rebuild), yet a legitimate merge can yield a live
+///   tag and a dead tag sharing a name. Dead tags are stored with their name set
+///   to their id — unique, and never displayed (every read filters tombstones).
+/// * a bookmark may point at a folder the merge tombstoned/omitted, or carry a
+///   tag_id that resolved to a tombstone; those references are dropped so the
+///   foreign keys and the "no dead tags on a bookmark" invariant both hold.
+pub fn db_apply_sync_snapshot(
+    conn: &Connection,
+    snap: &crate::merge::SyncSnapshot,
+) -> Result<(), AppError> {
+    use std::collections::HashSet;
+    let live_tag_ids: HashSet<&str> = snap
+        .tags
+        .iter()
+        .filter(|t| t.deleted_at.is_none())
+        .map(|t| t.id.as_str())
+        .collect();
+    let folder_ids: HashSet<&str> = snap.folders.iter().map(|f| f.id.as_str()).collect();
+
+    let tx = conn.unchecked_transaction()?;
+    db_clear_all_data(&tx)?;
+
+    for f in &snap.folders {
+        tx.execute(
+            "INSERT INTO folders (id, name, parent_id, created_at, updated_at, deleted_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![f.id, f.name, f.parent_id, f.created_at, f.updated_at, f.deleted_at],
+        )?;
+    }
+
+    for t in &snap.tags {
+        // Dead tag → store its id as the name to dodge UNIQUE(name); it's hidden.
+        let name = if t.deleted_at.is_some() { &t.id } else { &t.name };
+        tx.execute(
+            "INSERT INTO tags (id, name, color, created_at, updated_at, deleted_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![t.id, name, t.color, t.created_at, t.updated_at, t.deleted_at],
+        )?;
+    }
+
+    for b in &snap.bookmarks {
+        // Drop a folder reference the merge didn't carry (e.g. folder tombstoned
+        // on another machine) so the FK holds and the bookmark falls to the inbox.
+        let folder_id = b.folder_id.as_deref().filter(|fid| folder_ids.contains(fid));
+        tx.execute(
+            "INSERT INTO bookmarks (id, url, title, description, favicon_url, feed_url, \
+                                    cover_url, folder_id, created_at, updated_at, deleted_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                b.id, b.url, b.title, b.description, b.favicon_url, b.feed_url, b.cover_url,
+                folder_id, b.created_at, b.updated_at, b.deleted_at
+            ],
+        )?;
+        for tid in &b.tag_ids {
+            if live_tag_ids.contains(tid.as_str()) {
+                tx.execute(
+                    "INSERT OR IGNORE INTO bookmark_tags (bookmark_id, tag_id) VALUES (?1, ?2)",
+                    params![b.id, tid],
+                )?;
+            }
+        }
+    }
+
+    tx.commit()?;
     Ok(())
 }
 
@@ -2072,7 +2346,11 @@ mod tests {
     }
 
     #[test]
-    fn delete_tag_cascades_bookmark_tags() {
+    fn delete_tag_soft_deletes_and_hides_it() {
+        // Per-record sync changed tag deletion from a hard `DELETE` (which
+        // cascaded the junction rows away) to a tombstone, so the deletion can
+        // propagate to other machines. The junction rows now persist; the
+        // contract is that the tag becomes invisible everywhere instead.
         let conn = mem();
         let tag = mk_tag(&conn, "rust");
         db_add_bookmark(
@@ -2091,10 +2369,18 @@ mod tests {
 
         db_delete_tag(&conn, &tag.id).unwrap();
 
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM bookmark_tags", [], |r| r.get(0))
+        // Row remains but carries a tombstone.
+        let deleted_at: Option<i64> = conn
+            .query_row("SELECT deleted_at FROM tags WHERE id = ?1", params![tag.id], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, 0);
+        assert!(deleted_at.is_some(), "tag should be tombstoned, not removed");
+
+        // Gone from the tag list...
+        assert!(db_get_tags(&conn).unwrap().iter().all(|t| t.id != tag.id));
+
+        // ...and stripped from the bookmark's enriched tags.
+        let bms = db_get_bookmarks(&conn, None, None, None, false).unwrap();
+        assert!(bms[0].tags.iter().all(|t| t.id != tag.id));
     }
 
     #[test]
@@ -2102,6 +2388,131 @@ mod tests {
         let conn = mem();
         let err = db_delete_tag(&conn, "nonexistent").unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
+    }
+
+    // ── per-record sync snapshot bridge ──────────────────────────────────────
+
+    fn add_bm(conn: &Connection, url: &str, tag_ids: Option<Vec<String>>, folder: Option<String>) -> Bookmark {
+        db_add_bookmark(
+            conn,
+            CreateBookmarkInput {
+                url: url.to_string(),
+                title: url.to_string(),
+                description: None,
+                favicon_url: None,
+                feed_url: None,
+                folder_id: folder,
+                tag_ids,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn sync_snapshot_round_trips_through_db() {
+        let conn = mem();
+        let folder = db_add_folder(&conn, "Reading".into(), None).unwrap();
+        let tag = mk_tag(&conn, "rust");
+        add_bm(&conn, "https://a.test", Some(vec![tag.id.clone()]), Some(folder.id.clone()));
+
+        let snap = db_export_sync_snapshot(&conn).unwrap();
+
+        // Apply the snapshot into a *fresh* DB and re-export — the data survives.
+        let conn2 = mem();
+        db_apply_sync_snapshot(&conn2, &snap).unwrap();
+        let snap2 = db_export_sync_snapshot(&conn2).unwrap();
+
+        assert_eq!(snap2.folders.len(), 1);
+        assert_eq!(snap2.tags.len(), 1);
+        assert_eq!(snap2.bookmarks.len(), 1);
+        let b = &snap2.bookmarks[0];
+        assert_eq!(b.url, "https://a.test");
+        assert_eq!(b.folder_id.as_deref(), Some(folder.id.as_str()));
+        assert_eq!(b.tag_ids, vec![tag.id.clone()]);
+    }
+
+    #[test]
+    fn sync_apply_preserves_tombstones_but_hides_them() {
+        let conn = mem();
+        let tag = mk_tag(&conn, "rust");
+        add_bm(&conn, "https://a.test", Some(vec![tag.id.clone()]), None);
+        db_delete_tag(&conn, &tag.id).unwrap(); // tombstone
+
+        let snap = db_export_sync_snapshot(&conn).unwrap();
+        assert_eq!(snap.tags.len(), 1, "tombstone travels in the snapshot");
+        assert!(snap.tags[0].deleted_at.is_some());
+
+        let conn2 = mem();
+        db_apply_sync_snapshot(&conn2, &snap).unwrap();
+        // Hidden in the UI...
+        assert!(db_get_tags(&conn2).unwrap().is_empty());
+        // ...but still present as a tombstone so the deletion can't be undone by
+        // a stale machine re-adding the row in a later merge.
+        let reexport = db_export_sync_snapshot(&conn2).unwrap();
+        assert_eq!(reexport.tags.len(), 1);
+        assert!(reexport.tags[0].deleted_at.is_some());
+    }
+
+    #[test]
+    fn sync_apply_survives_live_and_dead_tag_same_name() {
+        // The merge can legitimately produce a live tag and a dead tag sharing a
+        // name. Applying both must not trip UNIQUE(name).
+        let conn = mem();
+        let snap = crate::merge::SyncSnapshot {
+            folders: vec![],
+            tags: vec![
+                crate::merge::SyncTag {
+                    id: "live".into(),
+                    name: "rust".into(),
+                    color: "#fff".into(),
+                    created_at: 1,
+                    updated_at: 20,
+                    deleted_at: None,
+                },
+                crate::merge::SyncTag {
+                    id: "dead".into(),
+                    name: "rust".into(),
+                    color: "#fff".into(),
+                    created_at: 1,
+                    updated_at: 10,
+                    deleted_at: Some(10),
+                },
+            ],
+            bookmarks: vec![],
+        };
+        db_apply_sync_snapshot(&conn, &snap).unwrap();
+        let live = db_get_tags(&conn).unwrap();
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].id, "live");
+    }
+
+    #[test]
+    fn sync_apply_drops_reference_to_missing_folder() {
+        // A bookmark whose folder was tombstoned/omitted on another machine must
+        // land in the inbox (folder_id NULL), not break the foreign key.
+        let conn = mem();
+        let snap = crate::merge::SyncSnapshot {
+            folders: vec![], // folder intentionally absent
+            tags: vec![],
+            bookmarks: vec![crate::merge::SyncBookmark {
+                id: "b1".into(),
+                url: "https://a.test".into(),
+                title: "A".into(),
+                description: None,
+                favicon_url: None,
+                feed_url: None,
+                cover_url: None,
+                folder_id: Some("ghost-folder".into()),
+                tag_ids: vec![],
+                created_at: 1,
+                updated_at: 1,
+                deleted_at: None,
+            }],
+        };
+        db_apply_sync_snapshot(&conn, &snap).unwrap();
+        let bms = db_get_bookmarks(&conn, None, None, None, false).unwrap();
+        assert_eq!(bms.len(), 1);
+        assert_eq!(bms[0].folder_id, None);
     }
 
     #[test]
