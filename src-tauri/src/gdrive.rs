@@ -71,6 +71,12 @@ pub struct BackupConfig {
     pub interval_min: u64,
     #[serde(default)]
     pub enabled: bool,
+    /// FNV digest of the snapshot we last published to Drive. Lets an idle
+    /// client skip a redundant upload, which would otherwise bump the remote
+    /// `modifiedTime` and make every other client needlessly re-pull (and the
+    /// two could ping-pong forever).
+    #[serde(default)]
+    pub last_pushed_digest: Option<String>,
 }
 
 /// View model handed to the frontend (never exposes the OAuth secret/token).
@@ -580,22 +586,22 @@ impl BackupEngine {
 
     // ── DB bridge (lock held only for the sync section, never across an await) ──
 
-    fn export_local(&self) -> Result<String, AppError> {
+    /// Read the local DB (incl. tombstones) as a merge snapshot.
+    fn export_local_snapshot(&self) -> Result<crate::merge::SyncSnapshot, AppError> {
         let conn = self
             .db
             .lock()
             .map_err(|e| AppError::Lock { message: e.to_string() })?;
-        crate::io::export_json(&conn)
+        crate::db::db_export_sync_snapshot(&conn)
     }
 
-    fn replace_local(&self, json: &str) -> Result<usize, AppError> {
+    /// Replace the local DB with a merged snapshot.
+    fn apply_local_snapshot(&self, snap: &crate::merge::SyncSnapshot) -> Result<(), AppError> {
         let conn = self
             .db
             .lock()
             .map_err(|e| AppError::Lock { message: e.to_string() })?;
-        crate::db::db_clear_all_data(&conn)?;
-        let r = crate::io::import_json(&conn, json)?;
-        Ok(r.imported)
+        crate::db::db_apply_sync_snapshot(&conn, snap)
     }
 
     // ── settings commands ────────────────────────────────────────────────────────
@@ -694,82 +700,58 @@ impl BackupEngine {
         self.status()
     }
 
-    // ── sync ─────────────────────────────────────────────────────────────────────
+    // ── sync (per-record merge; see `merge.rs`) ──────────────────────────────────
 
-    /// Upload the local DB, overwriting the remote snapshot.
-    pub async fn push(&self) -> Result<BackupStatus, AppError> {
-        let folder_id = self
-            .cfg()?
+    /// Full reconcile: pull the remote, MERGE it with the local DB
+    /// record-by-record, and write the union back to both sides. Unlike the old
+    /// snapshot last-write-wins (a blind overwrite), this cannot clobber another
+    /// client's edits — a stale push merges the newer remote in first, so a
+    /// just-opened or idle client can never stomp fresh remote changes. Returns
+    /// `true` if the local DB changed.
+    async fn run_sync(&self, op: &str) -> Result<bool, AppError> {
+        let cfg = self.cfg()?;
+        let folder_id = cfg
             .folder_id
+            .clone()
             .ok_or_else(|| berr("no backup folder selected"))?;
-        self.app.emit("backup-syncing", serde_json::json!({ "op": "push" })).ok();
-        let result = self.push_inner(&folder_id).await;
-        self.emit_result("push", result.as_ref().map(|_| false));
-        result?;
-        self.status()
-    }
+        self.app.emit("backup-syncing", serde_json::json!({ "op": op })).ok();
 
-    async fn push_inner(&self, folder_id: &str) -> Result<(), AppError> {
-        let token = self.access_token().await?;
-        let json = self.export_local()?;
+        let result = async {
+            let token = self.access_token().await?;
+            let store = HttpDrive { http: self.http.clone(), token };
+            let local = self.export_local_snapshot()?;
+            let outcome = sync_once(
+                &store,
+                &folder_id,
+                local,
+                cfg.last_sync.clone(),
+                cfg.file_id.clone(),
+                cfg.last_pushed_digest.clone(),
+            )
+            .await?;
 
-        let mut file_id = self.cfg()?.file_id;
-        if file_id.is_none() {
-            file_id = match drive_find_backup(&self.http, &token, folder_id).await? {
-                Some(f) => Some(f.id),
-                None => Some(drive_create_empty(&self.http, &token, folder_id).await?.id),
-            };
+            if outcome.changed_local {
+                self.apply_local_snapshot(&outcome.merged)?;
+            }
+            self.update_cfg(|c| {
+                c.last_sync = outcome.new_last_sync.clone();
+                c.file_id = outcome.new_file_id.clone();
+                c.last_pushed_digest = outcome.new_digest.clone();
+            })?;
+            Ok::<bool, AppError>(outcome.changed_local)
         }
-        let fid = file_id.expect("file_id resolved above");
-        let meta = drive_update_content(&self.http, &token, &fid, &json).await?;
-        self.update_cfg(|c| {
-            c.file_id = Some(fid.clone());
-            c.last_sync = meta.modified_time.clone();
-        })?;
-        Ok(())
-    }
+        .await;
 
-    /// Pull the remote snapshot and replace the local DB iff the remote is newer
-    /// than our last reconciliation point. Returns `true` if the DB was replaced.
-    pub async fn pull(&self) -> Result<bool, AppError> {
-        let c = self.cfg()?;
-        let folder_id = c.folder_id.ok_or_else(|| berr("no backup folder selected"))?;
-        self.app.emit("backup-syncing", serde_json::json!({ "op": "pull" })).ok();
-        let result = self.pull_inner(&folder_id, c.last_sync).await;
-        self.emit_result("pull", result.as_ref().copied());
+        self.emit_result(op, result.as_ref().copied());
         result
     }
 
-    async fn pull_inner(
-        &self,
-        folder_id: &str,
-        last_sync: Option<String>,
-    ) -> Result<bool, AppError> {
-        let token = self.access_token().await?;
-        let file = match drive_find_backup(&self.http, &token, folder_id).await? {
-            Some(f) => f,
-            None => return Ok(false), // first-ever sync — nothing remote yet
-        };
-        // LWW: skip if the remote hasn't advanced past what we already have.
-        // RFC-3339 `Z` timestamps compare correctly lexicographically.
-        if let (Some(last), Some(remote)) = (&last_sync, &file.modified_time) {
-            if remote.as_str() <= last.as_str() {
-                return Ok(false);
-            }
-        }
-        let content = drive_download(&self.http, &token, &file.id).await?;
-        self.replace_local(&content)?;
-        self.update_cfg(|c| {
-            c.file_id = Some(file.id.clone());
-            c.last_sync = file.modified_time.clone();
-        })?;
-        Ok(true)
-    }
-
-    /// Manual "Sync now": reconcile down, then push the resulting state up.
+    /// Manual "Sync now" command. The open/close/periodic lifecycle hooks run the
+    /// very same full merge cycle — there is no longer a push-only path that
+    /// could overwrite the remote without first reconciling it.
     pub async fn sync_now(&self) -> Result<BackupStatus, AppError> {
-        self.pull().await?;
-        self.push().await
+        self.run_sync("sync").await?;
+        self.status()
     }
 
     fn emit_result(&self, op: &str, outcome: Result<bool, &AppError>) {
@@ -791,16 +773,16 @@ impl BackupEngine {
 
     pub async fn pull_if_active(&self) {
         if self.is_active() {
-            if let Err(e) = self.pull().await {
-                eprintln!("backup pull failed: {e}");
+            if let Err(e) = self.run_sync("pull").await {
+                eprintln!("backup sync (open) failed: {e}");
             }
         }
     }
 
     pub async fn push_if_active(&self) {
         if self.is_active() {
-            if let Err(e) = self.push().await {
-                eprintln!("backup push failed: {e}");
+            if let Err(e) = self.run_sync("push").await {
+                eprintln!("backup sync (close) failed: {e}");
             }
         }
     }
@@ -817,5 +799,414 @@ impl BackupEngine {
             tokio::time::sleep(Duration::from_secs(interval * 60)).await;
             self.push_if_active().await;
         }
+    }
+}
+
+// ─── Drive transport seam (lets the merge sync be unit-tested with a fake) ──────
+
+/// The four Drive operations the sync core needs. Abstracting them behind a
+/// trait lets `sync_once` run against an in-memory fake in tests, with no
+/// network and no Tauri `AppHandle`.
+#[allow(async_fn_in_trait)]
+trait DriveStore {
+    async fn find_backup(&self, folder_id: &str) -> Result<Option<DriveFileMeta>, AppError>;
+    async fn create_empty(&self, folder_id: &str) -> Result<DriveFileMeta, AppError>;
+    async fn download(&self, file_id: &str) -> Result<String, AppError>;
+    async fn update_content(&self, file_id: &str, content: &str)
+        -> Result<DriveFileMeta, AppError>;
+}
+
+/// Production transport: the real Drive REST calls, with one access token held
+/// for the duration of a single sync.
+struct HttpDrive {
+    http: reqwest::Client,
+    token: String,
+}
+
+impl DriveStore for HttpDrive {
+    async fn find_backup(&self, folder_id: &str) -> Result<Option<DriveFileMeta>, AppError> {
+        drive_find_backup(&self.http, &self.token, folder_id).await
+    }
+    async fn create_empty(&self, folder_id: &str) -> Result<DriveFileMeta, AppError> {
+        drive_create_empty(&self.http, &self.token, folder_id).await
+    }
+    async fn download(&self, file_id: &str) -> Result<String, AppError> {
+        drive_download(&self.http, &self.token, file_id).await
+    }
+    async fn update_content(
+        &self,
+        file_id: &str,
+        content: &str,
+    ) -> Result<DriveFileMeta, AppError> {
+        drive_update_content(&self.http, &self.token, file_id, content).await
+    }
+}
+
+/// Outcome of one reconcile pass. The engine applies `merged` to the DB (only
+/// when `changed_local`) and persists the three config fields.
+struct SyncOutcome {
+    merged: crate::merge::SyncSnapshot,
+    changed_local: bool,
+    new_last_sync: Option<String>,
+    new_file_id: Option<String>,
+    new_digest: Option<String>,
+}
+
+/// FNV-1a 64-bit, hex. Deterministic across machines and runs (unlike the std
+/// hasher), so it's safe to persist as the "snapshot we last published" marker.
+fn digest(s: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
+/// True if the remote `modifiedTime` is strictly newer than our last
+/// reconciliation point (or we've never reconciled). RFC-3339 `Z` timestamps
+/// order correctly lexicographically.
+fn rfc3339_after(remote: &Option<String>, last: &Option<String>) -> bool {
+    match (remote, last) {
+        (Some(r), Some(l)) => r.as_str() > l.as_str(),
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
+/// Parse a remote file into a snapshot, tolerating the legacy v1 (active-only)
+/// export so an existing Drive backup upgrades cleanly on the first merge.
+fn parse_remote_snapshot(json: &str) -> crate::merge::SyncSnapshot {
+    if let Some(s) = crate::merge::from_json(json) {
+        return s;
+    }
+    crate::io::legacy_export_to_snapshot(json).unwrap_or_default()
+}
+
+/// The reconcile core: pure orchestration over a `DriveStore`. No DB, no Tauri,
+/// no clock — every input is passed in, so it runs identically against the real
+/// Drive and against the in-memory fake in the tests below.
+///
+/// 1. If the remote advanced past `last_sync`, download and **merge** it into
+///    the local snapshot (never overwrite — merge can't lose either side).
+/// 2. Publish the merged snapshot when it adds anything the remote lacks: after
+///    a merge, unless the union already equals the remote; otherwise only when
+///    the local snapshot changed since our last push (the digest gate stops two
+///    idle clients ping-ponging `modifiedTime` bumps).
+/// 3. Reuse the existing remote file id when present, so concurrent clients
+///    converge on a single backup file instead of spawning duplicates.
+async fn sync_once<S: DriveStore>(
+    store: &S,
+    folder_id: &str,
+    local: crate::merge::SyncSnapshot,
+    last_sync: Option<String>,
+    file_id: Option<String>,
+    last_pushed_digest: Option<String>,
+) -> Result<SyncOutcome, AppError> {
+    let local_json = crate::merge::to_json(&local).map_err(berr)?;
+    let local_digest = digest(&local_json);
+
+    let remote = store.find_backup(folder_id).await?;
+
+    let pulled_json = match &remote {
+        Some(f) if rfc3339_after(&f.modified_time, &last_sync) => {
+            Some(store.download(&f.id).await?)
+        }
+        _ => None,
+    };
+    let merged = match &pulled_json {
+        Some(json) => crate::merge::merge(local.clone(), parse_remote_snapshot(json)),
+        None => local.clone(),
+    };
+    let merged_json = crate::merge::to_json(&merged).map_err(berr)?;
+    let merged_digest = digest(&merged_json);
+    let changed_local = merged_digest != local_digest;
+
+    let should_push = match &pulled_json {
+        Some(remote_json) => merged_digest != digest(remote_json),
+        None => Some(&merged_digest) != last_pushed_digest.as_ref(),
+    };
+
+    let mut new_last_sync = last_sync;
+    let mut new_file_id = file_id.or_else(|| remote.as_ref().map(|f| f.id.clone()));
+
+    if should_push {
+        let fid = match remote.as_ref() {
+            Some(f) => f.id.clone(),
+            None => store.create_empty(folder_id).await?.id,
+        };
+        let meta = store.update_content(&fid, &merged_json).await?;
+        new_last_sync = meta.modified_time;
+        new_file_id = Some(fid);
+    } else if pulled_json.is_some() {
+        // Nothing new to publish, but advance our point to the remote we read so
+        // we don't re-download it next time.
+        if let Some(f) = &remote {
+            new_last_sync = f.modified_time.clone();
+        }
+    }
+
+    Ok(SyncOutcome {
+        merged,
+        changed_local,
+        new_last_sync,
+        new_file_id,
+        new_digest: Some(merged_digest),
+    })
+}
+
+#[cfg(test)]
+mod sync_tests {
+    use super::*;
+    use crate::merge::{SyncBookmark, SyncSnapshot};
+    use std::sync::Mutex;
+
+    // ── in-memory Drive: one shared folder, monotonic server clock ───────────
+
+    struct FakeFile {
+        id: String,
+        content: String,
+        modified_time: String,
+    }
+    struct FakeInner {
+        files: Vec<FakeFile>,
+        clock: u64,
+    }
+    struct FakeDrive {
+        inner: Mutex<FakeInner>,
+    }
+    impl FakeDrive {
+        fn new() -> Self {
+            FakeDrive { inner: Mutex::new(FakeInner { files: Vec::new(), clock: 0 }) }
+        }
+        // Monotonic, zero-padded so it orders the same lexicographically and
+        // numerically — exactly the property the real Drive `modifiedTime` has.
+        fn tick(inner: &mut FakeInner) -> String {
+            inner.clock += 1;
+            format!("2026-01-01T00:00:00.{:06}Z", inner.clock)
+        }
+        fn file_count(&self) -> usize {
+            self.inner.lock().unwrap().files.len()
+        }
+        fn remote(&self) -> SyncSnapshot {
+            let inner = self.inner.lock().unwrap();
+            crate::merge::from_json(&inner.files[0].content).unwrap()
+        }
+        fn remote_mtime(&self) -> String {
+            self.inner.lock().unwrap().files[0].modified_time.clone()
+        }
+    }
+    impl DriveStore for FakeDrive {
+        async fn find_backup(&self, _folder_id: &str) -> Result<Option<DriveFileMeta>, AppError> {
+            let inner = self.inner.lock().unwrap();
+            Ok(inner.files.first().map(|f| DriveFileMeta {
+                id: f.id.clone(),
+                name: BACKUP_FILENAME.to_string(),
+                modified_time: Some(f.modified_time.clone()),
+            }))
+        }
+        async fn create_empty(&self, _folder_id: &str) -> Result<DriveFileMeta, AppError> {
+            let mut inner = self.inner.lock().unwrap();
+            let mt = Self::tick(&mut inner);
+            let id = format!("file-{}", inner.files.len() + 1);
+            inner.files.push(FakeFile {
+                id: id.clone(),
+                content: String::new(),
+                modified_time: mt.clone(),
+            });
+            Ok(DriveFileMeta { id, name: BACKUP_FILENAME.to_string(), modified_time: Some(mt) })
+        }
+        async fn download(&self, file_id: &str) -> Result<String, AppError> {
+            let inner = self.inner.lock().unwrap();
+            inner
+                .files
+                .iter()
+                .find(|f| f.id == file_id)
+                .map(|f| f.content.clone())
+                .ok_or_else(|| berr("fake: no such file"))
+        }
+        async fn update_content(
+            &self,
+            file_id: &str,
+            content: &str,
+        ) -> Result<DriveFileMeta, AppError> {
+            let mut inner = self.inner.lock().unwrap();
+            let mt = Self::tick(&mut inner);
+            let f = inner
+                .files
+                .iter_mut()
+                .find(|f| f.id == file_id)
+                .ok_or_else(|| berr("fake: no such file"))?;
+            f.content = content.to_string();
+            f.modified_time = mt.clone();
+            Ok(DriveFileMeta {
+                id: file_id.to_string(),
+                name: BACKUP_FILENAME.to_string(),
+                modified_time: Some(mt),
+            })
+        }
+    }
+
+    /// One machine: its own local snapshot + persisted sync state. `sync` mirrors
+    /// exactly what `BackupEngine::run_sync` does (apply merged, persist config).
+    struct Client {
+        local: SyncSnapshot,
+        last_sync: Option<String>,
+        file_id: Option<String>,
+        digest: Option<String>,
+    }
+    impl Client {
+        fn new() -> Self {
+            Client { local: SyncSnapshot::default(), last_sync: None, file_id: None, digest: None }
+        }
+        async fn sync(&mut self, drive: &FakeDrive) -> bool {
+            let outcome = sync_once(
+                drive,
+                "folder",
+                self.local.clone(),
+                self.last_sync.clone(),
+                self.file_id.clone(),
+                self.digest.clone(),
+            )
+            .await
+            .unwrap();
+            if outcome.changed_local {
+                self.local = outcome.merged.clone();
+            }
+            self.last_sync = outcome.new_last_sync;
+            self.file_id = outcome.new_file_id;
+            self.digest = outcome.new_digest;
+            outcome.changed_local
+        }
+        fn title_of(&self, id: &str) -> Option<&str> {
+            self.local
+                .bookmarks
+                .iter()
+                .find(|b| b.id == id && b.deleted_at.is_none())
+                .map(|b| b.title.as_str())
+        }
+    }
+
+    fn bm(id: &str, title: &str, updated_at: i64, deleted_at: Option<i64>) -> SyncBookmark {
+        SyncBookmark {
+            id: id.into(),
+            url: format!("https://example.com/{id}"),
+            title: title.into(),
+            description: None,
+            favicon_url: None,
+            feed_url: None,
+            cover_url: None,
+            folder_id: None,
+            tag_ids: vec![],
+            created_at: 1,
+            updated_at,
+            deleted_at,
+        }
+    }
+    fn snap(bms: Vec<SyncBookmark>) -> SyncSnapshot {
+        SyncSnapshot { bookmarks: bms, ..Default::default() }
+    }
+
+    /// THE reported bug. Two clients edit different bookmarks "from time to
+    /// time"; with the old blind-overwrite push, whoever pushed last erased the
+    /// other's bookmark. With merge, both survive.
+    #[tokio::test]
+    async fn two_clients_disjoint_edits_both_survive() {
+        let drive = FakeDrive::new();
+        let mut a = Client::new();
+        let mut b = Client::new();
+
+        a.local = snap(vec![bm("X", "x", 10, None)]);
+        a.sync(&drive).await; // A publishes X
+
+        b.local = snap(vec![bm("Y", "y", 10, None)]);
+        b.sync(&drive).await; // B pulls X, merges, publishes {X,Y}
+
+        a.sync(&drive).await; // A pulls the union back
+
+        assert_eq!(a.title_of("X"), Some("x"));
+        assert_eq!(a.title_of("Y"), Some("y"));
+        assert_eq!(b.title_of("X"), Some("x"));
+        assert_eq!(b.title_of("Y"), Some("y"));
+        let r = drive.remote();
+        assert_eq!(r.bookmarks.len(), 2);
+    }
+
+    /// The idle-client clobber: A edits and pushes; B has been sitting open with
+    /// stale data and its periodic sync fires. The old push-only autosave would
+    /// stomp A's edit with B's stale copy. Now B reconciles instead.
+    #[tokio::test]
+    async fn idle_client_does_not_clobber_fresh_remote() {
+        let drive = FakeDrive::new();
+        let mut a = Client::new();
+        let mut b = Client::new();
+
+        a.local = snap(vec![bm("X", "x1", 10, None)]);
+        b.local = snap(vec![bm("X", "x1", 10, None)]);
+        a.sync(&drive).await; // remote = x1
+        b.sync(&drive).await; // B now in sync at x1, idle
+
+        // A edits X and pushes a newer version.
+        a.local = snap(vec![bm("X", "x2", 20, None)]);
+        a.sync(&drive).await;
+
+        // B's periodic sync fires with NO local change.
+        let changed = b.sync(&drive).await;
+
+        assert!(changed, "B should have pulled A's newer edit");
+        assert_eq!(b.title_of("X"), Some("x2"));
+        assert_eq!(drive.remote().bookmarks[0].title, "x2", "remote not clobbered");
+    }
+
+    /// A deletion on one machine reaches the other (tombstone travels).
+    #[tokio::test]
+    async fn delete_propagates_across_clients() {
+        let drive = FakeDrive::new();
+        let mut a = Client::new();
+        let mut b = Client::new();
+
+        a.local = snap(vec![bm("X", "x", 10, None)]);
+        a.sync(&drive).await;
+        b.sync(&drive).await; // B has X live
+
+        a.local = snap(vec![bm("X", "x", 20, Some(20))]); // delete on A
+        a.sync(&drive).await;
+
+        b.sync(&drive).await;
+        assert_eq!(b.title_of("X"), None, "X should be tombstoned on B");
+    }
+
+    /// Concurrent first sync converges on ONE backup file, not a duplicate per
+    /// client (the old `find ? : create` race produced two files).
+    #[tokio::test]
+    async fn first_sync_converges_on_single_file() {
+        let drive = FakeDrive::new();
+        let mut a = Client::new();
+        let mut b = Client::new();
+
+        a.local = snap(vec![bm("A", "a", 10, None)]);
+        b.local = snap(vec![bm("B", "b", 10, None)]);
+        a.sync(&drive).await;
+        b.sync(&drive).await;
+
+        assert_eq!(drive.file_count(), 1, "must reuse the one backup file");
+        assert_eq!(drive.remote().bookmarks.len(), 2);
+    }
+
+    /// A truly idle re-sync must not re-upload — otherwise it bumps the remote
+    /// `modifiedTime` and makes every other client needlessly re-pull (and two
+    /// idle clients would ping-pong forever).
+    #[tokio::test]
+    async fn idle_resync_is_a_no_op() {
+        let drive = FakeDrive::new();
+        let mut a = Client::new();
+        a.local = snap(vec![bm("X", "x", 10, None)]);
+        a.sync(&drive).await;
+        let mtime_after_first = drive.remote_mtime();
+
+        let changed = a.sync(&drive).await;
+
+        assert!(!changed);
+        assert_eq!(drive.remote_mtime(), mtime_after_first, "no redundant upload");
     }
 }
