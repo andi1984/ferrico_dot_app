@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.0] - 2026-06-18
+
+### Features
+
+- show existing bookmarks for the current URL/site
+- tag autocomplete combobox with suggestions
+
+
 ## [0.10.0] - 2026-06-15
 
 ### Features
