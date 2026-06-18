@@ -30,7 +30,7 @@ use db::{
     db_move_bookmark, db_move_folder, db_permanently_delete_bookmark,
     db_purge_expired_bin, db_restore_bookmark,
     db_get_bookmark_count, db_get_bookmarks, db_get_folders, db_get_tags,
-    db_related_tags,
+    db_related_tags, db_lookup_by_url,
     db_find_duplicate_bookmarks, db_merge_bookmark_duplicates,
     db_update_bookmark_health_batch,
     db_get_bookmarks_without_cover, db_update_cover_url,
@@ -721,6 +721,30 @@ async fn http_related_tags(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
+#[derive(Deserialize)]
+struct LookupQuery {
+    /// The full URL of the page being saved.
+    url: Option<String>,
+}
+
+/// Report existing bookmarks for `?url=…`, split into an exact-page match and
+/// other pages on the same host. Powers the extension's "already saved" panel.
+async fn http_lookup_bookmarks(
+    AxumState(state): AxumState<HttpState>,
+    headers: HeaderMap,
+    Query(q): Query<LookupQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if !auth_ok(&headers, &state.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let url = q.url.unwrap_or_default();
+    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let matches = db_lookup_by_url(&db, &url).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    serde_json::to_value(matches)
+        .map(Json)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
 async fn http_add_folder(
     AxumState(state): AxumState<HttpState>,
     headers: HeaderMap,
@@ -800,6 +824,7 @@ async fn start_http_server(db: Arc<Mutex<Connection>>, token: String, app_handle
         .route("/folders", get(http_get_folders).post(http_add_folder))
         .route("/tags", get(http_get_tags).post(http_add_tag))
         .route("/tags/related", get(http_related_tags))
+        .route("/bookmarks/lookup", get(http_lookup_bookmarks))
         .with_state(state)
         .layer(cors);
 
@@ -1454,11 +1479,58 @@ mod http_tests {
             .allow_headers(tower_http::cors::Any);
         let app = axum::Router::new()
             .route("/bookmarks", post(http_add_bookmark))
+            .route("/bookmarks/lookup", axum::routing::get(http_lookup_bookmarks))
             .route("/folders", axum::routing::get(http_get_folders).post(http_add_folder))
             .route("/tags", axum::routing::get(http_get_tags).post(http_add_tag))
             .with_state(state)
             .layer(cors);
         (app, called)
+    }
+
+    #[tokio::test]
+    async fn lookup_returns_401_without_auth() {
+        let (app, _) = make_full_app("tok");
+        let req = Request::builder()
+            .method("GET")
+            .uri("/bookmarks/lookup?url=https://example.com")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn lookup_splits_exact_and_same_domain_over_http() {
+        let (app, _) = make_full_app("tok");
+
+        // Seed two pages on the same host: one exact, one elsewhere on the site.
+        for url in ["https://example.com/a", "https://example.com/b"] {
+            let req = Request::builder()
+                .method("POST")
+                .uri("/bookmarks")
+                .header("content-type", "application/json")
+                .header("authorization", "Bearer tok")
+                .body(Body::from(format!(r#"{{"url":"{url}","title":"T"}}"#)))
+                .unwrap();
+            assert_eq!(app.clone().oneshot(req).await.unwrap().status(), StatusCode::OK);
+        }
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/bookmarks/lookup?url=https%3A%2F%2Fexample.com%2Fa")
+            .header("authorization", "Bearer tok")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["domain"], "example.com");
+        assert_eq!(json["exact"].as_array().unwrap().len(), 1);
+        assert_eq!(json["exact"][0]["url"], "https://example.com/a");
+        assert_eq!(json["same_domain"].as_array().unwrap().len(), 1);
+        assert_eq!(json["same_domain"][0]["url"], "https://example.com/b");
     }
 
     #[tokio::test]
