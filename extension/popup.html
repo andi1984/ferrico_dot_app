@@ -670,6 +670,130 @@
       background: color-mix(in srgb, #6366f1 12%, #1e293b);
     }
 
+    /* ── Existing-bookmark notices ─────────────────────────── */
+
+    .existing {
+      padding: 12px 16px 0;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .existing:empty { display: none; }
+
+    .exists-card {
+      position: relative;
+      display: flex;
+      gap: 11px;
+      padding: 11px 12px 11px 14px;
+      border-radius: 10px;
+      overflow: hidden;
+      animation: panel-in 0.18s ease;
+    }
+
+    .exists-card.exact {
+      background:
+        radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, #f59e0b 18%, #0b1424), #0b1424 62%);
+      border: 1px solid color-mix(in srgb, #f59e0b 38%, #1e293b);
+    }
+    .exists-card.exact::before {
+      content: '';
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 3px;
+      background: linear-gradient(#fbbf24, #f59e0b);
+    }
+
+    .ec-icon {
+      flex-shrink: 0;
+      width: 30px; height: 30px;
+      border-radius: 9px;
+      display: flex; align-items: center; justify-content: center;
+      background: color-mix(in srgb, #f59e0b 20%, transparent);
+      color: #fbbf24;
+    }
+
+    .ec-body { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+    .ec-title { font-size: 12.5px; font-weight: 600; color: #fde68a; }
+    .ec-sub {
+      font-size: 11px; color: #94a3b8;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .ec-sub b { color: #cbd5e1; font-weight: 600; }
+    .ec-tags { display: inline-flex; gap: 4px; margin-left: 6px; vertical-align: middle; }
+    .ec-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+
+    .exists-domain {
+      border-radius: 10px;
+      border: 1px solid #1e293b;
+      background: #0b1424;
+      overflow: hidden;
+      animation: panel-in 0.18s ease;
+    }
+
+    .ed-header {
+      display: flex; align-items: center; gap: 9px;
+      width: 100%;
+      padding: 10px 12px;
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      font-family: inherit;
+      text-align: left;
+      color: #cbd5e1;
+    }
+    .ed-header:hover { background: #101b30; }
+
+    .ed-badge {
+      flex-shrink: 0;
+      min-width: 22px; height: 22px;
+      padding: 0 6px;
+      border-radius: 11px;
+      background: color-mix(in srgb, #6366f1 24%, #1e293b);
+      color: #a5b4fc;
+      font-size: 11.5px; font-weight: 700;
+      display: flex; align-items: center; justify-content: center;
+      font-variant-numeric: tabular-nums;
+    }
+    .ed-text {
+      flex: 1; min-width: 0;
+      font-size: 12.5px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .ed-text b { color: #f1f5f9; font-weight: 600; }
+    .ed-caret { flex-shrink: 0; color: #475569; transition: transform 0.15s; display: flex; }
+    .exists-domain.open .ed-caret { transform: rotate(180deg); }
+
+    .ed-list { display: none; flex-direction: column; border-top: 1px solid #1e293b; }
+    .exists-domain.open .ed-list { display: flex; }
+
+    .ed-row {
+      display: flex; align-items: center; gap: 9px;
+      padding: 8px 12px;
+      text-decoration: none;
+      color: #cbd5e1;
+      border-top: 1px solid #101b30;
+    }
+    .ed-row:first-child { border-top: none; }
+    .ed-row:hover { background: #101b30; }
+
+    .ed-fav { width: 15px; height: 15px; border-radius: 3px; flex-shrink: 0; background: #1e293b; }
+    .ed-fav.placeholder { display: flex; align-items: center; justify-content: center; color: #334155; }
+    .ed-info { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 1px; }
+    .ed-row .ed-title {
+      font-size: 12px; color: #e2e8f0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .ed-path {
+      font-size: 10.5px; color: #64748b;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .ed-time { font-size: 10.5px; color: #475569; flex-shrink: 0; }
+    .ed-more {
+      font-size: 11px; color: #64748b; cursor: default;
+      justify-content: center;
+    }
+    .ed-more:hover { background: transparent; }
+
     /* ── No token ──────────────────────────────────────────── */
 
     .no-token { padding: 20px 16px; text-align: center; }

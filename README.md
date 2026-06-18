@@ -79,7 +79,7 @@ Ferrico's AI features shell out to a locally installed [`claude` CLI](https://do
 
 ## Browser extension
 
-A companion extension lives in [`extension/`](extension/). It saves the current tab to your Ferrico library by talking to the local HTTP server the app exposes on `127.0.0.1:59432` (loopback only — never exposed to the network).
+A companion extension lives in [`extension/`](extension/). It saves the current tab to your Ferrico library by talking to the local HTTP server the app exposes on `127.0.0.1:59432` (loopback only — never exposed to the network). When you open it, it also tells you at a glance whether the page is **already in your library** and surfaces any other pages you've saved from the same site.
 
 **Load it unpacked:**
 

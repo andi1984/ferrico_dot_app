@@ -531,6 +531,85 @@ pub fn db_get_bookmarks(
     enrich_batch(raws, conn)
 }
 
+/// Existing bookmarks that overlap with a candidate URL, split into an exact
+/// page match and other pages on the same registrable host. Powers the browser
+/// extension's "you already saved this" panel.
+#[derive(Debug, Serialize)]
+pub struct UrlMatches {
+    /// The normalized host the matches were grouped under (`None` if `url` had none).
+    pub domain: Option<String>,
+    /// Bookmarks whose URL normalizes to the same page.
+    pub exact: Vec<Bookmark>,
+    /// Other bookmarks sharing the host (exact matches excluded).
+    pub same_domain: Vec<Bookmark>,
+}
+
+/// Host of a URL, lowercased with a leading `www.` and any port/userinfo
+/// stripped. Returns `None` when no host can be isolated.
+pub(crate) fn url_host(url: &str) -> Option<String> {
+    let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let host = host_port.split(':').next().unwrap_or("").trim().to_lowercase();
+    let host = host.strip_prefix("www.").unwrap_or(&host);
+    (!host.is_empty()).then(|| host.to_string())
+}
+
+/// Canonical form for "same page" comparison: drops the fragment and any
+/// trailing slash, lowercases the scheme + host (`www.` stripped) while leaving
+/// the path/query case intact.
+pub(crate) fn normalize_url(url: &str) -> String {
+    let no_frag = url.split('#').next().unwrap_or(url).trim();
+    match no_frag.split_once("://") {
+        Some((scheme, rest)) => {
+            let (authority, path) = match rest.find('/') {
+                Some(i) => (&rest[..i], &rest[i..]),
+                None => (rest, ""),
+            };
+            let auth = authority.to_lowercase();
+            let auth = auth.strip_prefix("www.").unwrap_or(&auth);
+            format!("{}://{}{}", scheme.to_lowercase(), auth, path.trim_end_matches('/'))
+        }
+        None => no_frag.trim_end_matches('/').to_lowercase(),
+    }
+}
+
+/// Find non-deleted bookmarks matching `url` exactly (normalized) or sharing its
+/// host. A host substring `LIKE` pre-filters candidates in SQL; the real host is
+/// then verified in Rust so paths/queries that merely contain the host string
+/// can't sneak in.
+pub fn db_lookup_by_url(conn: &Connection, url: &str) -> Result<UrlMatches, AppError> {
+    let Some(host) = url_host(url) else {
+        return Ok(UrlMatches { domain: None, exact: Vec::new(), same_domain: Vec::new() });
+    };
+
+    let like = format!("%{host}%");
+    let mut stmt = conn.prepare(
+        "SELECT b.id, b.url, b.title, b.description, b.favicon_url, b.cover_url, b.feed_url, \
+         b.folder_id, b.created_at, b.updated_at, b.deleted_at, b.is_broken, b.last_checked_at \
+         FROM bookmarks b \
+         WHERE b.deleted_at IS NULL AND LOWER(b.url) LIKE ?1 \
+         ORDER BY b.created_at DESC",
+    )?;
+    let raws = stmt
+        .query_map(params![like], row_to_raw)?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // Keep only true host matches, then enrich (tags) before partitioning.
+    let raws: Vec<RawBookmark> = raws
+        .into_iter()
+        .filter(|raw| url_host(&raw.url).as_deref() == Some(host.as_str()))
+        .collect();
+    let bookmarks = enrich_batch(raws, conn)?;
+
+    let target = normalize_url(url);
+    let (exact, same_domain) = bookmarks
+        .into_iter()
+        .partition(|b| normalize_url(&b.url) == target);
+
+    Ok(UrlMatches { domain: Some(host), exact, same_domain })
+}
+
 // Field weights for combining per-field fuzzy scores. Title dominates; the body
 // (description) only nudges ties so a long note never outranks a title hit.
 const FUZZY_TITLE_WEIGHT: u32 = 3;
@@ -3148,5 +3227,70 @@ mod tests {
         assert!(result.errors.is_empty());
         assert_eq!(db_get_bookmark_count(&conn).unwrap(), 1000);
         assert!(elapsed.as_secs() < 5, "1000-row import took {elapsed:?}, expected < 5s");
+    }
+
+    // ── URL lookup (extension "already saved" panel) ──────────────────────────
+
+    #[test]
+    fn url_host_strips_scheme_www_port_and_path() {
+        assert_eq!(url_host("https://www.Example.com:8080/a/b?x=1#h").as_deref(), Some("example.com"));
+        assert_eq!(url_host("http://user:pw@sub.example.com/p").as_deref(), Some("sub.example.com"));
+        assert_eq!(url_host("example.com/path").as_deref(), Some("example.com"));
+        assert_eq!(url_host("not a url"), Some("not a url".to_string())); // best-effort
+        assert_eq!(url_host(""), None);
+    }
+
+    #[test]
+    fn normalize_url_ignores_www_trailing_slash_and_fragment() {
+        assert_eq!(
+            normalize_url("https://www.Example.com/Path/"),
+            normalize_url("https://example.com/Path"),
+        );
+        assert_eq!(
+            normalize_url("https://example.com/a#section"),
+            normalize_url("https://example.com/a"),
+        );
+        // Path case is significant; these must differ.
+        assert_ne!(
+            normalize_url("https://example.com/Path"),
+            normalize_url("https://example.com/path"),
+        );
+    }
+
+    #[test]
+    fn lookup_splits_exact_and_same_domain() {
+        let conn = mem();
+        mk_bookmark(&conn, "https://example.com/article", "Exact");
+        mk_bookmark(&conn, "https://www.example.com/article/", "Exact via www + slash");
+        mk_bookmark(&conn, "https://example.com/other", "Same domain");
+        mk_bookmark(&conn, "https://different.com/article", "Other domain");
+
+        let res = db_lookup_by_url(&conn, "https://example.com/article").unwrap();
+        assert_eq!(res.domain.as_deref(), Some("example.com"));
+        assert_eq!(res.exact.len(), 2, "www + trailing-slash variant counts as exact");
+        assert_eq!(res.same_domain.len(), 1);
+        assert_eq!(res.same_domain[0].url, "https://example.com/other");
+    }
+
+    #[test]
+    fn lookup_excludes_binned_and_host_substring_false_positives() {
+        let conn = mem();
+        let binned = mk_bookmark(&conn, "https://example.com/old", "Binned");
+        db_delete_bookmark(&conn, &binned.id).unwrap();
+        // host appears only in the path — must not match.
+        mk_bookmark(&conn, "https://tracker.test/?ref=example.com", "False positive");
+
+        let res = db_lookup_by_url(&conn, "https://example.com/old").unwrap();
+        assert!(res.exact.is_empty());
+        assert!(res.same_domain.is_empty());
+    }
+
+    #[test]
+    fn lookup_returns_empty_for_hostless_url() {
+        let conn = mem();
+        mk_bookmark(&conn, "https://example.com/a", "A");
+        let res = db_lookup_by_url(&conn, "").unwrap();
+        assert_eq!(res.domain, None);
+        assert!(res.exact.is_empty() && res.same_domain.is_empty());
     }
 }

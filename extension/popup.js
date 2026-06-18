@@ -44,6 +44,30 @@ function escHtml(str) {
     .replace(/>/g, '&gt;')
 }
 
+/** Compact relative time, e.g. "3d ago". `sec` is a UNIX timestamp in seconds. */
+function timeAgo(sec) {
+  if (!sec) return ''
+  const diff = Math.max(0, Date.now() / 1000 - sec)
+  const mins = diff / 60, hrs = mins / 60, days = hrs / 24
+  if (days >= 365) return `${Math.floor(days / 365)}y ago`
+  if (days >= 30) return `${Math.floor(days / 30)}mo ago`
+  if (days >= 1) return `${Math.floor(days)}d ago`
+  if (hrs >= 1) return `${Math.floor(hrs)}h ago`
+  if (mins >= 1) return `${Math.floor(mins)}m ago`
+  return 'just now'
+}
+
+/** The path+query of a URL (host dropped) — the bit that distinguishes same-site pages. */
+function shortPath(url) {
+  try {
+    const u = new URL(url)
+    const tail = (u.pathname === '/' ? '' : u.pathname) + (u.search || '')
+    return tail || u.hostname.replace(/^www\./, '')
+  } catch {
+    return url
+  }
+}
+
 // ── API ────────────────────────────────────────────────────────────────────────
 
 async function apiFetch(path, token, options = {}) {
@@ -72,6 +96,17 @@ async function fetchTags(token) {
     return res.ok ? res.json() : []
   } catch {
     return []
+  }
+}
+
+/** Existing bookmarks for `url`, split into `{ domain, exact, same_domain }`. */
+async function fetchUrlMatches(token, url) {
+  if (!url) return null
+  try {
+    const res = await apiFetch(`/bookmarks/lookup?url=${encodeURIComponent(url)}`, token)
+    return res.ok ? res.json() : null
+  } catch {
+    return null
   }
 }
 
@@ -165,6 +200,8 @@ const CARET_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" s
 const CHECK_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 12l5 5L20 7"/></svg>`
 const FOLDER_SVG = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg>`
 const IMAGE_SVG = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>`
+const CHECK_CIRCLE_SVG = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></svg>`
+const GLOBE_SVG = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 2.5 15 0 18M12 3c-2.5 2.5-2.5 15 0 18"/></svg>`
 
 // ── Page capture + content scraping ─────────────────────────────────────────────
 
@@ -1084,6 +1121,91 @@ function mountFolderPicker(container, folders, token, folderState) {
 
 // ── Main form ──────────────────────────────────────────────────────────────────
 
+// ── "Already saved" notices ──────────────────────────────────────────────────
+
+/** Prominent banner shown when the exact page is already bookmarked. */
+function exactCardHtml(exact, folders) {
+  const b = exact[0]
+  const dupes = exact.length > 1 ? ` · saved ${exact.length}×` : ''
+  const folderPath = b.folder_id ? getFolderPath(folders, b.folder_id) : ''
+  const where = folderPath ? ` · in ${escHtml(folderPath)}` : ''
+  const dots = (b.tags || [])
+    .slice(0, 6)
+    .map((t) => `<span class="ec-dot" style="background:${escHtml(t.color)}" title="${escHtml(t.name)}"></span>`)
+    .join('')
+  const tagsHtml = dots ? `<span class="ec-tags">${dots}</span>` : ''
+  return `
+    <div class="exists-card exact">
+      <div class="ec-icon">${CHECK_CIRCLE_SVG}</div>
+      <div class="ec-body">
+        <div class="ec-title">Already in your library${tagsHtml}</div>
+        <div class="ec-sub">Saved <b>${escHtml(timeAgo(b.created_at))}</b>${dupes}${where}</div>
+      </div>
+    </div>
+  `
+}
+
+/** Collapsible card listing other saved pages from the same host. */
+function domainCardHtml(list, domain, openByDefault) {
+  const rows = list
+    .slice(0, 8)
+    .map((b) => {
+      const fav = b.favicon_url || faviconUrl(b.url)
+      const favHtml = fav
+        ? `<img class="ed-fav" src="${escHtml(fav)}" alt="" onerror="this.style.visibility='hidden'" />`
+        : `<span class="ed-fav placeholder">${GLOBE_SVG}</span>`
+      return `
+        <a class="ed-row" href="${escHtml(b.url)}" target="_blank" rel="noreferrer">
+          ${favHtml}
+          <span class="ed-info">
+            <span class="ed-title">${escHtml(b.title || b.url)}</span>
+            <span class="ed-path">${escHtml(shortPath(b.url))}</span>
+          </span>
+          <span class="ed-time">${escHtml(timeAgo(b.created_at))}</span>
+        </a>
+      `
+    })
+    .join('')
+  const extra = list.length > 8 ? `<div class="ed-row ed-more">+${list.length - 8} more in Ferrico</div>` : ''
+  const noun = list.length === 1 ? 'page' : 'pages'
+  return `
+    <div class="exists-domain${openByDefault ? ' open' : ''}">
+      <button class="ed-header" type="button" aria-expanded="${openByDefault ? 'true' : 'false'}">
+        <span class="ed-badge">${list.length}</span>
+        <span class="ed-text">More from <b>${escHtml(domain || 'this site')}</b> · ${list.length} ${noun}</span>
+        <span class="ed-caret">${CARET_SVG}</span>
+      </button>
+      <div class="ed-list">${rows}${extra}</div>
+    </div>
+  `
+}
+
+/** Fill `container` with the exact + same-domain notices and wire the toggle. */
+function renderExisting(container, matches, folders) {
+  if (!container || !matches) return
+  const exact = matches.exact || []
+  const sameDomain = matches.same_domain || []
+  if (exact.length === 0 && sameDomain.length === 0) return
+
+  // When the page itself isn't saved, surface the site list expanded so the
+  // value is immediately visible; otherwise keep it tucked under the banner.
+  const openByDefault = exact.length === 0 && sameDomain.length <= 5
+
+  let html = ''
+  if (exact.length) html += exactCardHtml(exact, folders)
+  if (sameDomain.length) html += domainCardHtml(sameDomain, matches.domain, openByDefault)
+  container.innerHTML = html
+
+  const domEl = container.querySelector('.exists-domain')
+  if (domEl) {
+    const header = domEl.querySelector('.ed-header')
+    header.addEventListener('click', () => {
+      const open = domEl.classList.toggle('open')
+      header.setAttribute('aria-expanded', open ? 'true' : 'false')
+    })
+  }
+}
+
 function previewCardHtml(tab, screenshot) {
   const url = tab.url || ''
   let display = url
@@ -1116,13 +1238,14 @@ function previewCardHtml(tab, screenshot) {
 }
 
 function renderForm(pageInfo, folders, tags, token) {
-  const { tab, content, screenshot } = pageInfo
+  const { tab, content, screenshot, matches } = pageInfo
   const selectedTagIds = []
   const folderState = { folderId: null }
   const analysis = analyzeContent(tab, content)
 
   app.innerHTML = `
     ${previewCardHtml(tab, screenshot)}
+    <div id="existing" class="existing"></div>
     <div class="form">
       <div class="field">
         <label>URL</label>
@@ -1151,6 +1274,8 @@ function renderForm(pageInfo, folders, tags, token) {
       <div class="status" id="status"></div>
     </div>
   `
+
+  renderExisting(document.getElementById('existing'), matches, folders)
 
   mountFolderPicker(
     document.getElementById('folder-combobox'),
@@ -1226,13 +1351,14 @@ async function init() {
     return
   }
   const tab = await getCurrentTab()
-  const [folders, tags, content, screenshot] = await Promise.all([
+  const [folders, tags, content, screenshot, matches] = await Promise.all([
     fetchFolders(token),
     fetchTags(token),
     scrapePageContent(tab?.id),
     captureScreenshot(),
+    fetchUrlMatches(token, tab?.url),
   ])
-  renderForm({ tab, content, screenshot }, folders, tags, token)
+  renderForm({ tab, content, screenshot, matches }, folders, tags, token)
   setTimeout(() => {
     const titleInput = document.getElementById('title')
     if (titleInput) titleInput.select()
