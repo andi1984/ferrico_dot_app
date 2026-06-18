@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import type { Folder, Tag } from '../types'
 import { ModalShell, FieldLabel, ModalActions } from './ModalShell'
 import { IconChevronDown } from './icons'
+import { TagCombobox } from './TagCombobox'
 
 export interface AddBookmarkModalProps {
   folders: Folder[]
@@ -15,25 +16,21 @@ export interface AddBookmarkModalProps {
     feed_url: string | null
   }) => void
   onClose: () => void
+  /** Create a brand-new tag inline (already persisted), returning it. */
+  onCreateTag: (name: string, color: string) => Promise<Tag>
+  /** Fetch tags co-occurring with the selection for context suggestions. */
+  getRelatedTags?: (ids: string[]) => Promise<Tag[]>
 }
 
-export function AddBookmarkModal({ folders, tags, onAdd, onClose }: AddBookmarkModalProps) {
+export function AddBookmarkModal({ folders, tags, onAdd, onClose, onCreateTag, getRelatedTags }: AddBookmarkModalProps) {
   const [url, setUrl] = useState('')
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [folderId, setFolderId] = useState('')
-  const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set())
+  const [selectedTagIds, setSelectedTagIds] = useState<string[]>([])
   const urlRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => { urlRef.current?.focus() }, [])
-
-  function toggleTag(id: string) {
-    setSelectedTags((prev) => {
-      const next = new Set(prev)
-      next.has(id) ? next.delete(id) : next.add(id)
-      return next
-    })
-  }
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -43,7 +40,7 @@ export function AddBookmarkModal({ folders, tags, onAdd, onClose }: AddBookmarkM
       title: title.trim(),
       description: description.trim(),
       folder_id: folderId || null,
-      tag_ids: [...selectedTags],
+      tag_ids: selectedTagIds,
       feed_url: null,
     })
   }
@@ -79,29 +76,16 @@ export function AddBookmarkModal({ folders, tags, onAdd, onClose }: AddBookmarkM
           </div>
         )}
 
-        {tags.length > 0 && (
-          <div>
-            <FieldLabel>Tags</FieldLabel>
-            <div className="flex flex-wrap gap-2 pt-1" role="group" aria-label="Select tags">
-              {tags.map((tag) => (
-                <button
-                  key={tag.id}
-                  type="button"
-                  onClick={() => toggleTag(tag.id)}
-                  aria-pressed={selectedTags.has(tag.id)}
-                  className="px-2.5 py-1 rounded text-xs font-medium transition-all duration-150 cursor-pointer"
-                  style={
-                    selectedTags.has(tag.id)
-                      ? { background: tag.color + '28', color: tag.color, border: `1px solid ${tag.color}66` }
-                      : { background: 'transparent', color: 'var(--text-muted)', border: '1px solid var(--border-mid)' }
-                  }
-                >
-                  {tag.name}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
+        <div>
+          <FieldLabel>Tags</FieldLabel>
+          <TagCombobox
+            tags={tags}
+            selectedIds={selectedTagIds}
+            onChange={setSelectedTagIds}
+            onCreateTag={onCreateTag}
+            getRelatedTags={getRelatedTags}
+          />
+        </div>
 
         <ModalActions onClose={onClose} submitLabel="Save bookmark" />
       </form>

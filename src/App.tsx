@@ -451,6 +451,20 @@ export default function App() {
     }
   }, [loadSidebar])
 
+  // Inline tag creation from the New Bookmark combobox: persist, refresh the
+  // sidebar list, and return the tag so the combobox can select it immediately.
+  const handleCreateTag = useCallback(async (name: string, color: string): Promise<Tag> => {
+    const tag = await invoke<Tag>('add_tag', { name, color })
+    setTags((prev) => (prev.some((t) => t.id === tag.id) ? prev : [...prev, tag]))
+    loadSidebar()
+    return tag
+  }, [loadSidebar])
+
+  const getRelatedTags = useCallback(
+    (ids: string[]) => invoke<Tag[]>('related_tags', { tagIds: ids }),
+    [],
+  )
+
   const handleDeleteTag = useCallback(async (id: string) => {
     try {
       await invoke('delete_tag', { id })
@@ -1019,7 +1033,7 @@ export default function App() {
       </div>
 
       {modal === 'add-bookmark' && (
-        <AddBookmarkModal folders={folders} tags={tags} onAdd={handleAddBookmark} onClose={() => setModal(null)} />
+        <AddBookmarkModal folders={folders} tags={tags} onAdd={handleAddBookmark} onClose={() => setModal(null)} onCreateTag={handleCreateTag} getRelatedTags={getRelatedTags} />
       )}
       {modal === 'add-folder' && (
         <AddFolderModal
