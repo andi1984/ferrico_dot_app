@@ -11,6 +11,7 @@ function makeProps(overrides?: Partial<AddBookmarkModalProps>): AddBookmarkModal
     tags: [],
     onAdd: vi.fn(),
     onClose: vi.fn(),
+    onCreateTag: vi.fn(),
     ...overrides,
   }
 }
@@ -66,25 +67,40 @@ describe('AddBookmarkModal', () => {
     expect(screen.queryByLabelText(/folder/i)).not.toBeInTheDocument()
   })
 
-  it('shows tag toggle buttons when tags are provided', () => {
+  it('shows a tag combobox to search existing tags', async () => {
     const tags = [makeTag({ id: 't1', name: 'Design' })]
     render(<AddBookmarkModal {...makeProps({ tags })} />)
-    expect(screen.getByRole('button', { name: 'Design' })).toBeInTheDocument()
+    const combobox = screen.getByRole('combobox')
+    await userEvent.click(combobox)
+    expect(screen.getByRole('option', { name: /Design/ })).toBeInTheDocument()
   })
 
-  it('toggles tag selection and includes selected tag ids in submission', async () => {
+  it('selects an existing tag and includes its id in submission', async () => {
     const onAdd = vi.fn()
     const tags = [makeTag({ id: 't1', name: 'Design' })]
     render(<AddBookmarkModal {...makeProps({ tags, onAdd })} />)
 
-    const tagBtn = screen.getByRole('button', { name: 'Design' })
-    expect(tagBtn).toHaveAttribute('aria-pressed', 'false')
-    await userEvent.click(tagBtn)
-    expect(tagBtn).toHaveAttribute('aria-pressed', 'true')
+    await userEvent.click(screen.getByRole('combobox'))
+    await userEvent.click(screen.getByRole('option', { name: /Design/ }))
 
     await userEvent.type(screen.getByLabelText(/url/i), 'https://example.com')
     await userEvent.type(screen.getByLabelText(/title/i), 'Example')
     await userEvent.click(screen.getByRole('button', { name: /save bookmark/i }))
     expect(onAdd).toHaveBeenCalledWith(expect.objectContaining({ tag_ids: ['t1'] }))
+  })
+
+  it('creates a new tag inline and includes it in submission', async () => {
+    const onAdd = vi.fn()
+    const onCreateTag = vi.fn().mockResolvedValue(makeTag({ id: 'new1', name: 'fresh' }))
+    render(<AddBookmarkModal {...makeProps({ onAdd, onCreateTag })} />)
+
+    await userEvent.type(screen.getByRole('combobox'), 'fresh')
+    await userEvent.click(screen.getByRole('option', { name: /Create/ }))
+    expect(onCreateTag).toHaveBeenCalledWith('fresh', expect.any(String))
+
+    await userEvent.type(screen.getByLabelText(/url/i), 'https://example.com')
+    await userEvent.type(screen.getByLabelText(/title/i), 'Example')
+    await userEvent.click(screen.getByRole('button', { name: /save bookmark/i }))
+    expect(onAdd).toHaveBeenCalledWith(expect.objectContaining({ tag_ids: ['new1'] }))
   })
 })

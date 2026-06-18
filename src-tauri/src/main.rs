@@ -237,6 +237,15 @@ fn delete_tag(id: String, state: State<'_, AppState>) -> Result<(), AppError> {
     db_delete_tag(&db, &id)
 }
 
+/// Tags that most often co-occur with the already-selected ones. Powers the
+/// context-aware suggestions in the New Bookmark tag combobox (same engine the
+/// browser extension uses over HTTP).
+#[tauri::command]
+fn related_tags(tag_ids: Vec<String>, state: State<'_, AppState>) -> Result<Vec<Tag>, AppError> {
+    let db = lock_db!(state);
+    db_related_tags(&db, &tag_ids, 8)
+}
+
 #[tauri::command]
 fn get_api_token(state: State<'_, AppState>) -> String {
     state.api_token.clone()
@@ -1047,6 +1056,7 @@ fn main() {
             get_tags,
             add_tag,
             delete_tag,
+            related_tags,
             get_api_token,
             export_opml,
             export_json,
