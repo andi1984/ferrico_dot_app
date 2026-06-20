@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0] - 2026-06-20
+
+### Features
+
+- accept v2 Drive sync snapshot in JSON import
+
+
 ## [0.11.1] - 2026-06-20
 
 ### Bug Fixes
