@@ -200,16 +200,8 @@ pub fn legacy_export_to_snapshot(json: &str) -> Result<crate::merge::SyncSnapsho
 pub fn import_json(conn: &Connection, json: &str) -> Result<ImportResult, AppError> {
     let json = crate::io_validate::strip_bom(json);
     crate::io_validate::validate_import_size(json)?;
-    let export: JsonExport = serde_json::from_str(json).map_err(|e| AppError::Validation {
-        message: format!("invalid JSON: {e}"),
-    })?;
+    let export = parse_json_export(json)?;
     crate::io_validate::validate_bookmark_count(export.bookmarks.len())?;
-
-    if export.version != 1 {
-        return Err(AppError::Validation {
-            message: format!("unsupported JSON export version {}", export.version),
-        });
-    }
 
     let tx = conn.unchecked_transaction()?;
     let mut imported = 0usize;
@@ -366,6 +358,80 @@ pub fn import_json(conn: &Connection, json: &str) -> Result<ImportResult, AppErr
 
     tx.commit()?;
     Ok(ImportResult { imported, errors })
+}
+
+/// Accept any JSON backup Ferrico can produce and normalize it to the v1
+/// `JsonExport` the importer consumes:
+///   * the v1 `Settings → Export → JSON` file (`{version:1, exported_at, …}`), and
+///   * the v2 Google Drive sync snapshot (`{version:2, snapshot:{…}}`) — e.g. a
+///     `ferrico-backup.json` recovered from Drive version history. (Its
+///     tombstoned/soft-deleted rows are dropped: import only inserts live rows.)
+fn parse_json_export(json: &str) -> Result<JsonExport, AppError> {
+    // v1 export — the native import shape.
+    if let Ok(export) = serde_json::from_str::<JsonExport>(json) {
+        if export.version == 1 {
+            return Ok(export);
+        }
+        return Err(AppError::Validation {
+            message: format!("unsupported JSON export version {}", export.version),
+        });
+    }
+    // v2 Drive sync snapshot.
+    if let Some(snap) = crate::merge::from_json(json) {
+        return Ok(snapshot_to_export(snap));
+    }
+    Err(AppError::Validation {
+        message: "invalid JSON: not a recognized Ferrico export or Google Drive backup".to_string(),
+    })
+}
+
+/// Project a (tombstone-carrying) sync snapshot down to the active-only
+/// `JsonExport` the importer consumes. Covers are absent from `JsonExport`,
+/// so `cover_url` is dropped (import doesn't set covers anyway).
+fn snapshot_to_export(snap: crate::merge::SyncSnapshot) -> JsonExport {
+    JsonExport {
+        version: 1,
+        exported_at: 0,
+        folders: snap
+            .folders
+            .into_iter()
+            .filter(|f| f.deleted_at.is_none())
+            .map(|f| JsonFolder {
+                id: f.id,
+                name: f.name,
+                parent_id: f.parent_id,
+                created_at: f.created_at,
+            })
+            .collect(),
+        tags: snap
+            .tags
+            .into_iter()
+            .filter(|t| t.deleted_at.is_none())
+            .map(|t| JsonTag {
+                id: t.id,
+                name: t.name,
+                color: t.color,
+                created_at: t.created_at,
+            })
+            .collect(),
+        bookmarks: snap
+            .bookmarks
+            .into_iter()
+            .filter(|b| b.deleted_at.is_none())
+            .map(|b| JsonBookmark {
+                id: b.id,
+                url: b.url,
+                title: b.title,
+                description: b.description,
+                favicon_url: b.favicon_url,
+                feed_url: b.feed_url,
+                folder_id: b.folder_id,
+                tag_ids: b.tag_ids,
+                created_at: b.created_at,
+                updated_at: b.updated_at,
+            })
+            .collect(),
+    }
 }
 
 // ─── Netscape HTML format ─────────────────────────────────────────────────────
@@ -1118,6 +1184,59 @@ mod tests {
             }
             Err(AppError::Validation { .. }) => { /* structural parse failure is acceptable */ }
             Err(e) => panic!("unexpected error kind: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn json_import_accepts_v2_drive_sync_snapshot() {
+        // A `ferrico-backup.json` recovered from Google Drive is the v2 sync
+        // snapshot (`{version:2, snapshot:{…}}`), NOT the v1 export. Importing it
+        // must work, and tombstoned (soft-deleted) rows must be dropped.
+        use crate::merge::{SyncBookmark, SyncFolder, SyncSnapshot, SyncTag};
+        let snap = SyncSnapshot {
+            folders: vec![SyncFolder {
+                id: "f1".into(), name: "Work".into(), parent_id: None,
+                created_at: 1, updated_at: 1, deleted_at: None,
+            }],
+            tags: vec![SyncTag {
+                id: "t1".into(), name: "rust".into(), color: "#f74c00".into(),
+                created_at: 1, updated_at: 1, deleted_at: None,
+            }],
+            bookmarks: vec![
+                SyncBookmark {
+                    id: "b1".into(), url: "https://rust-lang.org".into(), title: "Rust".into(),
+                    description: Some("lang".into()), favicon_url: None, feed_url: None,
+                    cover_url: None, folder_id: Some("f1".into()), tag_ids: vec!["t1".into()],
+                    created_at: 1, updated_at: 1, deleted_at: None,
+                },
+                SyncBookmark {
+                    id: "b2".into(), url: "https://gone.example".into(), title: "Gone".into(),
+                    description: None, favicon_url: None, feed_url: None, cover_url: None,
+                    folder_id: None, tag_ids: vec![], created_at: 1, updated_at: 2,
+                    deleted_at: Some(2), // tombstone — must NOT import
+                },
+            ],
+        };
+        let drive_json = crate::merge::to_json(&snap).unwrap();
+
+        let conn = mem();
+        let result = import_json(&conn, &drive_json).unwrap();
+        assert_eq!(result.imported, 1, "only the live bookmark imports; errors: {:?}", result.errors);
+        let bookmarks = db_get_bookmarks(&conn, None, None, None, false).unwrap();
+        assert_eq!(bookmarks.len(), 1);
+        assert_eq!(bookmarks[0].url, "https://rust-lang.org");
+        assert_eq!(bookmarks[0].tags[0].name, "rust");
+        assert!(bookmarks[0].folder_id.is_some(), "folder hierarchy preserved");
+        assert!(bookmarks.iter().all(|b| b.url != "https://gone.example"),
+            "tombstoned bookmark must not be imported");
+    }
+
+    #[test]
+    fn json_import_rejects_unrecognized_json() {
+        let conn = mem();
+        match import_json(&conn, r#"{"foo":"bar"}"#) {
+            Err(AppError::Validation { .. }) => {}
+            other => panic!("expected Validation error, got {other:?}"),
         }
     }
 
