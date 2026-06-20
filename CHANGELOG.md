@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.1] - 2026-06-20
+
+### Bug Fixes
+
+- never erase Drive backup from an empty or unreadable remote
+
+
 ## [0.11.0] - 2026-06-18
 
 ### Features
