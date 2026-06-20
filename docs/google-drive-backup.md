@@ -18,20 +18,22 @@ how to troubleshoot it.
 
 | Aspect | Behaviour |
 |---|---|
-| **Backup file** | A single `ferrico-backup.json` — the same lossless JSON as **Settings → Export → JSON** — stored in a Drive folder you choose. |
-| **On app open** | Pulls the latest snapshot. If the remote is newer than the last reconciliation point, the local database is replaced with it. |
-| **Before app close** | Pushes the current database, overwriting the remote snapshot. The window is held open until the upload finishes. |
-| **Periodic autosave** | Optional. Pushes every *N* minutes while the app runs (`0` disables it). |
-| **Manual** | **Sync now** pulls, then pushes the resulting state. |
-| **Conflict resolution** | Full-snapshot **last-write-wins**, keyed on Drive's server-side `modifiedTime` (immune to clock skew between machines). |
+| **Backup file** | A single `ferrico-backup.json` (a versioned, tombstone-carrying snapshot) stored in a Drive folder you choose. A legacy JSON export left by an older build is upgraded on first sync. |
+| **Every sync** | Pull the remote, **merge** it with the local database record-by-record, write the union back to both sides. Merge — not overwrite — so no side can clobber the other's edits. |
+| **On app open** | Runs a full sync (pull + merge + push). |
+| **Before app close** | Runs a full sync; the window is held open until it finishes. |
+| **Periodic autosave** | Optional. Runs a full sync every *N* minutes while the app runs (`0` disables it). |
+| **Manual** | **Sync now** runs the same full sync. |
+| **Conflict resolution** | Per-record **merge**: every row carries a client-minted UUID and an `updated_at` clock (plus a `deleted_at` tombstone), and the higher-ranked row wins each id. Commutative, so both machines converge on the same result. |
+| **Drive precedence** | A fresh install or a wiped local DB never overwrites a populated remote: when the local snapshot is empty the remote is always pulled in first. An unreadable/corrupt remote is **never** overwritten — the sync aborts and surfaces an error instead of erasing your backup. |
 
 ### Trade-offs to know
 
-- **Last-write-wins is not a merge.** If two machines edit while *both* are
-  offline and then sync, the one that syncs last overwrites the other's changes.
-  This is fine for using one machine at a time; it is **not** a CRDT.
-- **The Trash (bin) is not synced.** The JSON export excludes soft-deleted
-  bookmarks, so items in the bin stay local to each machine.
+- **Concurrent edits to the *same* record.** Two machines editing the same
+  bookmark while both offline resolve by `updated_at` (later write wins that
+  one record); edits to *different* records always both survive.
+- **The Trash (bin) is not synced.** Soft-deleted bookmarks stay local; only a
+  tombstone (the fact of deletion) propagates, not the binned item itself.
 - **`drive.file` cannot browse pre-existing folders.** The folder picker only
   lists folders Ferrico created. To target a folder, create it from within
   Ferrico (it appears in your Drive immediately).
@@ -110,6 +112,12 @@ folder**. On the next launch (or **Sync now**) it pulls the shared snapshot.
 - **`src/events.ts`** — `backup-syncing` / `backup-synced` / `backup-error`
   events drive the in-app sync indicator and the post-pull refresh.
 
-The LWW clock is the remote file's `modifiedTime`: `last_sync` records the value
-last reconciled with, a pull happens only when the remote's `modifiedTime` is
-greater, and each push advances `last_sync` to the value the upload returns.
+- **`src-tauri/src/merge.rs`** — the pure, commutative per-record merge
+  (`merge`, the `Mergeable` rank, tag-name-collision remap) and the versioned
+  snapshot wire format. Unit-tested in isolation.
+
+`last_sync` records the remote `modifiedTime` last reconciled with; a pull
+happens when the remote's `modifiedTime` is greater **or** the local snapshot is
+empty (Drive precedence). The merged union is pushed back only when it adds
+something the remote lacks, and a remote that fails to parse aborts the sync
+untouched — so an empty or corrupt read can never erase the backup.

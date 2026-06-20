@@ -338,7 +338,13 @@ export default function App() {
         setBackupSyncing(false)
         if (op === 'pull' && changed) refreshRef.current()
       },
-      onError: () => setBackupSyncing(false),
+      onError: ({ message }) => {
+        setBackupSyncing(false)
+        // Surface sync failures (e.g. an unreadable remote the engine refused
+        // to overwrite) instead of swallowing them — otherwise the backup
+        // silently stops working.
+        if (message) setError(`Google Drive sync: ${message}`)
+      },
     })
       .then((fn) => {
         if (active) unlisten = fn

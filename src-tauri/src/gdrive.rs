@@ -876,11 +876,27 @@ fn rfc3339_after(remote: &Option<String>, last: &Option<String>) -> bool {
 
 /// Parse a remote file into a snapshot, tolerating the legacy v1 (active-only)
 /// export so an existing Drive backup upgrades cleanly on the first merge.
-fn parse_remote_snapshot(json: &str) -> crate::merge::SyncSnapshot {
-    if let Some(s) = crate::merge::from_json(json) {
-        return s;
+///
+/// A blank file is a legitimately empty snapshot (e.g. a backup file just
+/// created by another client that hasn't written it yet). A **non-empty** file
+/// we cannot parse is an error — we must never silently turn an unreadable
+/// remote into an empty snapshot, because the caller would then overwrite the
+/// real backup with nothing. (That was the "it erased my backup" bug.)
+fn parse_remote_snapshot(json: &str) -> Result<crate::merge::SyncSnapshot, AppError> {
+    if json.trim().is_empty() {
+        return Ok(crate::merge::SyncSnapshot::default());
     }
-    crate::io::legacy_export_to_snapshot(json).unwrap_or_default()
+    if let Some(s) = crate::merge::from_json(json) {
+        return Ok(s);
+    }
+    if let Ok(s) = crate::io::legacy_export_to_snapshot(json) {
+        return Ok(s);
+    }
+    Err(berr(
+        "the remote backup file exists but could not be read (unrecognized or \
+         corrupt format) — refusing to overwrite it. Inspect ferrico-backup.json \
+         in your Drive folder, then retry.",
+    ))
 }
 
 /// The reconcile core: pure orchestration over a `DriveStore`. No DB, no Tauri,
@@ -908,14 +924,23 @@ async fn sync_once<S: DriveStore>(
 
     let remote = store.find_backup(folder_id).await?;
 
+    // Drive has precedence over an empty local. Pull when the remote advanced
+    // past our last reconcile point OR whenever the local snapshot is empty: a
+    // fresh install or a wiped DB (with a stale `last_sync` that survived in
+    // settings.json) must reconcile the remote in, never blind-overwrite a
+    // populated backup with nothing.
+    let local_empty =
+        local.bookmarks.is_empty() && local.folders.is_empty() && local.tags.is_empty();
     let pulled_json = match &remote {
-        Some(f) if rfc3339_after(&f.modified_time, &last_sync) => {
+        Some(f) if rfc3339_after(&f.modified_time, &last_sync) || local_empty => {
             Some(store.download(&f.id).await?)
         }
         _ => None,
     };
+    // `?` here aborts the whole sync (before any push) if the remote is present
+    // but unreadable, so a corrupt/unknown remote is preserved, not erased.
     let merged = match &pulled_json {
-        Some(json) => crate::merge::merge(local.clone(), parse_remote_snapshot(json)),
+        Some(json) => crate::merge::merge(local.clone(), parse_remote_snapshot(json)?),
         None => local.clone(),
     };
     let merged_json = crate::merge::to_json(&merged).map_err(berr)?;
@@ -994,6 +1019,23 @@ mod sync_tests {
         }
         fn remote_mtime(&self) -> String {
             self.inner.lock().unwrap().files[0].modified_time.clone()
+        }
+        /// Seed a pre-existing remote backup file with raw content (simulating a
+        /// backup written by another machine, an older build, or a corrupt file).
+        /// Returns the assigned `modifiedTime`.
+        fn seed(&self, content: &str) -> String {
+            let mut inner = self.inner.lock().unwrap();
+            let mt = Self::tick(&mut inner);
+            let id = format!("file-{}", inner.files.len() + 1);
+            inner.files.push(FakeFile {
+                id,
+                content: content.to_string(),
+                modified_time: mt.clone(),
+            });
+            mt
+        }
+        fn remote_raw(&self) -> String {
+            self.inner.lock().unwrap().files[0].content.clone()
         }
     }
     impl DriveStore for FakeDrive {
@@ -1208,5 +1250,87 @@ mod sync_tests {
 
         assert!(!changed);
         assert_eq!(drive.remote_mtime(), mtime_after_first, "no redundant upload");
+    }
+
+    /// THE reported bug. Drive already holds bookmarks (pushed from another
+    /// machine). A brand-new install — empty DB, no `last_sync`/`file_id` — does
+    /// its first sync. Drive must have precedence: the client pulls the data and
+    /// the remote backup is NOT erased by the empty newcomer.
+    #[tokio::test]
+    async fn fresh_install_does_not_erase_populated_remote() {
+        let drive = FakeDrive::new();
+        let remote_snap = snap(vec![bm("X", "x", 10, None), bm("Y", "y", 20, None)]);
+        drive.seed(&crate::merge::to_json(&remote_snap).unwrap());
+
+        let mut fresh = Client::new(); // empty local, no sync state
+        let changed = fresh.sync(&drive).await;
+
+        assert!(changed, "fresh install must pull the remote backup");
+        assert_eq!(fresh.title_of("X"), Some("x"));
+        assert_eq!(fresh.title_of("Y"), Some("y"));
+        let r = drive.remote();
+        assert_eq!(r.bookmarks.len(), 2, "remote backup must survive an empty client");
+        assert_eq!(drive.file_count(), 1, "must reuse the existing backup file");
+    }
+
+    /// A remote file that exists and is non-empty but cannot be parsed (corrupt,
+    /// unknown format, partial download) must NEVER be silently overwritten with
+    /// an empty snapshot. The sync errors out and leaves the remote untouched.
+    #[tokio::test]
+    async fn unreadable_remote_is_never_overwritten() {
+        let drive = FakeDrive::new();
+        drive.seed("this is not valid ferrico json at all");
+
+        let local = SyncSnapshot::default();
+        let result = sync_once(&drive, "folder", local, None, None, None).await;
+
+        assert!(result.is_err(), "must refuse to sync against an unreadable remote");
+        assert_eq!(
+            drive.remote_raw(),
+            "this is not valid ferrico json at all",
+            "remote backup content must be left byte-for-byte untouched"
+        );
+        assert_eq!(drive.file_count(), 1);
+    }
+
+    /// A legacy v1 export (the pre-merge `export_json` format) sitting on Drive
+    /// must upgrade cleanly on a fresh client's first sync, never be dropped.
+    #[tokio::test]
+    async fn legacy_v1_remote_is_preserved_on_fresh_sync() {
+        let drive = FakeDrive::new();
+        let legacy = r#"{"version":1,"exported_at":0,"folders":[],"tags":[],
+            "bookmarks":[{"id":"X","url":"https://example.com/X","title":"x",
+            "description":null,"favicon_url":null,"feed_url":null,"folder_id":null,
+            "tag_ids":[],"created_at":1,"updated_at":1}]}"#;
+        drive.seed(legacy);
+
+        let mut fresh = Client::new();
+        fresh.sync(&drive).await;
+
+        assert_eq!(fresh.title_of("X"), Some("x"), "legacy bookmark must import");
+        assert_eq!(drive.remote().bookmarks.len(), 1, "legacy data must not be erased");
+    }
+
+    /// A wiped local DB whose `settings.json` survived: it still "remembers"
+    /// `last_sync`/`file_id`/`digest` from before, so the staleness gate alone
+    /// would skip the pull and then push the now-empty DB over the remote. Drive
+    /// precedence on an empty local must force a reconcile instead.
+    #[tokio::test]
+    async fn wiped_local_with_stale_sync_state_does_not_erase_remote() {
+        let drive = FakeDrive::new();
+        let remote_snap = snap(vec![bm("X", "x", 10, None)]);
+        let mt = drive.seed(&crate::merge::to_json(&remote_snap).unwrap());
+        let stale_digest = digest(&crate::merge::to_json(&remote_snap).unwrap());
+
+        let mut client = Client {
+            local: SyncSnapshot::default(), // DB gone
+            last_sync: Some(mt),            // but we "remember" we were in sync
+            file_id: Some("file-1".into()),
+            digest: Some(stale_digest),
+        };
+        client.sync(&drive).await;
+
+        assert_eq!(drive.remote().bookmarks.len(), 1, "remote must survive a wiped local");
+        assert_eq!(client.title_of("X"), Some("x"), "client recovers data from remote");
     }
 }
