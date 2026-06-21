@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.1] - 2026-06-21
+
+### Bug Fixes
+
+- prevent FOREIGN KEY failure when applying Drive snapshot
+
+
 ## [0.12.0] - 2026-06-20
 
 ### Features
