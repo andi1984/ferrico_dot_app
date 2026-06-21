@@ -1475,13 +1475,20 @@ pub fn db_apply_sync_snapshot(
     let folder_ids: HashSet<&str> = snap.folders.iter().map(|f| f.id.as_str()).collect();
 
     let tx = conn.unchecked_transaction()?;
+    // Folders are inserted in snapshot order (the merge sorts by UUID), so a child can
+    // land before its parent. Defer FK checks to commit so the self-referential
+    // folders.parent_id FK doesn't fire mid-loop on out-of-order rows.
+    tx.execute_batch("PRAGMA defer_foreign_keys = ON")?;
     db_clear_all_data(&tx)?;
 
     for f in &snap.folders {
+        // Drop a parent reference the merge didn't carry (parent tombstoned/omitted on
+        // another machine) so the FK holds and the folder falls to the root.
+        let parent_id = f.parent_id.as_deref().filter(|pid| folder_ids.contains(pid));
         tx.execute(
             "INSERT INTO folders (id, name, parent_id, created_at, updated_at, deleted_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![f.id, f.name, f.parent_id, f.created_at, f.updated_at, f.deleted_at],
+            params![f.id, f.name, parent_id, f.created_at, f.updated_at, f.deleted_at],
         )?;
     }
 
@@ -2592,6 +2599,55 @@ mod tests {
         let bms = db_get_bookmarks(&conn, None, None, None, false).unwrap();
         assert_eq!(bms.len(), 1);
         assert_eq!(bms[0].folder_id, None);
+    }
+
+    #[test]
+    fn sync_apply_inserts_child_folder_before_parent() {
+        // The merge sorts folders by UUID, so a child can precede its parent in the
+        // snapshot. Inserts must not trip the self-referential folders.parent_id FK.
+        let conn = mem();
+        let folder = |id: &str, parent: Option<&str>| crate::merge::SyncFolder {
+            id: id.into(),
+            name: id.into(),
+            parent_id: parent.map(|p| p.into()),
+            created_at: 1,
+            updated_at: 1,
+            deleted_at: None,
+        };
+        let snap = crate::merge::SyncSnapshot {
+            // child first, parent second — out of FK order on purpose
+            folders: vec![folder("child", Some("parent")), folder("parent", None)],
+            tags: vec![],
+            bookmarks: vec![],
+        };
+        db_apply_sync_snapshot(&conn, &snap).unwrap();
+        let folders = db_get_folders(&conn).unwrap();
+        assert_eq!(folders.len(), 2);
+        let child = folders.iter().find(|f| f.id == "child").unwrap();
+        assert_eq!(child.parent_id.as_deref(), Some("parent"));
+    }
+
+    #[test]
+    fn sync_apply_drops_reference_to_missing_parent_folder() {
+        // A folder whose parent was tombstoned/omitted elsewhere must fall to the root
+        // (parent_id NULL), not break the foreign key.
+        let conn = mem();
+        let snap = crate::merge::SyncSnapshot {
+            folders: vec![crate::merge::SyncFolder {
+                id: "orphan".into(),
+                name: "orphan".into(),
+                parent_id: Some("ghost-parent".into()), // parent intentionally absent
+                created_at: 1,
+                updated_at: 1,
+                deleted_at: None,
+            }],
+            tags: vec![],
+            bookmarks: vec![],
+        };
+        db_apply_sync_snapshot(&conn, &snap).unwrap();
+        let folders = db_get_folders(&conn).unwrap();
+        assert_eq!(folders.len(), 1);
+        assert_eq!(folders[0].parent_id, None);
     }
 
     #[test]
