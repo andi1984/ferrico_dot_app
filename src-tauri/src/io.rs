@@ -190,6 +190,7 @@ pub fn legacy_export_to_snapshot(json: &str) -> Result<crate::merge::SyncSnapsho
                 created_at: b.created_at,
                 updated_at: b.updated_at,
                 deleted_at: None,
+                purged_at: None,
             })
             .collect(),
     })
@@ -1207,13 +1208,14 @@ mod tests {
                     id: "b1".into(), url: "https://rust-lang.org".into(), title: "Rust".into(),
                     description: Some("lang".into()), favicon_url: None, feed_url: None,
                     cover_url: None, folder_id: Some("f1".into()), tag_ids: vec!["t1".into()],
-                    created_at: 1, updated_at: 1, deleted_at: None,
+                    created_at: 1, updated_at: 1, deleted_at: None, purged_at: None,
                 },
                 SyncBookmark {
                     id: "b2".into(), url: "https://gone.example".into(), title: "Gone".into(),
                     description: None, favicon_url: None, feed_url: None, cover_url: None,
                     folder_id: None, tag_ids: vec![], created_at: 1, updated_at: 2,
                     deleted_at: Some(2), // tombstone — must NOT import
+                    purged_at: None,
                 },
             ],
         };

@@ -242,6 +242,23 @@ pub fn init_schema(conn: &Connection) -> Result<(), AppError> {
         conn.execute("ALTER TABLE bookmarks ADD COLUMN cover_url TEXT", [])?;
     }
 
+    // Migration: `purged_at` marks a bin row the user "permanently deleted".
+    // Purging must leave a redacted tombstone rather than hard-DELETE the row:
+    // other synced machines still carry it, the merge unions by id, and
+    // absence always loses — a hard-deleted row would resurrect into the bin
+    // on the next pull, forever.
+    let has_purged_at: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('bookmarks') WHERE name='purged_at'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+    if !has_purged_at {
+        conn.execute("ALTER TABLE bookmarks ADD COLUMN purged_at INTEGER", [])?;
+    }
+
     // Migration: per-record sync (multi-machine merge) needs an `updated_at`
     // clock and a `deleted_at` tombstone on folders and tags too — bookmarks
     // already carry both. Additive + idempotent. Existing rows backfill
@@ -681,7 +698,7 @@ pub fn db_get_counts(conn: &Connection) -> Result<Counts, AppError> {
         "SELECT \
            COUNT(*) FILTER (WHERE deleted_at IS NULL) AS total, \
            COUNT(*) FILTER (WHERE deleted_at IS NULL AND folder_id IS NULL) AS inbox, \
-           COUNT(*) FILTER (WHERE deleted_at IS NOT NULL) AS bin, \
+           COUNT(*) FILTER (WHERE deleted_at IS NOT NULL AND purged_at IS NULL) AS bin, \
            COUNT(*) FILTER (WHERE deleted_at IS NULL AND is_broken = 1) AS broken \
          FROM bookmarks",
         [],
@@ -751,9 +768,15 @@ pub fn db_add_bookmark(
 }
 
 pub fn db_delete_bookmark(conn: &Connection, id: &str) -> Result<(), AppError> {
+    // `updated_at` must advance together with the tombstone: the sync merge
+    // ranks rows by updated_at first, so a delete that keeps a stale clock
+    // loses to any remote edit made after that clock — even when the delete
+    // actually happened later.
+    let ts = now();
     let n = conn.execute(
-        "UPDATE bookmarks SET deleted_at = ?1 WHERE id = ?2 AND deleted_at IS NULL",
-        params![now(), id],
+        "UPDATE bookmarks SET deleted_at = ?1, updated_at = ?1 \
+         WHERE id = ?2 AND deleted_at IS NULL",
+        params![ts, id],
     )?;
     if n == 0 {
         return Err(AppError::NotFound { message: format!("bookmark {id}") });
@@ -765,7 +788,7 @@ pub fn db_get_bin_bookmarks(conn: &Connection) -> Result<Vec<Bookmark>, AppError
     let mut stmt = conn.prepare(
         "SELECT id, url, title, description, favicon_url, cover_url, feed_url, folder_id, \
          created_at, updated_at, deleted_at, is_broken, last_checked_at FROM bookmarks \
-         WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC",
+         WHERE deleted_at IS NOT NULL AND purged_at IS NULL ORDER BY deleted_at DESC",
     )?;
     let raws = stmt.query_map([], row_to_raw)?
         .collect::<Result<Vec<_>, _>>()?;
@@ -774,16 +797,23 @@ pub fn db_get_bin_bookmarks(conn: &Connection) -> Result<Vec<Bookmark>, AppError
 
 pub fn db_get_bin_count(conn: &Connection) -> Result<i64, AppError> {
     Ok(conn.query_row(
-        "SELECT COUNT(*) FROM bookmarks WHERE deleted_at IS NOT NULL",
+        "SELECT COUNT(*) FROM bookmarks WHERE deleted_at IS NOT NULL AND purged_at IS NULL",
         [],
         |r| r.get(0),
     )?)
 }
 
 pub fn db_restore_bookmark(conn: &Connection, id: &str) -> Result<(), AppError> {
+    // The restore must OUTRANK the tombstone every other machine still holds,
+    // or it silently reverts on the next sync: at an equal clock the merge tie
+    // goes to the delete, and the clock is whole seconds — a quick
+    // delete-then-restore lands in the same second. MAX(now, deleted_at + 1)
+    // guarantees a strictly newer clock. Purged rows are unrestorable: their
+    // content is already redacted.
     let n = conn.execute(
-        "UPDATE bookmarks SET deleted_at = NULL WHERE id = ?1 AND deleted_at IS NOT NULL",
-        params![id],
+        "UPDATE bookmarks SET updated_at = MAX(?1, deleted_at + 1), deleted_at = NULL \
+         WHERE id = ?2 AND deleted_at IS NOT NULL AND purged_at IS NULL",
+        params![now(), id],
     )?;
     if n == 0 {
         return Err(AppError::NotFound { message: format!("bookmark {id}") });
@@ -802,29 +832,67 @@ pub fn db_move_bookmark(conn: &Connection, id: &str, folder_id: Option<&str>) ->
     Ok(())
 }
 
-pub fn db_permanently_delete_bookmark(conn: &Connection, id: &str) -> Result<(), AppError> {
-    let n = conn.execute(
-        "DELETE FROM bookmarks WHERE id = ?1 AND deleted_at IS NOT NULL",
-        params![id],
-    )?;
-    if n == 0 {
-        return Err(AppError::NotFound { message: format!("bookmark {id}") });
+/// Redact and mark binned rows as purged, in one transaction: the "permanent
+/// delete". The content really is stripped (url, title, description, …) and
+/// the tag links are cut, but the row itself stays as a `purged_at` tombstone,
+/// hidden from every view *including* the bin. A hard DELETE would instead
+/// resurrect on the next sync — every other machine still carries the row, the
+/// merge unions by id, and absence always loses. Bumping `updated_at` makes
+/// the purge propagate and win against the stale copies.
+fn purge_bookmark_rows(conn: &Connection, ids: &[String]) -> Result<(), AppError> {
+    if ids.is_empty() {
+        return Ok(());
     }
+    let tx = conn.unchecked_transaction()?;
+    let ts = now();
+    for id in ids {
+        tx.execute("DELETE FROM bookmark_tags WHERE bookmark_id = ?1", params![id])?;
+        tx.execute(
+            "UPDATE bookmarks SET url = '', title = '', description = NULL, \
+                    favicon_url = NULL, feed_url = NULL, cover_url = NULL, \
+                    folder_id = NULL, is_broken = 0, last_checked_at = NULL, \
+                    purged_at = ?1, updated_at = ?1 \
+             WHERE id = ?2 AND deleted_at IS NOT NULL AND purged_at IS NULL",
+            params![ts, id],
+        )?;
+    }
+    tx.commit()?;
     Ok(())
 }
 
+pub fn db_permanently_delete_bookmark(conn: &Connection, id: &str) -> Result<(), AppError> {
+    let eligible: bool = conn
+        .query_row(
+            "SELECT 1 FROM bookmarks WHERE id = ?1 AND deleted_at IS NOT NULL AND purged_at IS NULL",
+            params![id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if !eligible {
+        return Err(AppError::NotFound { message: format!("bookmark {id}") });
+    }
+    purge_bookmark_rows(conn, &[id.to_string()])
+}
+
 pub fn db_empty_bin(conn: &Connection) -> Result<(), AppError> {
-    conn.execute("DELETE FROM bookmarks WHERE deleted_at IS NOT NULL", [])?;
-    Ok(())
+    let ids: Vec<String> = conn
+        .prepare("SELECT id FROM bookmarks WHERE deleted_at IS NOT NULL AND purged_at IS NULL")?
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    purge_bookmark_rows(conn, &ids)
 }
 
 pub fn db_purge_expired_bin(conn: &Connection, days: i64) -> Result<(), AppError> {
     let cutoff = now() - days * 86400;
-    conn.execute(
-        "DELETE FROM bookmarks WHERE deleted_at IS NOT NULL AND deleted_at < ?1",
-        params![cutoff],
-    )?;
-    Ok(())
+    let ids: Vec<String> = conn
+        .prepare(
+            "SELECT id FROM bookmarks \
+             WHERE deleted_at IS NOT NULL AND deleted_at < ?1 AND purged_at IS NULL",
+        )?
+        .query_map(params![cutoff], |r| r.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    purge_bookmark_rows(conn, &ids)
 }
 
 /// Resolve a folder *path* to a folder id, creating any missing levels.
@@ -1419,7 +1487,7 @@ pub fn db_export_sync_snapshot(conn: &Connection) -> Result<crate::merge::SyncSn
     let bookmarks = conn
         .prepare(
             "SELECT id, url, title, description, favicon_url, feed_url, cover_url, folder_id, \
-                    created_at, updated_at, deleted_at FROM bookmarks",
+                    created_at, updated_at, deleted_at, purged_at FROM bookmarks",
         )?
         .query_map([], |r| {
             Ok(crate::merge::SyncBookmark {
@@ -1435,6 +1503,7 @@ pub fn db_export_sync_snapshot(conn: &Connection) -> Result<crate::merge::SyncSn
                 created_at: r.get(8)?,
                 updated_at: r.get(9)?,
                 deleted_at: r.get(10)?,
+                purged_at: r.get(11)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?
@@ -1453,14 +1522,19 @@ pub fn db_export_sync_snapshot(conn: &Connection) -> Result<crate::merge::SyncSn
 /// Replace the entire database with a merged `SyncSnapshot`, in one transaction.
 /// Tombstones are written too, so future merges still observe the deletions.
 ///
-/// Two schema realities are handled here:
+/// Schema/consistency realities handled here:
 /// * `tags.name` is UNIQUE across *all* rows (the inline constraint can't be made
 ///   partial without a table rebuild), yet a legitimate merge can yield a live
 ///   tag and a dead tag sharing a name. Dead tags are stored with their name set
 ///   to their id — unique, and never displayed (every read filters tombstones).
-/// * a bookmark may point at a folder the merge tombstoned/omitted, or carry a
+/// * a bookmark may point at a folder that is tombstoned or missing, or carry a
 ///   tag_id that resolved to a tombstone; those references are dropped so the
-///   foreign keys and the "no dead tags on a bookmark" invariant both hold.
+///   foreign keys, folder visibility, and the "no dead tags on a bookmark"
+///   invariant all hold. (`merge::normalize` already guarantees this for
+///   snapshots we merged ourselves — this is the safety net for direct applies.)
+/// * link-health state (`is_broken`, `last_checked_at`) is machine-local — each
+///   machine checks its own network reality — and not part of the snapshot, so
+///   it is carried across the rebuild instead of being silently reset.
 pub fn db_apply_sync_snapshot(
     conn: &Connection,
     snap: &crate::merge::SyncSnapshot,
@@ -1473,12 +1547,35 @@ pub fn db_apply_sync_snapshot(
         .map(|t| t.id.as_str())
         .collect();
     let folder_ids: HashSet<&str> = snap.folders.iter().map(|f| f.id.as_str()).collect();
+    let live_folder_ids: HashSet<&str> = snap
+        .folders
+        .iter()
+        .filter(|f| f.deleted_at.is_none())
+        .map(|f| f.id.as_str())
+        .collect();
 
     let tx = conn.unchecked_transaction()?;
     // Folders are inserted in snapshot order (the merge sorts by UUID), so a child can
     // land before its parent. Defer FK checks to commit so the self-referential
     // folders.parent_id FK doesn't fire mid-loop on out-of-order rows.
     tx.execute_batch("PRAGMA defer_foreign_keys = ON")?;
+
+    // Preserve machine-local health state across the wipe-and-rebuild.
+    let mut health: HashMap<String, (i64, Option<i64>)> = HashMap::new();
+    {
+        let mut stmt = tx.prepare(
+            "SELECT id, is_broken, last_checked_at FROM bookmarks \
+             WHERE is_broken = 1 OR last_checked_at IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, (r.get::<_, i64>(1)?, r.get::<_, Option<i64>>(2)?)))
+        })?;
+        for row in rows {
+            let (id, state) = row?;
+            health.insert(id, state);
+        }
+    }
+
     db_clear_all_data(&tx)?;
 
     for f in &snap.folders {
@@ -1503,16 +1600,18 @@ pub fn db_apply_sync_snapshot(
     }
 
     for b in &snap.bookmarks {
-        // Drop a folder reference the merge didn't carry (e.g. folder tombstoned
-        // on another machine) so the FK holds and the bookmark falls to the inbox.
-        let folder_id = b.folder_id.as_deref().filter(|fid| folder_ids.contains(fid));
+        // A folder reference must point at a LIVE folder — a bookmark filed in
+        // a tombstoned or missing folder falls to the inbox (folder views never
+        // render dead folders, so keeping the ref would just hide the bookmark).
+        let folder_id = b.folder_id.as_deref().filter(|fid| live_folder_ids.contains(fid));
         tx.execute(
             "INSERT INTO bookmarks (id, url, title, description, favicon_url, feed_url, \
-                                    cover_url, folder_id, created_at, updated_at, deleted_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                                    cover_url, folder_id, created_at, updated_at, deleted_at, \
+                                    purged_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 b.id, b.url, b.title, b.description, b.favicon_url, b.feed_url, b.cover_url,
-                folder_id, b.created_at, b.updated_at, b.deleted_at
+                folder_id, b.created_at, b.updated_at, b.deleted_at, b.purged_at
             ],
         )?;
         for tid in &b.tag_ids {
@@ -1523,6 +1622,15 @@ pub fn db_apply_sync_snapshot(
                 )?;
             }
         }
+    }
+
+    // Restore the machine-local health state for rows that survived the merge.
+    for (id, (is_broken, last_checked_at)) in &health {
+        tx.execute(
+            "UPDATE bookmarks SET is_broken = ?1, last_checked_at = ?2 \
+             WHERE id = ?3 AND purged_at IS NULL",
+            params![is_broken, last_checked_at, id],
+        )?;
     }
 
     tx.commit()?;
@@ -1571,6 +1679,7 @@ pub fn db_merge_bookmark_duplicates(
     if discard_ids.is_empty() {
         return Ok(());
     }
+    let ts = now();
     // Copy all tags from each discard to the keeper
     for discard_id in discard_ids {
         conn.execute(
@@ -1579,11 +1688,18 @@ pub fn db_merge_bookmark_duplicates(
             params![keeper_id, discard_id],
         )?;
     }
-    // Soft-delete the discards
-    let ts = now();
+    // The keeper's tag set may have grown; tag_ids travel on the bookmark row
+    // in the sync snapshot, so the row's clock must advance or the gained tags
+    // never reliably reach the other machines.
+    conn.execute(
+        "UPDATE bookmarks SET updated_at = ?1 WHERE id = ?2",
+        params![ts, keeper_id],
+    )?;
+    // Soft-delete the discards, advancing their clocks (see db_delete_bookmark).
     for discard_id in discard_ids {
         conn.execute(
-            "UPDATE bookmarks SET deleted_at = ?1 WHERE id = ?2 AND deleted_at IS NULL",
+            "UPDATE bookmarks SET deleted_at = ?1, updated_at = ?1 \
+             WHERE id = ?2 AND deleted_at IS NULL",
             params![ts, discard_id],
         )?;
     }
@@ -1683,8 +1799,10 @@ pub fn db_delete_bookmarks(conn: &Connection, ids: &[String]) -> Result<(), AppE
     let tx = conn.unchecked_transaction()?;
     let ts = now();
     for id in ids {
+        // updated_at advances with the tombstone (see db_delete_bookmark).
         tx.execute(
-            "UPDATE bookmarks SET deleted_at = ?1 WHERE id = ?2 AND deleted_at IS NULL",
+            "UPDATE bookmarks SET deleted_at = ?1, updated_at = ?1 \
+             WHERE id = ?2 AND deleted_at IS NULL",
             params![ts, id],
         )?;
     }
@@ -2593,12 +2711,78 @@ mod tests {
                 created_at: 1,
                 updated_at: 1,
                 deleted_at: None,
+                purged_at: None,
             }],
         };
         db_apply_sync_snapshot(&conn, &snap).unwrap();
         let bms = db_get_bookmarks(&conn, None, None, None, false).unwrap();
         assert_eq!(bms.len(), 1);
         assert_eq!(bms[0].folder_id, None);
+    }
+
+    #[test]
+    fn sync_apply_drops_reference_to_tombstoned_folder() {
+        // The folder row EXISTS in the snapshot but is dead. Folder views never
+        // render tombstones, so keeping the reference would strand the bookmark
+        // outside every view except All — it must fall to the inbox instead.
+        let conn = mem();
+        let snap = crate::merge::SyncSnapshot {
+            folders: vec![crate::merge::SyncFolder {
+                id: "dead-folder".into(),
+                name: "dead".into(),
+                parent_id: None,
+                created_at: 1,
+                updated_at: 2,
+                deleted_at: Some(2),
+            }],
+            tags: vec![],
+            bookmarks: vec![crate::merge::SyncBookmark {
+                id: "b1".into(),
+                url: "https://a.test".into(),
+                title: "A".into(),
+                description: None,
+                favicon_url: None,
+                feed_url: None,
+                cover_url: None,
+                folder_id: Some("dead-folder".into()),
+                tag_ids: vec![],
+                created_at: 1,
+                updated_at: 1,
+                deleted_at: None,
+                purged_at: None,
+            }],
+        };
+        db_apply_sync_snapshot(&conn, &snap).unwrap();
+        let bms = db_get_bookmarks(&conn, None, None, None, false).unwrap();
+        assert_eq!(bms.len(), 1);
+        assert_eq!(bms[0].folder_id, None, "bookmark must land in the inbox");
+        assert_eq!(db_get_inbox_count(&conn).unwrap(), 1);
+    }
+
+    /// Link-health state is machine-local (not in the snapshot); a pull must
+    /// not wipe it — that reset the Broken view and re-triggered a full
+    /// network scan after every sync.
+    #[test]
+    fn sync_apply_preserves_health_state() {
+        let conn = mem();
+        let b = mk_bookmark(&conn, "https://dead.example", "Dead");
+        db_update_bookmark_health_batch(&conn, &[(b.id.clone(), true, 12345)]).unwrap();
+        assert_eq!(db_get_broken_count(&conn).unwrap(), 1);
+
+        // Simulate a pull: apply a merged snapshot over the same DB.
+        let snap = db_export_sync_snapshot(&conn).unwrap();
+        db_apply_sync_snapshot(&conn, &snap).unwrap();
+
+        assert_eq!(db_get_broken_count(&conn).unwrap(), 1, "broken flag survives the pull");
+        let (is_broken, checked): (i64, Option<i64>) = conn
+            .query_row(
+                "SELECT is_broken, last_checked_at FROM bookmarks WHERE id = ?1",
+                params![b.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(is_broken, 1);
+        assert_eq!(checked, Some(12345));
     }
 
     #[test]
@@ -2911,6 +3095,221 @@ mod tests {
         let bin = db_get_bin_bookmarks(&conn).unwrap();
         assert_eq!(bin.len(), 1);
         assert_eq!(bin[0].id, b2.id);
+    }
+
+    // ── sync clock (updated_at) on delete/restore ─────────────────────────────
+
+    fn raw_clocks(conn: &Connection, id: &str) -> (i64, Option<i64>, Option<i64>) {
+        conn.query_row(
+            "SELECT updated_at, deleted_at, purged_at FROM bookmarks WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap()
+    }
+
+    /// The merge ranks rows by `updated_at` first. A delete that leaves the
+    /// clock stale loses to ANY remote edit made after that clock — even when
+    /// the delete actually happened later — so deleting must advance it.
+    #[test]
+    fn delete_bookmark_advances_sync_clock() {
+        let conn = mem();
+        let b = mk_bookmark(&conn, "https://example.com", "Example");
+        conn.execute("UPDATE bookmarks SET updated_at = 1000 WHERE id = ?1", params![b.id])
+            .unwrap();
+
+        db_delete_bookmark(&conn, &b.id).unwrap();
+
+        let (updated, deleted, _) = raw_clocks(&conn, &b.id);
+        assert!(updated > 1000, "clock must advance with the tombstone");
+        assert_eq!(Some(updated), deleted, "tombstone and clock move together");
+    }
+
+    /// A restore with a stale clock ties with the tombstone other machines
+    /// hold, the tie goes to the delete, and the restore reverts on the next
+    /// sync. Restoring must advance the clock past the tombstone's.
+    #[test]
+    fn restore_bookmark_advances_sync_clock() {
+        let conn = mem();
+        let b = mk_bookmark(&conn, "https://example.com", "Example");
+        db_delete_bookmark(&conn, &b.id).unwrap();
+        conn.execute(
+            "UPDATE bookmarks SET updated_at = 1000, deleted_at = 1000 WHERE id = ?1",
+            params![b.id],
+        )
+        .unwrap();
+
+        db_restore_bookmark(&conn, &b.id).unwrap();
+
+        let (updated, deleted, _) = raw_clocks(&conn, &b.id);
+        assert!(updated > 1000, "restore must outrank the tombstone");
+        assert_eq!(deleted, None);
+    }
+
+    /// The clock is whole seconds: a quick delete-then-restore lands in the
+    /// same second, and at an equal clock the merge tie goes to the delete —
+    /// the restore must come out strictly newer than the tombstone.
+    #[test]
+    fn restore_outranks_tombstone_even_within_same_second() {
+        let conn = mem();
+        let b = mk_bookmark(&conn, "https://example.com", "Example");
+        let t = now() + 100; // a tombstone stamped "now" from the merge's view
+        conn.execute(
+            "UPDATE bookmarks SET deleted_at = ?1, updated_at = ?1 WHERE id = ?2",
+            params![t, b.id],
+        )
+        .unwrap();
+
+        db_restore_bookmark(&conn, &b.id).unwrap();
+
+        let (updated, deleted, _) = raw_clocks(&conn, &b.id);
+        assert_eq!(updated, t + 1, "restore must be strictly newer than the tombstone");
+        assert_eq!(deleted, None);
+    }
+
+    #[test]
+    fn batch_delete_advances_sync_clock() {
+        let conn = mem();
+        let b = mk_bookmark(&conn, "https://a.com", "A");
+        conn.execute("UPDATE bookmarks SET updated_at = 1000 WHERE id = ?1", params![b.id])
+            .unwrap();
+        db_delete_bookmarks(&conn, &[b.id.clone()]).unwrap();
+        let (updated, deleted, _) = raw_clocks(&conn, &b.id);
+        assert!(updated > 1000);
+        assert_eq!(Some(updated), deleted);
+    }
+
+    /// Merging duplicates changes the keeper's tag set (tag_ids travel on the
+    /// bookmark row in the snapshot) and tombstones the discards — every
+    /// touched row's clock must advance or the outcome doesn't sync.
+    #[test]
+    fn merge_duplicates_advances_both_clocks() {
+        let conn = mem();
+        let tag = mk_tag(&conn, "rust");
+        let keeper = mk_bookmark(&conn, "https://dup.com", "Keeper");
+        let discard = db_add_bookmark(
+            &conn,
+            CreateBookmarkInput {
+                url: "https://dup.com".to_string(),
+                title: "Discard".to_string(),
+                description: None,
+                favicon_url: None,
+                feed_url: None,
+                folder_id: None,
+                tag_ids: Some(vec![tag.id.clone()]),
+            },
+        )
+        .unwrap();
+        conn.execute("UPDATE bookmarks SET updated_at = 1000", []).unwrap();
+
+        db_merge_bookmark_duplicates(&conn, &keeper.id, &[discard.id.clone()]).unwrap();
+
+        let (k_upd, k_del, _) = raw_clocks(&conn, &keeper.id);
+        let (d_upd, d_del, _) = raw_clocks(&conn, &discard.id);
+        assert!(k_upd > 1000, "keeper gained tags — its row must re-sync");
+        assert_eq!(k_del, None);
+        assert!(d_upd > 1000);
+        assert_eq!(Some(d_upd), d_del);
+    }
+
+    // ── purge = redacted tombstone (never hard-delete synced rows) ────────────
+
+    /// Emptying the bin must leave hidden purged tombstones, not hard-delete:
+    /// other machines still carry the rows, and a merge would resurrect them.
+    #[test]
+    fn empty_bin_leaves_hidden_purged_tombstones() {
+        let conn = mem();
+        let b = mk_bookmark(&conn, "https://secret.example/path", "Secret");
+        db_delete_bookmark(&conn, &b.id).unwrap();
+
+        db_empty_bin(&conn).unwrap();
+
+        assert_eq!(db_get_bin_count(&conn).unwrap(), 0, "hidden from the bin");
+        assert_eq!(db_get_counts(&conn).unwrap().bin, 0);
+        let (updated, deleted, purged) = raw_clocks(&conn, &b.id);
+        assert!(purged.is_some(), "row survives as a purged tombstone");
+        assert!(deleted.is_some());
+        assert_eq!(Some(updated), purged, "purge advances the sync clock");
+
+        // content is really gone
+        let (url, title): (String, String) = conn
+            .query_row("SELECT url, title FROM bookmarks WHERE id = ?1", params![b.id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(url, "");
+        assert_eq!(title, "");
+
+        // and the tombstone travels in the sync snapshot
+        let snap = db_export_sync_snapshot(&conn).unwrap();
+        assert_eq!(snap.bookmarks.len(), 1);
+        assert!(snap.bookmarks[0].purged_at.is_some());
+    }
+
+    #[test]
+    fn permanently_delete_redacts_and_hides_single_row() {
+        let conn = mem();
+        let b1 = mk_bookmark(&conn, "https://a.com", "A");
+        let b2 = mk_bookmark(&conn, "https://b.com", "B");
+        db_delete_bookmark(&conn, &b1.id).unwrap();
+        db_delete_bookmark(&conn, &b2.id).unwrap();
+
+        db_permanently_delete_bookmark(&conn, &b1.id).unwrap();
+
+        let bin = db_get_bin_bookmarks(&conn).unwrap();
+        assert_eq!(bin.len(), 1);
+        assert_eq!(bin[0].id, b2.id);
+        // purging the same row again is NotFound (it is no longer in the bin)
+        let err = db_permanently_delete_bookmark(&conn, &b1.id).unwrap_err();
+        assert!(matches!(err, AppError::NotFound { .. }));
+    }
+
+    #[test]
+    fn purged_bookmark_cannot_be_restored() {
+        let conn = mem();
+        let b = mk_bookmark(&conn, "https://a.com", "A");
+        db_delete_bookmark(&conn, &b.id).unwrap();
+        db_empty_bin(&conn).unwrap();
+        let err = db_restore_bookmark(&conn, &b.id).unwrap_err();
+        assert!(matches!(err, AppError::NotFound { .. }));
+    }
+
+    /// Auto-purge must not re-touch rows purged earlier — rewriting their
+    /// clocks would make every app start look like a data change to sync.
+    #[test]
+    fn purge_expired_skips_already_purged_rows() {
+        let conn = mem();
+        let b = mk_bookmark(&conn, "https://a.com", "A");
+        db_delete_bookmark(&conn, &b.id).unwrap();
+        let old = now() - 40 * 86400;
+        conn.execute(
+            "UPDATE bookmarks SET deleted_at = ?1, updated_at = ?1, purged_at = ?1, \
+                    url = '', title = '' WHERE id = ?2",
+            params![old, b.id],
+        )
+        .unwrap();
+
+        db_purge_expired_bin(&conn, 30).unwrap();
+
+        let (updated, _, purged) = raw_clocks(&conn, &b.id);
+        assert_eq!(updated, old, "already-purged row must not be re-stamped");
+        assert_eq!(purged, Some(old));
+    }
+
+    #[test]
+    fn purged_rows_round_trip_through_snapshot_apply() {
+        let conn = mem();
+        let b = mk_bookmark(&conn, "https://a.com", "A");
+        db_delete_bookmark(&conn, &b.id).unwrap();
+        db_empty_bin(&conn).unwrap();
+        let snap = db_export_sync_snapshot(&conn).unwrap();
+
+        let conn2 = mem();
+        db_apply_sync_snapshot(&conn2, &snap).unwrap();
+        assert_eq!(db_get_bin_count(&conn2).unwrap(), 0, "purged row stays hidden");
+        let reexport = db_export_sync_snapshot(&conn2).unwrap();
+        assert_eq!(reexport.bookmarks.len(), 1);
+        assert!(reexport.bookmarks[0].purged_at.is_some(), "tombstone keeps traveling");
     }
 
     #[test]

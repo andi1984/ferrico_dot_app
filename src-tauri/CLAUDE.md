@@ -52,8 +52,11 @@ rusqlite). The DB file lives in the OS data dir (see root `CLAUDE.md` → Platfo
 
 - Optional cloud sync via the user's own Drive. OAuth2 PKCE + loopback flow, Drive v3 REST.
 - **Per-record merge-reconcile** (via `merge.rs`), not blind last-write-wins: local and
-  remote `SyncSnapshot`s are merged field-by-field so concurrent edits on multiple machines
-  survive. Backup file contents = `io::export_json` output.
+  remote `SyncSnapshot`s are merged row-by-row (rank: `updated_at`, tombstones, then
+  tiebreaks) and the result is **normalized** — duplicate same-name folders/tags collapse,
+  folder cycles break, refs to dead containers re-home, purged rows stay redacted
+  tombstones. Backup file contents = versioned `SyncSnapshot` JSON (`merge::to_json`);
+  legacy v1 `export_json` files upgrade on first sync.
 - Config (client id/secret, refresh token, folder, `last_sync`) is persisted under the
   `"backup"` key in `settings.json`, merged so the HTTP `api_token` is preserved.
 - `backup_*` commands in `main.rs` wrap the engine. UI: `src/components/BackupSettingsModal.tsx`.
@@ -63,7 +66,7 @@ rusqlite). The DB file lives in the OS data dir (see root `CLAUDE.md` → Platfo
 
 All Rust tests use **in-memory SQLite** — no fixtures, no disk state. They live in
 `#[cfg(test)]` modules next to the code they cover (`db.rs`, `io.rs`, `io_validate.rs`,
-`merge.rs`, `health_check.rs`), ~248 tests total.
+`merge.rs`, `gdrive.rs`, `health_check.rs`), ~320 tests total.
 
 ```bash
 cargo test                 # cargo is the rustup default on this machine

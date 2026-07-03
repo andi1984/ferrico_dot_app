@@ -1,19 +1,21 @@
 //! Google Drive backup + multi-machine sync.
 //!
-//! Strategy: **full-snapshot last-write-wins**. The whole dataset is exported as
-//! the lossless JSON produced by [`crate::io::export_json`] and stored as a single
-//! file (`ferrico-backup.json`) inside a user-chosen Drive folder.
+//! Strategy: **per-record merge-reconcile** (see [`crate::merge`]). The whole
+//! dataset — including tombstones — travels as one versioned `SyncSnapshot`
+//! JSON file (`ferrico-backup.json`) inside a user-chosen Drive folder.
 //!
-//! The LWW clock is Drive's own `modifiedTime` (RFC-3339, server-side) — this
-//! sidesteps clock skew between machines. `last_sync` records the `modifiedTime`
-//! we last reconciled with:
-//!   - **pull** (app open): if the remote file's `modifiedTime` is newer than
-//!     `last_sync`, the local DB is wiped and replaced with the remote snapshot.
-//!   - **push** (app close + periodic): the local DB is uploaded, overwriting the
-//!     remote file; `last_sync` advances to the new `modifiedTime`.
+//! Every sync (open, close, periodic, manual) runs the same [`sync_once`]
+//! cycle:
+//!   1. if the remote file's `modifiedTime` (RFC-3339, server-side — immune to
+//!      machine clock skew) advanced past `last_sync`, or the local DB is
+//!      empty, download it and **merge** it with the local snapshot;
+//!   2. normalize the result (folder/tag de-duplication, cycle breaking,
+//!      tombstone reference cleanup — `merge::normalize`);
+//!   3. publish when the union carries anything the remote lacks; a digest
+//!      gate keeps idle clients from ping-ponging `modifiedTime` bumps.
 //!
-//! Concurrent offline edits on two machines lose the older writer's changes — the
-//! accepted trade-off of snapshot LWW (vs. per-record merge).
+//! There is deliberately no push-only path: a blind overwrite is what used to
+//! let a stale client erase another machine's edits.
 //!
 //! Auth: OAuth2 for native apps — PKCE + loopback redirect. Scope is `drive.file`
 //! (non-sensitive: the app only ever touches files it created, so no Google
@@ -939,9 +941,13 @@ async fn sync_once<S: DriveStore>(
     };
     // `?` here aborts the whole sync (before any push) if the remote is present
     // but unreadable, so a corrupt/unknown remote is preserved, not erased.
+    // With nothing to pull the local snapshot is still normalized: a DB whose
+    // data predates a normalization rule (e.g. one already carrying duplicate
+    // folders from the pre-collapse builds) heals on its very next sync
+    // instead of waiting for a remote change to trigger a merge.
     let merged = match &pulled_json {
         Some(json) => crate::merge::merge(local.clone(), parse_remote_snapshot(json)?),
-        None => local.clone(),
+        None => crate::merge::normalize(local.clone()),
     };
     let merged_json = crate::merge::to_json(&merged).map_err(berr)?;
     let merged_digest = digest(&merged_json);
@@ -1143,6 +1149,7 @@ mod sync_tests {
             created_at: 1,
             updated_at,
             deleted_at,
+            purged_at: None,
         }
     }
     fn snap(bms: Vec<SyncBookmark>) -> SyncSnapshot {
@@ -1332,5 +1339,201 @@ mod sync_tests {
 
         assert_eq!(drive.remote().bookmarks.len(), 1, "remote must survive a wiped local");
         assert_eq!(client.title_of("X"), Some("x"), "client recovers data from remote");
+    }
+
+    // ── end-to-end: real SQLite DBs on both machines ──────────────────────────
+
+    use crate::db::{
+        db_add_bookmark, db_add_folder, db_apply_sync_snapshot, db_delete_bookmark, db_empty_bin,
+        db_export_sync_snapshot, db_get_bin_count, db_get_bookmarks, db_get_folders,
+        db_restore_bookmark, init_schema, CreateBookmarkInput,
+    };
+
+    /// One machine with a REAL (in-memory) SQLite DB. `sync` mirrors exactly
+    /// what `BackupEngine::run_sync` does: export → `sync_once` → apply the
+    /// merged snapshot when it changed → persist the three config fields.
+    struct DbClient {
+        conn: rusqlite::Connection,
+        last_sync: Option<String>,
+        file_id: Option<String>,
+        digest: Option<String>,
+    }
+    impl DbClient {
+        fn new() -> Self {
+            let conn = rusqlite::Connection::open_in_memory().unwrap();
+            init_schema(&conn).unwrap();
+            DbClient { conn, last_sync: None, file_id: None, digest: None }
+        }
+        async fn sync(&mut self, drive: &FakeDrive) -> bool {
+            let local = db_export_sync_snapshot(&self.conn).unwrap();
+            let outcome = sync_once(
+                drive,
+                "folder",
+                local,
+                self.last_sync.clone(),
+                self.file_id.clone(),
+                self.digest.clone(),
+            )
+            .await
+            .unwrap();
+            if outcome.changed_local {
+                db_apply_sync_snapshot(&self.conn, &outcome.merged).unwrap();
+            }
+            self.last_sync = outcome.new_last_sync;
+            self.file_id = outcome.new_file_id;
+            self.digest = outcome.new_digest;
+            outcome.changed_local
+        }
+        fn add(&self, url: &str, title: &str, folder_id: Option<String>) -> String {
+            db_add_bookmark(
+                &self.conn,
+                CreateBookmarkInput {
+                    url: url.to_string(),
+                    title: title.to_string(),
+                    description: None,
+                    favicon_url: None,
+                    feed_url: None,
+                    folder_id,
+                    tag_ids: None,
+                },
+            )
+            .unwrap()
+            .id
+        }
+    }
+
+    /// THE reported bug, end to end: both machines created a "News" folder by
+    /// hand (different UUIDs) and filed a different bookmark inside, then
+    /// synced. The user ended up with "the same folder twice, each holding
+    /// different bookmarks". Both DBs must converge on ONE News folder that
+    /// holds BOTH bookmarks.
+    #[tokio::test]
+    async fn two_machines_minting_same_folder_converge_on_one() {
+        let drive = FakeDrive::new();
+        let mut a = DbClient::new();
+        let mut b = DbClient::new();
+
+        let fa = db_add_folder(&a.conn, "News".into(), None).unwrap();
+        a.add("https://a.example/1", "from-a", Some(fa.id.clone()));
+        let fb = db_add_folder(&b.conn, "News".into(), None).unwrap();
+        b.add("https://b.example/2", "from-b", Some(fb.id.clone()));
+
+        a.sync(&drive).await;
+        b.sync(&drive).await; // B pulls A's copy — collapse happens here
+        a.sync(&drive).await; // A pulls the collapsed union
+
+        for (name, c) in [("A", &a), ("B", &b)] {
+            let folders = db_get_folders(&c.conn).unwrap();
+            assert_eq!(folders.len(), 1, "machine {name}: exactly one live folder");
+            assert_eq!(folders[0].name, "News");
+            let bms = db_get_bookmarks(&c.conn, None, None, None, false).unwrap();
+            assert_eq!(bms.len(), 2, "machine {name}: both bookmarks survive");
+            for bm in &bms {
+                assert_eq!(
+                    bm.folder_id.as_deref(),
+                    Some(folders[0].id.as_str()),
+                    "machine {name}: bookmark {} must sit in the surviving folder",
+                    bm.title
+                );
+            }
+        }
+    }
+
+    /// Emptying the bin must not resurrect: the purged tombstone propagates,
+    /// and repeated syncs on either machine stay clean (the old hard-DELETE
+    /// ping-ponged rows back into the bin forever).
+    #[tokio::test]
+    async fn emptied_bin_does_not_resurrect_from_other_machine() {
+        let drive = FakeDrive::new();
+        let mut a = DbClient::new();
+        let mut b = DbClient::new();
+
+        let id = a.add("https://gone.example", "doomed", None);
+        a.sync(&drive).await;
+        b.sync(&drive).await;
+
+        db_delete_bookmark(&a.conn, &id).unwrap();
+        a.sync(&drive).await;
+        b.sync(&drive).await;
+        assert_eq!(db_get_bin_count(&b.conn).unwrap(), 1, "delete reached B's bin");
+
+        db_empty_bin(&a.conn).unwrap();
+        a.sync(&drive).await;
+        b.sync(&drive).await;
+
+        assert_eq!(db_get_bin_count(&a.conn).unwrap(), 0);
+        assert_eq!(db_get_bin_count(&b.conn).unwrap(), 0, "purge reached B");
+
+        // extra rounds must not bring anything back
+        a.sync(&drive).await;
+        b.sync(&drive).await;
+        a.sync(&drive).await;
+        assert_eq!(db_get_bin_count(&a.conn).unwrap(), 0, "no resurrection ping-pong");
+        assert_eq!(db_get_bin_count(&b.conn).unwrap(), 0);
+    }
+
+    /// Restoring from the bin must survive the next sync. The old code kept a
+    /// stale `updated_at` on restore, the tombstone on the remote won the tie,
+    /// and the bookmark silently fell back into the bin.
+    #[tokio::test]
+    async fn restore_from_bin_survives_sync() {
+        let drive = FakeDrive::new();
+        let mut a = DbClient::new();
+        let mut b = DbClient::new();
+
+        let id = a.add("https://phoenix.example", "phoenix", None);
+        a.sync(&drive).await;
+        b.sync(&drive).await;
+        db_delete_bookmark(&a.conn, &id).unwrap();
+        a.sync(&drive).await;
+        b.sync(&drive).await; // tombstone everywhere
+
+        db_restore_bookmark(&a.conn, &id).unwrap();
+        a.sync(&drive).await; // must push the restore, not re-pull the tombstone
+        b.sync(&drive).await;
+
+        let alive_on = |c: &DbClient| {
+            db_get_bookmarks(&c.conn, None, None, None, false)
+                .unwrap()
+                .iter()
+                .any(|bm| bm.id == id)
+        };
+        assert!(alive_on(&a), "restore must survive A's own next sync");
+        assert!(alive_on(&b), "restore must propagate to B");
+        assert_eq!(db_get_bin_count(&a.conn).unwrap(), 0);
+        assert_eq!(db_get_bin_count(&b.conn).unwrap(), 0);
+    }
+
+    /// A cover fetched on one machine (scanner does not bump the clock) must
+    /// propagate and STICK — not ping-pong against the cover-less twin row.
+    #[tokio::test]
+    async fn cover_url_propagates_and_sticks() {
+        let drive = FakeDrive::new();
+        let mut a = DbClient::new();
+        let mut b = DbClient::new();
+
+        let id = a.add("https://covered.example", "covered", None);
+        a.sync(&drive).await;
+        b.sync(&drive).await;
+
+        crate::db::db_update_cover_url(&a.conn, &id, "https://covers.example/x.png").unwrap();
+        a.sync(&drive).await;
+        b.sync(&drive).await;
+        a.sync(&drive).await;
+        b.sync(&drive).await;
+
+        let cover_on = |c: &DbClient| {
+            db_get_bookmarks(&c.conn, None, None, None, false)
+                .unwrap()
+                .iter()
+                .find(|bm| bm.id == id)
+                .and_then(|bm| bm.cover_url.clone())
+        };
+        assert_eq!(cover_on(&a).as_deref(), Some("https://covers.example/x.png"));
+        assert_eq!(
+            cover_on(&b).as_deref(),
+            Some("https://covers.example/x.png"),
+            "cover must reach and stick on B"
+        );
     }
 }
