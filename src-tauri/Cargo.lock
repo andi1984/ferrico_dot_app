@@ -1172,7 +1172,7 @@ dependencies = [
 
 [[package]]
 name = "ferrico"
-version = "0.11.0"
+version = "0.12.1"
 dependencies = [
  "axum",
  "base64 0.22.1",

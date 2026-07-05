@@ -25,6 +25,8 @@ how to troubleshoot it.
 | **Periodic autosave** | Optional. Runs a full sync every *N* minutes while the app runs (`0` disables it). |
 | **Manual** | **Sync now** runs the same full sync. |
 | **Conflict resolution** | Per-record **merge**: every row carries a client-minted UUID and an `updated_at` clock (plus a `deleted_at` tombstone), and the higher-ranked row wins each id. Commutative, so both machines converge on the same result. |
+| **Structural repair** | Every merge also normalizes the result: same-named sibling folders that were minted with different UUIDs on two machines collapse into one (their bookmarks and subfolders follow), folder-move cycles from concurrent moves are broken, and anything pointing at a deleted folder or tag is re-homed (bookmarks fall to the inbox). This also heals folders that were already duplicated by older builds — on the very next sync. |
+| **Bin & purge** | Soft-deleted bookmarks travel with their tombstone, so the bin follows you across machines. "Permanently delete" / "Empty bin" redacts the row into a hidden *purged* tombstone that propagates too — a hard delete would simply resurrect from the other machine's copy on the next merge. |
 | **Drive precedence** | A fresh install or a wiped local DB never overwrites a populated remote: when the local snapshot is empty the remote is always pulled in first. An unreadable/corrupt remote is **never** overwritten — the sync aborts and surfaces an error instead of erasing your backup. |
 
 ### Trade-offs to know
@@ -32,8 +34,9 @@ how to troubleshoot it.
 - **Concurrent edits to the *same* record.** Two machines editing the same
   bookmark while both offline resolve by `updated_at` (later write wins that
   one record); edits to *different* records always both survive.
-- **The Trash (bin) is not synced.** Soft-deleted bookmarks stay local; only a
-  tombstone (the fact of deletion) propagates, not the binned item itself.
+- **Same-second ties.** The sync clock is whole seconds. Ties resolve
+  deterministically: a delete beats an edit made in the same second, and a
+  purge beats a plain delete — conservative, and identical on every machine.
 - **`drive.file` cannot browse pre-existing folders.** The folder picker only
   lists folders Ferrico created. To target a folder, create it from within
   Ferrico (it appears in your Drive immediately).
