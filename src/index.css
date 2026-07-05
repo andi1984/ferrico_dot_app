@@ -263,11 +263,12 @@ select option {
   color: var(--accent-bright);
 }
 .bm-card-close {
-  color: var(--text-3);
-  transition: color 100ms ease, opacity 150ms ease;
+  color: #fff;
+  transition: background-color 120ms ease, opacity 150ms ease, transform 120ms ease;
 }
 .bm-card-close:hover {
-  color: var(--red);
+  background: var(--red) !important;
+  transform: scale(1.08);
 }
 
 /* Context menu */

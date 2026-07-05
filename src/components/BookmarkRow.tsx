@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import type { Bookmark } from '../types'
 import { domainOf, formatDate } from '../utils'
 import { Favicon } from './Favicon'
-import { IconClose, IconRestore, IconAlertTriangle } from './icons'
+import { IconRestore, IconAlertTriangle, IconTrash } from './icons'
 
 interface BookmarkRowProps {
   bookmark: Bookmark
@@ -134,50 +134,40 @@ export const BookmarkRow = memo(function BookmarkRow({ bookmark, onDelete, onCon
           </div>
         </div>
 
-        {/* Hover actions (right-anchored). Gradient mask hides underlying date/tags. */}
+        {/* Hover actions — a small floating pill, so it reads as a toolbar
+            instead of a hard-edged mask over the row's date/tags. */}
         <div
-          className="absolute right-5 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150"
+          className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-0.5 rounded-lg opacity-0 translate-x-1 group-hover:opacity-100 group-hover:translate-x-0 transition-all duration-150"
           style={{
-            paddingLeft: 24,
-            background: 'linear-gradient(90deg, transparent 0%, var(--bg) 30%)',
+            padding: 3,
+            background: 'var(--bg-elevated)',
+            border: '1px solid var(--border-soft)',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.18)',
           }}
           data-no-drag
         >
-          {isBinView ? (
-            <>
-              <button
-                onClick={() => onRestore?.(bookmark.id)}
-                className="flex items-center justify-center rounded-md transition-colors duration-100 cursor-pointer"
-                style={{ width: 28, height: 28, color: 'var(--text-2)' }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--btn-hover-bg)'; e.currentTarget.style.color = 'var(--accent)' }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-2)' }}
-                aria-label={`Restore ${bookmark.title}`}
-              >
-                <IconRestore size={13} />
-              </button>
-              <button
-                onClick={() => onDelete(bookmark.id)}
-                className="flex items-center justify-center rounded-md transition-colors duration-100 cursor-pointer"
-                style={{ width: 28, height: 28, color: 'var(--text-2)' }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--btn-hover-bg)'; e.currentTarget.style.color = 'var(--red)' }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-2)' }}
-                aria-label={`Delete ${bookmark.title} permanently`}
-              >
-                <IconClose size={13} />
-              </button>
-            </>
-          ) : (
+          {isBinView && (
             <button
-              onClick={() => onDelete(bookmark.id)}
+              onClick={() => onRestore?.(bookmark.id)}
               className="flex items-center justify-center rounded-md transition-colors duration-100 cursor-pointer"
-              style={{ width: 28, height: 28, color: 'var(--text-2)' }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--btn-hover-bg)'; e.currentTarget.style.color = 'var(--red)' }}
+              style={{ width: 26, height: 26, color: 'var(--text-2)' }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--accent-dim)'; e.currentTarget.style.color = 'var(--accent)' }}
               onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-2)' }}
-              aria-label={`Delete ${bookmark.title}`}
+              aria-label={`Restore ${bookmark.title}`}
             >
-              <IconClose size={13} />
+              <IconRestore size={13} />
             </button>
           )}
+          <button
+            onClick={() => onDelete(bookmark.id)}
+            className="flex items-center justify-center rounded-md transition-colors duration-100 cursor-pointer"
+            style={{ width: 26, height: 26, color: 'var(--text-2)' }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(224,82,82,0.12)'; e.currentTarget.style.color = 'var(--red)' }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-2)' }}
+            aria-label={isBinView ? `Delete ${bookmark.title} permanently` : `Delete ${bookmark.title}`}
+          >
+            <IconTrash size={13} />
+          </button>
         </div>
       </div>
     </div>

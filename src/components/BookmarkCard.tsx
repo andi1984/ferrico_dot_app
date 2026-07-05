@@ -110,11 +110,11 @@ export const BookmarkCard = memo(function BookmarkCard({
 
         <button
           onClick={() => onDelete(bookmark.id)}
-          className="bm-card-close absolute top-2.5 right-2.5 rounded-md opacity-0 group-hover:opacity-100 transition-opacity duration-150 cursor-pointer flex items-center justify-center"
+          className="bm-card-close absolute top-2.5 right-2.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-150 cursor-pointer flex items-center justify-center"
           style={{
-            width: 22,
-            height: 22,
-            background: 'rgba(0,0,0,0.35)',
+            width: 24,
+            height: 24,
+            background: 'rgba(0,0,0,0.4)',
             backdropFilter: 'blur(6px)',
           }}
           aria-label={`Delete ${bookmark.title}`}
