@@ -9,8 +9,8 @@ import { BookmarkGrid } from './components/BookmarkGrid'
 import { AddBookmarkModal } from './components/AddBookmarkModal'
 import { AddFolderModal } from './components/AddFolderModal'
 import { AddTagModal } from './components/AddTagModal'
-import { SettingsModal } from './components/SettingsModal'
-import { BackupSettingsModal } from './components/BackupSettingsModal'
+import { SettingsPage } from './components/SettingsPage'
+import { BackupSettingsPage } from './components/BackupSettingsPage'
 import { ImportCsvModal } from './components/ImportCsvModal'
 import { ImportModal } from './components/ImportModal'
 import { InboxSortModal } from './components/InboxSortModal'
@@ -1052,7 +1052,7 @@ export default function App() {
         <AddTagModal onAdd={handleAddTag} onClose={() => setModal(null)} />
       )}
       {modal === 'settings' && (
-        <SettingsModal
+        <SettingsPage
           onClose={() => setModal(null)}
           onClear={() => { setModal(null); refresh() }}
           onDone={refresh}
@@ -1062,7 +1062,7 @@ export default function App() {
         />
       )}
       {modal === 'backup-settings' && (
-        <BackupSettingsModal
+        <BackupSettingsPage
           onClose={() => setModal('settings')}
           onDone={refresh}
         />

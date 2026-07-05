@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { ModalShell, FieldLabel } from './ModalShell'
+import { FieldLabel } from './ModalShell'
+import { SettingsLayout } from './SettingsLayout'
 import { IconFolder, IconRestore, IconCheck, IconPlus } from './icons'
 import { extractErrorMessage } from '../utils'
 
@@ -30,7 +31,7 @@ function formatLastSync(iso: string | null): string {
   return d.toLocaleString()
 }
 
-export function BackupSettingsModal({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+export function BackupSettingsPage({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
   const [status, setStatus] = useState<BackupStatus | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -163,8 +164,7 @@ export function BackupSettingsModal({ onClose, onDone }: { onClose: () => void; 
   )
 
   return (
-    <ModalShell title="Cloud Backup" onClose={onClose}>
-      <div className="p-6 flex flex-col gap-5">
+    <SettingsLayout breadcrumb={[{ label: 'Settings', onClick: onClose }, { label: 'Cloud Backup' }]} onBack={onClose}>
         {error && (
           <div
             className="rounded-lg px-4 py-3 text-xs"
@@ -415,7 +415,6 @@ export function BackupSettingsModal({ onClose, onDone }: { onClose: () => void; 
             </div>
           </div>
         )}
-      </div>
-    </ModalShell>
+    </SettingsLayout>
   )
 }
