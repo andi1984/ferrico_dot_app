@@ -1,6 +1,6 @@
 [package]
 name = "ferrico"
-version = "0.12.1"
+version = "0.13.0"
 edition = "2021"
 description = "A fast, local-first desktop bookmark manager built with Tauri and React."
 authors = ["Andreas Sander <mail@andi1984.de>"]

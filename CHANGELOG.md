@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.13.0] - 2026-07-05
+
+### Features
+
+- redesign settings as dedicated scrollable pages
+
+### Bug Fixes
+
+- redesign bookmark delete hover affordance
+- harden snapshot merge against cross-machine duplication
+
+
 ## [0.12.1] - 2026-06-21
 
 ### Bug Fixes
