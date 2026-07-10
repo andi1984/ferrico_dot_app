@@ -31,14 +31,15 @@ tauri-plugin-opener = "2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip"] }
 scraper = "0.20"
 nucleo-matcher = "0.3"
-rfd = "0.15"
 sha2 = "0.10"
 base64 = "0.22"
 
-# Desktop-only: `dirs::data_dir()` resolves the legacy desktop data dir; mobile
-# uses Tauri's `app_data_dir()` instead (see `resolve_data_dir` in lib.rs).
+# Desktop-only: `dirs::data_dir()` resolves the legacy desktop data dir (mobile
+# uses Tauri's `app_data_dir()` — see `resolve_data_dir` in lib.rs), and `rfd`
+# file dialogs have no Android/iOS backend.
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 dirs = "5"
+rfd = "0.15"
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }
