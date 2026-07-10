@@ -7,9 +7,11 @@ rusqlite). The DB file lives in the OS data dir (see root `CLAUDE.md` → Platfo
 
 - **`db.rs`** holds all DB logic as **pure functions** taking `&Connection` (`db_*`).
   No locking, no Tauri types — easy to unit-test against in-memory SQLite.
-- **`main.rs`** Tauri commands are **thin wrappers**: lock the mutex with the `lock_db!`
+- **`lib.rs`** Tauri commands are **thin wrappers**: lock the mutex with the `lock_db!`
   macro → call the `db::*` function → return. No business logic in the command layer.
-- Commands are registered in `tauri::generate_handler![ ... ]` inside `main()`.
+- Commands are registered in `tauri::generate_handler![ ... ]` inside `run()` (`lib.rs`).
+  `main.rs` is a thin shim calling `ferrico_lib::run()`; `run()` doubles as the
+  Tauri 2 mobile entry point via `#[cfg_attr(mobile, tauri::mobile_entry_point)]`.
 - `setup()` wires lifecycle: open DB, load/create API token, start the HTTP server and
   background cover scanner, and the Google Drive backup engine (open-pull, periodic
   autosave, push on `CloseRequested`).
@@ -26,7 +28,7 @@ rusqlite). The DB file lives in the OS data dir (see root `CLAUDE.md` → Platfo
 | `gdrive.rs` | Google Drive backup engine (OAuth2 PKCE, Drive v3 REST) |
 | `og_image.rs` | Fetch Open Graph cover images for bookmarks |
 | `health_check.rs` | Async URL liveness checks (dead-link detection) |
-| `main.rs` | Tauri commands, `lock_db!`, HTTP server, scanners, `setup()` |
+| `lib.rs` | Tauri commands, `lock_db!`, HTTP server, scanners, `setup()` |
 
 ## Error type
 
@@ -37,8 +39,8 @@ rusqlite). The DB file lives in the OS data dir (see root `CLAUDE.md` → Platfo
 ## Adding a command
 
 1. Add a pure `db_*` function in `db.rs` taking `&Connection`, and write its tests there.
-2. Add a thin Tauri command wrapper in `main.rs` using the `lock_db!` macro.
-3. Register it in `tauri::generate_handler![ ... ]` in `main()`.
+2. Add a thin Tauri command wrapper in `lib.rs` using the `lock_db!` macro.
+3. Register it in `tauri::generate_handler![ ... ]` in `run()` (`lib.rs`).
 
 ## HTTP server & background work
 
@@ -59,7 +61,7 @@ rusqlite). The DB file lives in the OS data dir (see root `CLAUDE.md` → Platfo
   legacy v1 `export_json` files upgrade on first sync.
 - Config (client id/secret, refresh token, folder, `last_sync`) is persisted under the
   `"backup"` key in `settings.json`, merged so the HTTP `api_token` is preserved.
-- `backup_*` commands in `main.rs` wrap the engine. UI: `src/components/BackupSettingsModal.tsx`.
+- `backup_*` commands in `lib.rs` wrap the engine. UI: `src/components/BackupSettingsModal.tsx`.
 - Docs: `docs/google-drive-backup.md`.
 
 ## Testing
