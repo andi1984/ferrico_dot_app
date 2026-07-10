@@ -723,6 +723,9 @@ impl BackupEngine {
             let token = self.access_token().await?;
             let store = HttpDrive { http: self.http.clone(), token };
             let local = self.export_local_snapshot()?;
+            // Compile-time platform split: a mobile binary can never construct
+            // a pushing sync through any command or lifecycle path.
+            let mode = if cfg!(mobile) { SyncMode::PullOnly } else { SyncMode::Full };
             let outcome = sync_once(
                 &store,
                 &folder_id,
@@ -730,6 +733,7 @@ impl BackupEngine {
                 cfg.last_sync.clone(),
                 cfg.file_id.clone(),
                 cfg.last_pushed_digest.clone(),
+                mode,
             )
             .await?;
 
@@ -782,6 +786,7 @@ impl BackupEngine {
         }
     }
 
+    #[cfg(desktop)]
     pub async fn push_if_active(&self) {
         if self.is_active() {
             if let Err(e) = self.run_sync("push").await {
@@ -792,6 +797,7 @@ impl BackupEngine {
 
     /// Periodic autosave loop. Re-reads the interval each tick so changes in
     /// settings take effect without a restart; `interval_min == 0` idles.
+    #[cfg(desktop)]
     pub async fn run_autosave(self) {
         loop {
             let interval = self.cfg().map(|c| c.interval_min).unwrap_or(0);
@@ -843,6 +849,18 @@ impl DriveStore for HttpDrive {
     ) -> Result<DriveFileMeta, AppError> {
         drive_update_content(&self.http, &self.token, file_id, content).await
     }
+}
+
+/// How a sync cycle may touch Drive. `PullOnly` is the mobile mode: the merge
+/// still runs (remote rows land locally), but nothing is ever uploaded —
+/// `should_push` is forced off, so `create_empty`/`update_content` are
+/// unreachable. Selected once per cycle via `cfg!(mobile)` in `run_sync`, which
+/// makes read-only sync a compile-time property of the mobile binary rather
+/// than a runtime setting someone could flip.
+#[derive(Clone, Copy, PartialEq)]
+pub enum SyncMode {
+    Full,
+    PullOnly,
 }
 
 /// Outcome of one reconcile pass. The engine applies `merged` to the DB (only
@@ -921,6 +939,7 @@ async fn sync_once<S: DriveStore>(
     last_sync: Option<String>,
     file_id: Option<String>,
     last_pushed_digest: Option<String>,
+    mode: SyncMode,
 ) -> Result<SyncOutcome, AppError> {
     let local_json = crate::merge::to_json(&local).map_err(berr)?;
     let local_digest = digest(&local_json);
@@ -954,10 +973,11 @@ async fn sync_once<S: DriveStore>(
     let merged_digest = digest(&merged_json);
     let changed_local = merged_digest != local_digest;
 
-    let should_push = match &pulled_json {
-        Some(remote_json) => merged_digest != digest(remote_json),
-        None => Some(&merged_digest) != last_pushed_digest.as_ref(),
-    };
+    let should_push = mode == SyncMode::Full
+        && match &pulled_json {
+            Some(remote_json) => merged_digest != digest(remote_json),
+            None => Some(&merged_digest) != last_pushed_digest.as_ref(),
+        };
 
     let mut new_last_sync = last_sync;
     let mut new_file_id = file_id.or_else(|| remote.as_ref().map(|f| f.id.clone()));
@@ -1109,6 +1129,9 @@ mod sync_tests {
             Client { local: SyncSnapshot::default(), last_sync: None, file_id: None, digest: None }
         }
         async fn sync(&mut self, drive: &FakeDrive) -> bool {
+            self.sync_with(drive, SyncMode::Full).await
+        }
+        async fn sync_with(&mut self, drive: &FakeDrive, mode: SyncMode) -> bool {
             let outcome = sync_once(
                 drive,
                 "folder",
@@ -1116,6 +1139,7 @@ mod sync_tests {
                 self.last_sync.clone(),
                 self.file_id.clone(),
                 self.digest.clone(),
+                mode,
             )
             .await
             .unwrap();
@@ -1290,7 +1314,7 @@ mod sync_tests {
         drive.seed("this is not valid ferrico json at all");
 
         let local = SyncSnapshot::default();
-        let result = sync_once(&drive, "folder", local, None, None, None).await;
+        let result = sync_once(&drive, "folder", local, None, None, None, SyncMode::Full).await;
 
         assert!(result.is_err(), "must refuse to sync against an unreadable remote");
         assert_eq!(
@@ -1299,6 +1323,64 @@ mod sync_tests {
             "remote backup content must be left byte-for-byte untouched"
         );
         assert_eq!(drive.file_count(), 1);
+    }
+
+    /// PullOnly with a diverged, NON-empty local: remote rows must land locally,
+    /// but the remote file must stay byte-for-byte untouched — the mobile mode
+    /// can read Drive, never write it.
+    #[tokio::test]
+    async fn pull_only_never_writes_remote() {
+        let drive = FakeDrive::new();
+        let remote_snap = snap(vec![bm("X", "x", 10, None)]);
+        drive.seed(&crate::merge::to_json(&remote_snap).unwrap());
+        let raw_before = drive.remote_raw();
+        let mtime_before = drive.remote_mtime();
+
+        let mut phone = Client::new();
+        phone.local = snap(vec![bm("Y", "y", 10, None)]); // diverged local
+        let changed = phone.sync_with(&drive, SyncMode::PullOnly).await;
+
+        assert!(changed, "remote rows must land locally");
+        assert_eq!(phone.title_of("X"), Some("x"));
+        assert_eq!(phone.title_of("Y"), Some("y"), "local rows survive the merge");
+        assert_eq!(drive.file_count(), 1);
+        assert_eq!(drive.remote_raw(), raw_before, "remote content untouched");
+        assert_eq!(drive.remote_mtime(), mtime_before, "remote never re-uploaded");
+    }
+
+    /// After a pull-only cycle `last_sync` must advance to the remote
+    /// `modifiedTime` (without any push), so the phone does not re-download an
+    /// unchanged remote on every subsequent sync.
+    #[tokio::test]
+    async fn pull_only_advances_last_sync_without_push() {
+        let drive = FakeDrive::new();
+        let remote_snap = snap(vec![bm("X", "x", 10, None)]);
+        let mt = drive.seed(&crate::merge::to_json(&remote_snap).unwrap());
+
+        let mut phone = Client::new();
+        phone.sync_with(&drive, SyncMode::PullOnly).await;
+
+        assert_eq!(phone.last_sync.as_deref(), Some(mt.as_str()));
+        assert_eq!(drive.remote_mtime(), mt, "no upload happened");
+
+        // Second cycle: nothing new remotely → no re-download, no change.
+        let changed = phone.sync_with(&drive, SyncMode::PullOnly).await;
+        assert!(!changed, "unchanged remote must not re-merge");
+    }
+
+    /// PullOnly against an empty Drive folder must be a complete no-op: no
+    /// backup file may be created (create_empty is unreachable in this mode).
+    #[tokio::test]
+    async fn pull_only_no_remote_is_noop() {
+        let drive = FakeDrive::new();
+
+        let mut phone = Client::new();
+        phone.local = snap(vec![bm("Y", "y", 10, None)]);
+        let changed = phone.sync_with(&drive, SyncMode::PullOnly).await;
+
+        assert_eq!(drive.file_count(), 0, "must not create a remote file");
+        assert!(!changed);
+        assert_eq!(phone.last_sync, None, "nothing was reconciled");
     }
 
     /// A legacy v1 export (the pre-merge `export_json` format) sitting on Drive
@@ -1374,6 +1456,7 @@ mod sync_tests {
                 self.last_sync.clone(),
                 self.file_id.clone(),
                 self.digest.clone(),
+                SyncMode::Full,
             )
             .await
             .unwrap();
