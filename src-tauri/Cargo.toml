@@ -21,20 +21,25 @@ tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
-dirs = "5"
 rusqlite = { version = "0.31", features = ["bundled"] }
 axum = "0.7"
 tower-http = { version = "0.5", features = ["cors"] }
 uuid = { version = "1", features = ["v4"] }
 rand = "0.8"
 thiserror = "1"
-open = "5"
+tauri-plugin-opener = "2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip"] }
 scraper = "0.20"
 nucleo-matcher = "0.3"
-rfd = "0.15"
 sha2 = "0.10"
 base64 = "0.22"
+
+# Desktop-only: `dirs::data_dir()` resolves the legacy desktop data dir (mobile
+# uses Tauri's `app_data_dir()` — see `resolve_data_dir` in lib.rs), and `rfd`
+# file dialogs have no Android/iOS backend.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+dirs = "5"
+rfd = "0.15"
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }
