@@ -287,7 +287,8 @@ async fn run_oauth(
     )
     .map_err(berr)?;
 
-    open::that(url.as_str()).map_err(|e| berr(format!("could not open browser: {e}")))?;
+    tauri_plugin_opener::open_url(url.as_str(), None::<&str>)
+        .map_err(|e| berr(format!("could not open browser: {e}")))?;
 
     let (mut socket, _) = tokio::time::timeout(Duration::from_secs(300), listener.accept())
         .await
