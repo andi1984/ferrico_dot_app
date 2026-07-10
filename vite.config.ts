@@ -2,6 +2,10 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
+// Set by `tauri android dev`/`tauri ios dev` so the device can reach the Vite
+// dev server over the network instead of localhost.
+const host = process.env.TAURI_DEV_HOST
+
 export default defineConfig({
   plugins: [react()],
   build: {
@@ -9,6 +13,9 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    strictPort: true,
+    host: host || false,
+    hmr: host ? { protocol: 'ws', host, port: 1421 } : undefined,
   },
   test: {
     globals: true,
