@@ -255,6 +255,82 @@ pub fn save_config(data_dir: &Path, cfg: &BackupConfig) {
     }
 }
 
+// ─── Pairing (desktop exports, phone imports — no OAuth on mobile) ──────────────
+//
+// The phone gets Drive access by importing a pairing payload exported from an
+// already-connected desktop. `refresh_access_token` is plain HTTPS and works on
+// any platform; only the initial loopback-redirect OAuth is desktop-bound.
+
+const PAIRING_PREFIX: &str = "ferrico-pair:v1:";
+
+#[derive(Serialize, Deserialize)]
+pub struct PairingPayload {
+    /// Payload format version; currently always 1.
+    pub v: u32,
+    pub client_id: String,
+    pub client_secret: String,
+    pub refresh_token: String,
+    pub account_email: Option<String>,
+    pub folder_id: String,
+    pub folder_name: Option<String>,
+    pub file_id: Option<String>,
+}
+
+/// Serialize the connected config as `"ferrico-pair:v1:" + base64(json)`.
+/// Requires an established connection: OAuth client credentials, a refresh
+/// token, and a selected backup folder.
+pub fn export_pairing(cfg: &BackupConfig) -> Result<String, AppError> {
+    let (client_id, client_secret) = match (&cfg.client_id, &cfg.client_secret) {
+        (Some(i), Some(s)) => (i.clone(), s.clone()),
+        _ => return Err(berr("Google Drive is not connected — set credentials first")),
+    };
+    let refresh_token = cfg
+        .refresh_token
+        .clone()
+        .ok_or_else(|| berr("Google Drive is not connected"))?;
+    let folder_id = cfg
+        .folder_id
+        .clone()
+        .ok_or_else(|| berr("no backup folder selected"))?;
+    let payload = PairingPayload {
+        v: 1,
+        client_id,
+        client_secret,
+        refresh_token,
+        account_email: cfg.account_email.clone(),
+        folder_id,
+        folder_name: cfg.folder_name.clone(),
+        file_id: cfg.file_id.clone(),
+    };
+    let json = serde_json::to_string(&payload).map_err(berr)?;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(json);
+    Ok(format!("{PAIRING_PREFIX}{b64}"))
+}
+
+/// Parse and validate a pairing string produced by [`export_pairing`].
+pub fn import_pairing(s: &str) -> Result<PairingPayload, AppError> {
+    let b64 = s
+        .trim()
+        .strip_prefix(PAIRING_PREFIX)
+        .ok_or_else(|| berr("not a Ferrico pairing code (expected \"ferrico-pair:v1:…\")"))?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64.trim())
+        .map_err(|e| berr(format!("invalid pairing code: {e}")))?;
+    let payload: PairingPayload = serde_json::from_slice(&bytes)
+        .map_err(|e| berr(format!("invalid pairing payload: {e}")))?;
+    if payload.v != 1 {
+        return Err(berr(format!("unsupported pairing version {}", payload.v)));
+    }
+    if payload.client_id.trim().is_empty()
+        || payload.client_secret.trim().is_empty()
+        || payload.refresh_token.trim().is_empty()
+        || payload.folder_id.trim().is_empty()
+    {
+        return Err(berr("pairing payload is missing required fields"));
+    }
+    Ok(payload)
+}
+
 // ─── OAuth ──────────────────────────────────────────────────────────────────────
 
 /// Runs the full PKCE loopback flow. Returns `(refresh_token, account_email)`.
@@ -703,6 +779,36 @@ impl BackupEngine {
         self.status()
     }
 
+    // ── pairing ─────────────────────────────────────────────────────────────────
+
+    /// Export the current connection as a pairing code for a phone.
+    pub fn export_pairing_code(&self) -> Result<String, AppError> {
+        export_pairing(&self.cfg()?)
+    }
+
+    /// Adopt a pairing code: overwrite the Drive connection with the desktop's,
+    /// enable sync, and clear `last_sync`/`last_pushed_digest` so the very next
+    /// cycle pulls the remote (an empty local DB pulls unconditionally anyway).
+    /// `interval_min = 0` keeps the periodic push loop idle — pointless on the
+    /// phone, harmless on desktop.
+    pub fn apply_pairing(&self, code: &str) -> Result<BackupStatus, AppError> {
+        let p = import_pairing(code)?;
+        self.update_cfg(|c| {
+            c.client_id = Some(p.client_id);
+            c.client_secret = Some(p.client_secret);
+            c.refresh_token = Some(p.refresh_token);
+            c.account_email = p.account_email;
+            c.folder_id = Some(p.folder_id);
+            c.folder_name = p.folder_name;
+            c.file_id = p.file_id;
+            c.enabled = true;
+            c.interval_min = 0;
+            c.last_sync = None;
+            c.last_pushed_digest = None;
+        })?;
+        self.status()
+    }
+
     // ── sync (per-record merge; see `merge.rs`) ──────────────────────────────────
 
     /// Full reconcile: pull the remote, MERGE it with the local DB
@@ -1005,6 +1111,95 @@ async fn sync_once<S: DriveStore>(
         new_file_id,
         new_digest: Some(merged_digest),
     })
+}
+
+#[cfg(test)]
+mod pairing_tests {
+    use super::*;
+
+    fn connected_cfg() -> BackupConfig {
+        BackupConfig {
+            client_id: Some("id-123".into()),
+            client_secret: Some("secret-456".into()),
+            refresh_token: Some("refresh-789".into()),
+            account_email: Some("user@example.com".into()),
+            folder_id: Some("folder-abc".into()),
+            folder_name: Some("Ferrico Backup".into()),
+            file_id: Some("file-def".into()),
+            last_sync: Some("2026-01-01T00:00:00Z".into()),
+            interval_min: 30,
+            enabled: true,
+            last_pushed_digest: Some("deadbeef".into()),
+        }
+    }
+
+    #[test]
+    fn export_import_round_trip_preserves_fields() {
+        let cfg = connected_cfg();
+        let code = export_pairing(&cfg).unwrap();
+        assert!(code.starts_with("ferrico-pair:v1:"));
+
+        let p = import_pairing(&code).unwrap();
+        assert_eq!(p.v, 1);
+        assert_eq!(p.client_id, "id-123");
+        assert_eq!(p.client_secret, "secret-456");
+        assert_eq!(p.refresh_token, "refresh-789");
+        assert_eq!(p.account_email.as_deref(), Some("user@example.com"));
+        assert_eq!(p.folder_id, "folder-abc");
+        assert_eq!(p.folder_name.as_deref(), Some("Ferrico Backup"));
+        assert_eq!(p.file_id.as_deref(), Some("file-def"));
+    }
+
+    #[test]
+    fn import_tolerates_surrounding_whitespace() {
+        let code = export_pairing(&connected_cfg()).unwrap();
+        let p = import_pairing(&format!("  {code}\n")).unwrap();
+        assert_eq!(p.folder_id, "folder-abc");
+    }
+
+    #[test]
+    fn import_rejects_garbage() {
+        assert!(import_pairing("hello world").is_err(), "no prefix");
+        assert!(import_pairing("ferrico-pair:v1:!!!not-base64!!!").is_err(), "bad base64");
+        let not_json = base64::engine::general_purpose::STANDARD.encode("not json");
+        assert!(import_pairing(&format!("ferrico-pair:v1:{not_json}")).is_err(), "bad json");
+    }
+
+    #[test]
+    fn import_rejects_wrong_version() {
+        let json = r#"{"v":2,"client_id":"i","client_secret":"s","refresh_token":"r",
+            "account_email":null,"folder_id":"f","folder_name":null,"file_id":null}"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(json);
+        assert!(import_pairing(&format!("ferrico-pair:v1:{b64}")).is_err());
+    }
+
+    #[test]
+    fn import_rejects_missing_or_empty_required_fields() {
+        // folder_id key absent entirely → serde rejects
+        let json = r#"{"v":1,"client_id":"i","client_secret":"s","refresh_token":"r",
+            "account_email":null,"folder_name":null,"file_id":null}"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(json);
+        assert!(import_pairing(&format!("ferrico-pair:v1:{b64}")).is_err());
+
+        // folder_id present but blank → field validation rejects
+        let json = r#"{"v":1,"client_id":"i","client_secret":"s","refresh_token":"r",
+            "account_email":null,"folder_id":"  ","folder_name":null,"file_id":null}"#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(json);
+        assert!(import_pairing(&format!("ferrico-pair:v1:{b64}")).is_err());
+    }
+
+    #[test]
+    fn export_fails_when_not_connected() {
+        assert!(export_pairing(&BackupConfig::default()).is_err(), "empty config");
+
+        let mut no_refresh = connected_cfg();
+        no_refresh.refresh_token = None;
+        assert!(export_pairing(&no_refresh).is_err(), "missing refresh token");
+
+        let mut no_folder = connected_cfg();
+        no_folder.folder_id = None;
+        assert!(export_pairing(&no_folder).is_err(), "missing folder");
+    }
 }
 
 #[cfg(test)]

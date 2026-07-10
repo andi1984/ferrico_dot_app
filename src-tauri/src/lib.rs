@@ -1010,6 +1010,31 @@ async fn backup_sync_now(
     engine.sync_now().await
 }
 
+/// Export the Drive connection as a pairing code for the phone. Desktop only:
+/// a phone must never act as a pairing source (its config is itself a copy).
+#[tauri::command]
+fn backup_export_pairing(engine: State<'_, gdrive::BackupEngine>) -> Result<String, AppError> {
+    #[cfg(desktop)]
+    {
+        engine.export_pairing_code()
+    }
+    #[cfg(mobile)]
+    {
+        let _ = engine;
+        Err(AppError::Validation { message: "pairing export is desktop only".into() })
+    }
+}
+
+/// Adopt a pairing code exported from a connected desktop. Available on both
+/// platforms — harmless on desktop and useful for testing without a device.
+#[tauri::command]
+fn backup_import_pairing(
+    payload: String,
+    engine: State<'_, gdrive::BackupEngine>,
+) -> Result<gdrive::BackupStatus, AppError> {
+    engine.apply_pairing(&payload)
+}
+
 // ─── Entry Point ──────────────────────────────────────────────────────────────
 
 /// Where the SQLite DB and `settings.json` live. Platform-split on purpose:
@@ -1167,6 +1192,8 @@ pub fn run() {
             backup_set_enabled,
             backup_set_interval,
             backup_sync_now,
+            backup_export_pairing,
+            backup_import_pairing,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
