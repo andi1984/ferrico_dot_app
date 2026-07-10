@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import QRCode from 'qrcode'
 import { FieldLabel } from './ModalShell'
 import { SettingsLayout } from './SettingsLayout'
 import { IconFolder, IconRestore, IconCheck, IconPlus } from './icons'
@@ -45,6 +46,11 @@ export function BackupSettingsPage({ onClose, onDone }: { onClose: () => void; o
   const [pickingFolder, setPickingFolder] = useState(false)
   const [folders, setFolders] = useState<DriveFolder[] | null>(null)
   const [newFolderName, setNewFolderName] = useState('Ferrico Backups')
+
+  // Mobile pairing
+  const [pairingCode, setPairingCode] = useState<string | null>(null)
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
+  const [pairingCopied, setPairingCopied] = useState(false)
 
   const run = useCallback(
     async <T,>(action: string, fn: () => Promise<T>, after?: (r: T) => void) => {
@@ -107,7 +113,33 @@ export function BackupSettingsPage({ onClose, onDone }: { onClose: () => void; o
   }
 
   function disconnect() {
+    setPairingCode(null)
+    setQrDataUrl(null)
     run('disconnect', () => invoke<BackupStatus>('backup_disconnect'), setStatus)
+  }
+
+  function showPairing() {
+    run(
+      'pairing',
+      async () => {
+        const code = await invoke<string>('backup_export_pairing')
+        // QR failure (unexpected) still leaves the copy-paste string usable.
+        const qr = await QRCode.toDataURL(code, { errorCorrectionLevel: 'M' }).catch(() => null)
+        return { code, qr }
+      },
+      ({ code, qr }) => {
+        setPairingCode(code)
+        setQrDataUrl(qr)
+      },
+    )
+  }
+
+  function copyPairing() {
+    if (!pairingCode) return
+    navigator.clipboard.writeText(pairingCode).then(() => {
+      setPairingCopied(true)
+      setTimeout(() => setPairingCopied(false), 2000)
+    })
   }
 
   function openFolderPicker() {
@@ -395,6 +427,71 @@ export function BackupSettingsPage({ onClose, onDone }: { onClose: () => void; o
                 />
                 <span>min while running (0 = off)</span>
               </div>
+            </div>
+
+            <div style={{ borderTop: '1px solid var(--border-dim)', paddingTop: '1.25rem' }} className="flex flex-col gap-3">
+              <FieldLabel>Pair a mobile device</FieldLabel>
+              {!pairingCode ? (
+                <>
+                  <p className="text-xs" style={{ color: 'var(--text-2)', lineHeight: 1.5 }}>
+                    Give the Ferrico mobile app read-only access to this backup: scan a QR code
+                    or paste a pairing code — no Google sign-in needed on the phone.
+                  </p>
+                  <button
+                    onClick={showPairing}
+                    disabled={busy !== null}
+                    className="self-start rounded-lg px-4 cursor-pointer flex items-center gap-2"
+                    style={{ height: 32, fontSize: 12, fontWeight: 500, border: '1px solid var(--accent)', color: 'var(--accent)', background: 'transparent', opacity: busy ? 0.6 : 1 }}
+                    onMouseEnter={(e) => { if (!busy) e.currentTarget.style.background = 'var(--accent-dim)' }}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                  >
+                    {busy === 'pairing' && spinner}
+                    Show pairing code
+                  </button>
+                </>
+              ) : (
+                <>
+                  {qrDataUrl && (
+                    <img
+                      src={qrDataUrl}
+                      alt="Pairing QR code"
+                      width={192}
+                      height={192}
+                      className="rounded-lg self-start"
+                      style={{ background: '#fff', padding: 8, border: '1px solid var(--border-soft)' }}
+                    />
+                  )}
+                  <textarea
+                    readOnly
+                    value={pairingCode}
+                    rows={3}
+                    onFocus={(e) => e.currentTarget.select()}
+                    aria-label="Pairing code"
+                    className="w-full px-3 py-2 rounded-lg text-xs font-mono resize-none"
+                    style={{ background: 'var(--input-bg)', border: '1px solid var(--border-soft)', color: 'var(--text-1)', wordBreak: 'break-all' }}
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      onClick={copyPairing}
+                      className="rounded-lg px-3 cursor-pointer"
+                      style={{ height: 28, fontSize: 11.5, fontWeight: 500, border: '1px solid var(--accent)', color: 'var(--accent)', background: 'transparent' }}
+                    >
+                      {pairingCopied ? 'Copied!' : 'Copy'}
+                    </button>
+                    <button
+                      onClick={() => { setPairingCode(null); setQrDataUrl(null) }}
+                      className="rounded-lg px-3 cursor-pointer"
+                      style={{ height: 28, fontSize: 11.5, fontWeight: 500, background: 'var(--input-bg)', border: '1px solid var(--border-soft)', color: 'var(--text-1)' }}
+                    >
+                      Hide
+                    </button>
+                  </div>
+                  <p className="text-xs" style={{ color: 'var(--red)', lineHeight: 1.5 }}>
+                    This code contains your Google Drive credentials. Only transfer it over a
+                    channel you trust, and keep it out of chats, screenshots, and backups.
+                  </p>
+                </>
+              )}
             </div>
 
             <div style={{ borderTop: '1px solid var(--border-dim)', paddingTop: '1.25rem' }} className="flex items-center justify-between gap-2">
