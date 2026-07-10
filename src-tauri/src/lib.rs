@@ -7,6 +7,7 @@ mod io_validate;
 mod merge;
 mod og_image;
 
+#[cfg(desktop)]
 use axum::{
     extract::{Query, State as AxumState},
     http::{HeaderMap, StatusCode},
@@ -34,12 +35,14 @@ use db::{
 use error::AppError;
 use rand::RngCore;
 use rand::rngs::OsRng;
+#[cfg(desktop)]
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use rusqlite::Connection;
 use tauri::{AppHandle, Emitter, Manager, State};
+#[cfg(desktop)]
 use tower_http::cors::{Any, CorsLayer};
 
 // ─── App State ────────────────────────────────────────────────────────────────
@@ -49,20 +52,24 @@ pub struct AppState {
     pub api_token: String,
 }
 
-// ─── Notifier ─────────────────────────────────────────────────────────────────
+// ─── Notifier (extension HTTP server — desktop only) ─────────────────────────
 
+#[cfg(desktop)]
 pub(crate) trait BookmarkNotifier: Send + Sync {
     fn notify(&self);
 }
 
+#[cfg(desktop)]
 struct TauriNotifier(AppHandle);
 
+#[cfg(desktop)]
 impl BookmarkNotifier for TauriNotifier {
     fn notify(&self) {
         self.0.emit("bookmark-added", ()).ok();
     }
 }
 
+#[cfg(desktop)]
 #[derive(Clone)]
 struct HttpState {
     db: Arc<Mutex<Connection>>,
@@ -640,8 +647,9 @@ async fn ai_search(
     Ok(AiSearchResponse { reply: parsed.reply, bookmark_ids: parsed.ids })
 }
 
-// ─── HTTP Server (browser extension endpoint) ─────────────────────────────────
+// ─── HTTP Server (browser extension endpoint — desktop only) ─────────────────
 
+#[cfg(desktop)]
 #[derive(Deserialize)]
 struct ExtPayload {
     url: String,
@@ -655,18 +663,21 @@ struct ExtPayload {
     tag_ids: Option<Vec<String>>,
 }
 
+#[cfg(desktop)]
 #[derive(Deserialize)]
 struct ExtFolderPayload {
     name: String,
     parent_id: Option<String>,
 }
 
+#[cfg(desktop)]
 #[derive(Deserialize)]
 struct ExtTagPayload {
     name: String,
     color: String,
 }
 
+#[cfg(desktop)]
 fn auth_ok(headers: &HeaderMap, token: &str) -> bool {
     headers
         .get("authorization")
@@ -675,6 +686,7 @@ fn auth_ok(headers: &HeaderMap, token: &str) -> bool {
         == Some(token)
 }
 
+#[cfg(desktop)]
 async fn http_get_folders(
     AxumState(state): AxumState<HttpState>,
     headers: HeaderMap,
@@ -686,6 +698,7 @@ async fn http_get_folders(
     db_get_folders(&db).map(Json).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
+#[cfg(desktop)]
 async fn http_get_tags(
     AxumState(state): AxumState<HttpState>,
     headers: HeaderMap,
@@ -697,6 +710,7 @@ async fn http_get_tags(
     db_get_tags(&db).map(Json).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
+#[cfg(desktop)]
 #[derive(Deserialize)]
 struct RelatedTagsQuery {
     /// Comma-separated tag ids the user has already selected.
@@ -705,6 +719,7 @@ struct RelatedTagsQuery {
 
 /// Suggest tags co-occurring with the already-selected ones (`?ids=a,b,c`).
 /// Powers the extension's context-aware tag suggestions.
+#[cfg(desktop)]
 async fn http_related_tags(
     AxumState(state): AxumState<HttpState>,
     headers: HeaderMap,
@@ -726,6 +741,7 @@ async fn http_related_tags(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
+#[cfg(desktop)]
 #[derive(Deserialize)]
 struct LookupQuery {
     /// The full URL of the page being saved.
@@ -734,6 +750,7 @@ struct LookupQuery {
 
 /// Report existing bookmarks for `?url=…`, split into an exact-page match and
 /// other pages on the same host. Powers the extension's "already saved" panel.
+#[cfg(desktop)]
 async fn http_lookup_bookmarks(
     AxumState(state): AxumState<HttpState>,
     headers: HeaderMap,
@@ -750,6 +767,7 @@ async fn http_lookup_bookmarks(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
+#[cfg(desktop)]
 async fn http_add_folder(
     AxumState(state): AxumState<HttpState>,
     headers: HeaderMap,
@@ -764,6 +782,7 @@ async fn http_add_folder(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
+#[cfg(desktop)]
 async fn http_add_tag(
     AxumState(state): AxumState<HttpState>,
     headers: HeaderMap,
@@ -778,6 +797,7 @@ async fn http_add_tag(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
+#[cfg(desktop)]
 async fn http_add_bookmark(
     AxumState(state): AxumState<HttpState>,
     headers: HeaderMap,
@@ -816,6 +836,7 @@ async fn http_add_bookmark(
     Ok(Json(serde_json::json!({ "id": bookmark.id, "created_at": bookmark.created_at })))
 }
 
+#[cfg(desktop)]
 async fn start_http_server(db: Arc<Mutex<Connection>>, token: String, app_handle: AppHandle) {
     let notifier = Arc::new(TauriNotifier(app_handle)) as Arc<dyn BookmarkNotifier>;
     let state = HttpState { db, token, notifier };
@@ -845,8 +866,9 @@ async fn start_http_server(db: Arc<Mutex<Connection>>, token: String, app_handle
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
 
-// ─── Background Cover Scanner ─────────────────────────────────────────────────
+// ─── Background Cover Scanner (desktop only — mobile gets covers via sync) ───
 
+#[cfg(desktop)]
 async fn background_cover_scanner(db: Arc<Mutex<Connection>>, app: AppHandle) {
     // Wait for app to fully start before hammering the network.
     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
@@ -1029,7 +1051,13 @@ pub fn run() {
                 api_token: api_token.clone(),
             });
 
+            // Browser-extension HTTP API — desktop only (no extension on mobile).
+            #[cfg(desktop)]
             tauri::async_runtime::spawn(start_http_server(db.clone(), api_token.clone(), handle.clone()));
+
+            // Cover scanning is desktop-only: mobile receives `cover_url` via
+            // the sync snapshot; scanning on-device would drain battery.
+            #[cfg(desktop)]
             tauri::async_runtime::spawn(background_cover_scanner(db.clone(), handle.clone()));
 
             // ── Google Drive backup engine + lifecycle wiring ──
@@ -1039,6 +1067,7 @@ pub fn run() {
             // Pull-and-replace on open: wait briefly for the UI to mount, then
             // reconcile down from Drive. The engine emits `backup-synced` so the
             // frontend refreshes once the local DB has been replaced.
+            // Runs on BOTH platforms — on mobile this is the launch pull.
             {
                 let engine = engine.clone();
                 tauri::async_runtime::spawn(async move {
@@ -1047,13 +1076,15 @@ pub fn run() {
                 });
             }
 
-            // Periodic autosave push.
+            // Periodic autosave push — desktop only (mobile is pull-only).
+            #[cfg(desktop)]
             tauri::async_runtime::spawn(engine.clone().run_autosave());
 
             // Push-before-close: intercept the main window close, hold it open
             // while the final backup uploads, then close for real. The atomic
             // guard prevents the re-entrant CloseRequested (from `win.close()`)
-            // from looping.
+            // from looping. Desktop only — mobile has no CloseRequested event.
+            #[cfg(desktop)]
             if let Some(window) = app.get_webview_window("main") {
                 let engine = engine.clone();
                 let win = window.clone();
@@ -1411,27 +1442,45 @@ fn read_text_file(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|e| e.to_string())
 }
 
+// The file pickers use `rfd`, which has no Android/iOS backend. The mobile UI
+// never offers imports; returning `None` is the "user cancelled" path callers
+// already handle.
+
 #[tauri::command]
 async fn pick_csv_file() -> Option<String> {
-    rfd::AsyncFileDialog::new()
-        .add_filter("CSV", &["csv"])
-        .pick_file()
-        .await
-        .map(|f| f.path().to_string_lossy().into_owned())
+    #[cfg(desktop)]
+    {
+        rfd::AsyncFileDialog::new()
+            .add_filter("CSV", &["csv"])
+            .pick_file()
+            .await
+            .map(|f| f.path().to_string_lossy().into_owned())
+    }
+    #[cfg(mobile)]
+    {
+        None
+    }
 }
 
 #[tauri::command]
 async fn pick_import_file() -> Option<String> {
-    rfd::AsyncFileDialog::new()
-        .add_filter("Bookmarks", &["json", "html", "htm", "opml", "xml", "csv"])
-        .pick_file()
-        .await
-        .map(|f| f.path().to_string_lossy().into_owned())
+    #[cfg(desktop)]
+    {
+        rfd::AsyncFileDialog::new()
+            .add_filter("Bookmarks", &["json", "html", "htm", "opml", "xml", "csv"])
+            .pick_file()
+            .await
+            .map(|f| f.path().to_string_lossy().into_owned())
+    }
+    #[cfg(mobile)]
+    {
+        None
+    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
-#[cfg(test)]
+#[cfg(all(test, desktop))]
 mod http_tests {
     use super::*;
     use axum::body::Body;
