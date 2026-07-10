@@ -27,7 +27,7 @@ tower-http = { version = "0.5", features = ["cors"] }
 uuid = { version = "1", features = ["v4"] }
 rand = "0.8"
 thiserror = "1"
-open = "5"
+tauri-plugin-opener = "2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip"] }
 scraper = "0.20"
 nucleo-matcher = "0.3"
