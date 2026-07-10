@@ -989,29 +989,49 @@ async fn backup_sync_now(
 
 // ─── Entry Point ──────────────────────────────────────────────────────────────
 
+/// Where the SQLite DB and `settings.json` live. Platform-split on purpose:
+/// desktop must stay on `dirs::data_dir()/ferrico` — switching to Tauri's
+/// `app_data_dir()` (which resolves per bundle identifier) would orphan every
+/// existing user database.
+#[cfg(desktop)]
+fn resolve_data_dir(_app: &AppHandle) -> PathBuf {
+    dirs::data_dir()
+        .map(|d| d.join("ferrico"))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// On mobile `dirs::data_dir()` returns `None`; the app-private data dir has
+/// to come from Tauri's path resolver instead.
+#[cfg(mobile)]
+fn resolve_data_dir(app: &AppHandle) -> PathBuf {
+    app.path().app_data_dir().expect("app data dir")
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let data_dir = dirs::data_dir()
-        .map(|d| d.join("ferrico"))
-        .unwrap_or_else(|| PathBuf::from("."));
-    fs::create_dir_all(&data_dir).ok();
-
-    let conn = open_db(&data_dir).expect("init db");
-    let api_token = load_or_create_token(&data_dir);
-    let db = Arc::new(Mutex::new(conn));
-
     tauri::Builder::default()
-        .manage(AppState {
-            db: db.clone(),
-            api_token: api_token.clone(),
-        })
-        .setup(move |app| {
+        .setup(|app| {
             let handle = app.handle().clone();
+
+            let data_dir = resolve_data_dir(&handle);
+            fs::create_dir_all(&data_dir).ok();
+
+            let conn = open_db(&data_dir).expect("init db");
+            let api_token = load_or_create_token(&data_dir);
+            let db = Arc::new(Mutex::new(conn));
+
+            // Commands can't fire before setup() completes, so managing state
+            // here is equivalent to managing it before the builder runs.
+            app.manage(AppState {
+                db: db.clone(),
+                api_token: api_token.clone(),
+            });
+
             tauri::async_runtime::spawn(start_http_server(db.clone(), api_token.clone(), handle.clone()));
             tauri::async_runtime::spawn(background_cover_scanner(db.clone(), handle.clone()));
 
             // ── Google Drive backup engine + lifecycle wiring ──
-            let engine = gdrive::BackupEngine::new(db.clone(), data_dir.clone(), handle.clone());
+            let engine = gdrive::BackupEngine::new(db.clone(), data_dir, handle.clone());
             app.manage(engine.clone());
 
             // Pull-and-replace on open: wait briefly for the UI to mount, then
