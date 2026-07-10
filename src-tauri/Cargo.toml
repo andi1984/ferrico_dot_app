@@ -9,6 +9,10 @@ repository = "https://github.com/andi1984/ferrico_dot_app"
 homepage = "https://github.com/andi1984/ferrico_dot_app"
 readme = "../README.md"
 
+[lib]
+name = "ferrico_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
