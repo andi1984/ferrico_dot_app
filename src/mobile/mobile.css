@@ -1,0 +1,102 @@
+/* Mobile shell styles — imported only by MobileApp. Class names are namespaced
+   `mobile-*` so nothing here can collide with desktop styles even though the
+   file ends up in the shared bundle. Safe-area insets keep the chrome clear of
+   notches, punch-holes, and the gesture bar. */
+
+.mobile-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text-1);
+}
+
+.mobile-chrome {
+  flex: none;
+  padding-top: env(safe-area-inset-top);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+  background: var(--header-bg);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.mobile-content {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* Horizontal filter chips (placeholder until the FilterDrawer in #66) */
+.mobile-chips {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 0 16px 10px;
+  scrollbar-width: none;
+}
+.mobile-chips::-webkit-scrollbar { display: none; }
+
+.mobile-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: var(--input-bg);
+  border: 1px solid var(--border-soft);
+  color: var(--text-1);
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.mobile-chip.is-active {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Temporary bookmark list/grid (replaced by #67 / #68) */
+.mobile-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 12px 16px;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border-dim);
+  color: inherit;
+}
+
+.mobile-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 12px 16px;
+}
+
+.mobile-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 0 10px;
+  text-align: left;
+  background: var(--card-bg);
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  overflow: hidden;
+  color: inherit;
+}
+
+.mobile-card-cover {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  object-fit: cover;
+  background: var(--bg-elev);
+}
