@@ -12,6 +12,12 @@ interface SearchBoxProps {
    */
   onSearch: (value: string) => void
   debounceMs?: number
+  /**
+   * Mobile chrome variant: fills the available width, 44px touch-target height,
+   * 16px input font (anything smaller makes the mobile WebView zoom the focused
+   * input), and no ⌘F hint. Desktop rendering is unchanged when omitted.
+   */
+  mobile?: boolean
 }
 
 /**
@@ -22,7 +28,7 @@ interface SearchBoxProps {
  * through the imperative `focus()` handle (for the ⌘F shortcut).
  */
 export const SearchBox = forwardRef<SearchBoxHandle, SearchBoxProps>(function SearchBox(
-  { onSearch, debounceMs = 300 },
+  { onSearch, debounceMs = 300, mobile = false },
   ref,
 ) {
   const [value, setValue] = useState('')
@@ -40,8 +46,8 @@ export const SearchBox = forwardRef<SearchBoxHandle, SearchBoxProps>(function Se
     <div
       className="flex items-center gap-2 rounded-lg px-2.5 min-w-0 transition-colors duration-150"
       style={{
-        height: 32,
-        maxWidth: 260,
+        height: mobile ? 44 : 32,
+        maxWidth: mobile ? 'none' : 260,
         flex: '1 1 160px',
         minWidth: 120,
         background: 'var(--input-bg)',
@@ -50,7 +56,7 @@ export const SearchBox = forwardRef<SearchBoxHandle, SearchBoxProps>(function Se
       }}
     >
       <span className="flex-none" style={{ color: focused ? 'var(--accent)' : 'var(--text-3)' }} aria-hidden="true">
-        <IconSearch size={13} />
+        <IconSearch size={mobile ? 15 : 13} />
       </span>
       <input
         ref={inputRef}
@@ -68,7 +74,7 @@ export const SearchBox = forwardRef<SearchBoxHandle, SearchBoxProps>(function Se
         placeholder="Search bookmarks…"
         aria-label="Search bookmarks"
         className="bg-transparent flex-1 min-w-0 outline-none"
-        style={{ color: 'var(--text-1)', fontSize: 12.5 }}
+        style={{ color: 'var(--text-1)', fontSize: mobile ? 16 : 12.5 }}
       />
       {value && (
         <button
@@ -77,7 +83,7 @@ export const SearchBox = forwardRef<SearchBoxHandle, SearchBoxProps>(function Se
             inputRef.current?.focus()
           }}
           className="flex-none transition-colors duration-150 cursor-pointer"
-          style={{ color: 'var(--text-3)' }}
+          style={{ color: 'var(--text-3)', padding: mobile ? 10 : 0, margin: mobile ? -6 : 0 }}
           onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--text-2)')}
           onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-3)')}
           aria-label="Clear search"
@@ -85,7 +91,7 @@ export const SearchBox = forwardRef<SearchBoxHandle, SearchBoxProps>(function Se
           <IconClose size={11} />
         </button>
       )}
-      {!value && (
+      {!value && !mobile && (
         <span
           className="mono shrink-0"
           style={{

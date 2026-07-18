@@ -29,6 +29,27 @@
   padding-bottom: env(safe-area-inset-bottom);
 }
 
+/* Header icon buttons — 44px touch targets (no hover affordances on touch;
+   feedback comes from :active). */
+.mobile-icon-btn {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-1);
+}
+.mobile-icon-btn:active {
+  background: var(--btn-hover-bg);
+}
+.mobile-icon-btn:disabled {
+  color: var(--text-muted);
+}
+
 /* Horizontal filter chips (placeholder until the FilterDrawer in #66) */
 .mobile-chips {
   display: flex;

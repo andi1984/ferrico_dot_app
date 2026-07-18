@@ -3,7 +3,8 @@ import { invoke } from '@tauri-apps/api/core'
 import { subscribeToBackupSync, subscribeToCoverUpdated, type UnlistenFn } from '../events'
 import type { Bookmark, Counts, Folder, SidebarData, Tag, ViewMode } from '../types'
 import { domainOf, extractErrorMessage } from '../utils'
-import { IconArrowLeft, IconLayoutGrid, IconLayoutList, IconMoon, IconSettings, IconSun } from '../components/icons'
+import { IconArrowLeft } from '../components/icons'
+import { MobileHeader } from './MobileHeader'
 import './mobile.css'
 
 type Theme = 'dark' | 'light'
@@ -176,8 +177,7 @@ export function MobileApp() {
             <button
               onClick={() => setScreen('browse')}
               aria-label="Back"
-              className="w-10 h-10 flex items-center justify-center rounded-lg"
-              style={{ color: 'var(--text-1)' }}
+              className="mobile-icon-btn"
             >
               <IconArrowLeft size={18} />
             </button>
@@ -199,61 +199,17 @@ export function MobileApp() {
 
   return (
     <div className="mobile-shell">
-      {/* Placeholder chrome — the real header lands in #65, the FilterDrawer in #66 */}
-      <header className="mobile-chrome">
-        <div className="flex items-center gap-2 px-4" style={{ height: 52 }}>
-          <h1 className="text-base font-semibold" style={{ fontFamily: 'var(--font-display)' }}>Ferrico</h1>
-          {syncing && (
-            <span role="status" className="text-xs" style={{ color: 'var(--text-3)' }}>
-              Syncing…
-            </span>
-          )}
-          <div className="flex-1" />
-          <button
-            onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
-            aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-            className="w-10 h-10 flex items-center justify-center rounded-lg"
-            style={{ color: 'var(--text-1)' }}
-          >
-            {theme === 'dark' ? <IconSun size={16} /> : <IconMoon size={16} />}
-          </button>
-          <button
-            onClick={() => setViewMode((v) => (v === 'list' ? 'grid' : 'list'))}
-            aria-label={viewMode === 'list' ? 'Switch to grid view' : 'Switch to list view'}
-            className="w-10 h-10 flex items-center justify-center rounded-lg"
-            style={{ color: 'var(--text-1)' }}
-          >
-            {viewMode === 'list' ? <IconLayoutGrid size={16} /> : <IconLayoutList size={16} />}
-          </button>
-          <button
-            onClick={() => setScreen('settings')}
-            aria-label="Settings"
-            className="w-10 h-10 flex items-center justify-center rounded-lg"
-            style={{ color: 'var(--text-1)' }}
-          >
-            <IconSettings size={16} />
-          </button>
-        </div>
-
-        <div className="px-4 pb-2.5">
-          <input
-            type="search"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search bookmarks"
-            aria-label="Search bookmarks"
-            className="w-full rounded-lg px-3"
-            style={{
-              height: 38,
-              fontSize: 16, // ≥16px prevents the mobile WebView from zooming the focused input
-              background: 'var(--input-bg)',
-              border: '1px solid var(--border-soft)',
-              color: 'var(--text-1)',
-              outline: 'none',
-            }}
-          />
-        </div>
-
+      <MobileHeader
+        onSearch={setSearch}
+        viewMode={viewMode}
+        onToggleView={() => setViewMode((v) => (v === 'list' ? 'grid' : 'list'))}
+        theme={theme}
+        onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+        onOpenSettings={() => setScreen('settings')}
+        syncing={syncing}
+      >
+        {/* Horizontal chips — replaced by the FilterDrawer in #66, wired
+            through MobileHeader's onOpenFilter */}
         <div className="mobile-chips">
           <button
             className={`mobile-chip${activeKey === 'all' ? ' is-active' : ''}`}
@@ -286,7 +242,7 @@ export function MobileApp() {
             )
           })}
         </div>
-      </header>
+      </MobileHeader>
 
       {error && (
         <div
