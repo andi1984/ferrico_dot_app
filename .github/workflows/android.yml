@@ -1,27 +1,15 @@
 name: Android build
 
-# Compile-checks the Android target. The Rust cross-compile (rusqlite's bundled
-# SQLite through the NDK toolchain) is the part most likely to break silently on
-# a desktop-only PR, so this runs on anything touching the app or its build
-# config — not on docs-only changes.
+# Deliberately NOT run per-push/PR — a full Android build is a Rust
+# cross-compile plus a Gradle run, ~10 minutes uncached. Too much to spend on
+# every commit for a target that changes rarely.
+#
+# It runs:
+#   - on release tags (v*), so every release gets a matching APK;
+#   - on demand from the Actions UI, against whichever branch you pick.
 on:
   push:
-    branches: ['**']
-    paths:
-      - 'src/**'
-      - 'src-tauri/**'
-      - 'package.json'
-      - 'bun.lock'
-      - 'vite.config.ts'
-      - '.github/workflows/android.yml'
-  pull_request:
-    paths:
-      - 'src/**'
-      - 'src-tauri/**'
-      - 'package.json'
-      - 'bun.lock'
-      - 'vite.config.ts'
-      - '.github/workflows/android.yml'
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       all-abis:
@@ -64,11 +52,22 @@ jobs:
           echo "Using NDK at $ANDROID_NDK_LATEST_HOME"
           "$ANDROID_NDK_LATEST_HOME/ndk-build" --version | head -1
 
+      # A tagged release gets every ABI; a manual run defaults to arm64 for
+      # speed unless you explicitly ask for the full set.
+      - name: Decide ABI scope
+        id: scope
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ] || [ "${{ inputs.all-abis }}" = "true" ]; then
+            echo "all=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "all=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Add Rust Android targets
         run: |
-          if [ "${{ inputs.all-abis }}" = "true" ]; then
+          if [ "${{ steps.scope.outputs.all }}" = "true" ]; then
             rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
           else
             rustup target add aarch64-linux-android
@@ -78,7 +77,7 @@ jobs:
         with:
           workdir: src-tauri
           # Cross-compiled artifacts don't share a cache with the host build.
-          key: android-${{ inputs.all-abis && 'all' || 'arm64' }}
+          key: android-${{ steps.scope.outputs.all == 'true' && 'all' || 'arm64' }}
 
       - name: Cache Gradle
         uses: actions/cache@v4
@@ -101,7 +100,7 @@ jobs:
       # `--apk` skips the AAB — this job is a compile check, not a store upload.
       - name: Build APK
         run: |
-          if [ "${{ inputs.all-abis }}" = "true" ]; then
+          if [ "${{ steps.scope.outputs.all }}" = "true" ]; then
             bun run android:build -- --debug --apk
           else
             bun run android:build -- --debug --apk --target aarch64
@@ -124,7 +123,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ferrico-debug-apk
+          name: ferrico-debug-apk-${{ github.ref_name }}
           path: ${{ steps.apk.outputs.path }}
           if-no-files-found: error
           retention-days: 14
