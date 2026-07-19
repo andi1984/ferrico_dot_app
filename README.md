@@ -2,7 +2,7 @@
 
 # Ferrico
 
-**A fast, local-first desktop bookmark manager.**
+**A fast, local-first bookmark manager for desktop — with a read-only Android companion.**
 
 Organize, search, and reclaim your bookmarks — all stored locally, no account, no cloud.
 
@@ -12,7 +12,7 @@ Organize, search, and reclaim your bookmarks — all stored locally, no account,
 
 </div>
 
-> **Status:** early but functional (v0.x). The desktop app works on macOS, Linux, and Windows; Android is a work in progress.
+> **Status:** early but functional (v0.x). The desktop app works on macOS, Linux, and Windows. The **Android app is read-only** — browse and open your library on a phone; adding and editing stay on the desktop. It's new and has had less real-world use than the desktop app.
 
 ---
 
@@ -32,6 +32,7 @@ Most bookmark managers either lock your data in a browser or sync it to someone 
 - 🔗 **Broken-link detection** — scan your library and surface dead links.
 - 🤖 **Optional AI features** — natural-language search, automatic Inbox sorting, CSV column mapping, and duplicate-resolution suggestions, powered by your local [Claude CLI](#ai-features-optional).
 - 🧩 **Browser extension** — save the current page straight to your library (Chrome/Firefox).
+- 📱 **Android companion** — browse, filter, and search your library on a phone, and tap through to the system browser. Read-only, and paired from the desktop so your phone never needs a Google sign-in. See [Android app](#android-app).
 - ⌨️ **Keyboard-friendly** — shortcuts, context menus, and accessible controls throughout.
 
 ## Tech stack
@@ -40,6 +41,7 @@ Most bookmark managers either lock your data in a browser or sync it to someone 
 |---|---|
 | Frontend | React 19, TypeScript, Vite 5, Tailwind CSS 4 |
 | Backend | Tauri 2 (Rust), SQLite via `rusqlite` |
+| Targets | macOS, Linux, Windows — plus Android (read-only) from the same codebase |
 | Extension bridge | Local `axum` HTTP server bound to `127.0.0.1:59432` |
 | Package manager | [Bun](https://bun.sh) |
 
@@ -88,6 +90,30 @@ A companion extension lives in [`extension/`](extension/). It saves the current 
 
 Then open the extension's **Options** page and paste the API token shown in Ferrico's settings. The desktop app must be running for the extension to save bookmarks.
 
+## Android app
+
+Ferrico ships the same Tauri app to Android as a **read-only** client: browse your whole library, filter by folder or tag, fuzzy-search, switch between list and grid (with cover images), and tap a bookmark to open it in your system browser. Adding, editing, and deleting stay on the desktop.
+
+Read-only isn't just a UI choice — **the mobile build physically cannot write to your backup.** Sync mode is selected at compile time (`cfg!(mobile)`), so no code path in an Android binary can push to Drive, and the mobile UI performs zero database mutations of its own.
+
+**Pairing, not sign-in.** Rather than running a Google OAuth flow on your phone, a connected desktop exports a pairing code (QR or copy-paste string) under **Settings → Cloud Backup → Pair a mobile device**. Paste it into the phone's settings and it adopts the same Drive folder, then pulls. Your phone never signs in to Google.
+
+> ⚠️ That pairing code contains your Drive credentials. Transfer it over a channel you trust and keep it out of chats, screenshots, and backups.
+
+The phone pulls on launch, on returning to the foreground (rate-limited), and on manual refresh.
+
+**Install:** grab the APK from a [release](https://github.com/andi1984/ferrico_dot_app/releases) and sideload it, or build it yourself (see below). Release APKs are currently **debug-signed** — fine for sideloading, not Play-Store ready.
+
+**Build it yourself:** one-time Android SDK/NDK setup is documented in [`CLAUDE.md`](CLAUDE.md#android-setup-one-time), then:
+
+```bash
+bun run android:init   # once, if src-tauri/gen/android is missing
+bun run android:dev    # run on an emulator or USB-connected device
+bun run android:build  # produce an APK
+```
+
+iOS is not supported yet.
+
 ## Where your data lives
 
 Ferrico stores everything in a single SQLite database under your platform's data directory:
@@ -108,7 +134,8 @@ Ferrico is local-first, but you can optionally mirror your library through **you
 
 - The lossless JSON export is stored as a single `ferrico-backup.json` in a Drive folder you pick.
 - **On launch**, Ferrico pulls the latest snapshot; **before close** (and optionally on a timer) it pushes the current state.
-- Conflict resolution is **full-snapshot last-write-wins**, using Drive's server-side `modifiedTime` as the clock (so it survives clock skew between machines). If two machines edit while *both* are offline, whichever syncs last wins — this is intended for one-machine-at-a-time use, not a CRDT-style merge.
+- Conflict resolution is a **per-record merge**, not blind last-write-wins. Snapshots are unioned by row UUID and reconciled individually (`updated_at`, with deletes as tombstones), so edits to *different* bookmarks from two machines both survive. The merge is commutative — both machines converge on the same result regardless of who syncs first — and the result is normalized afterwards, collapsing duplicate folders/tags and re-homing anything pointing at a deleted container.
+- Your **phone is pull-only**, enforced at compile time, so pairing a device can never overwrite your library. See [Android app](#android-app).
 - The OAuth scope is [`drive.file`](https://developers.google.com/drive/api/guides/api-specific-auth): Ferrico can only ever see files it created, never the rest of your Drive. Your client ID, secret, and refresh token are stored locally in `settings.json`, never transmitted to anyone but Google.
 
 Setup needs a one-time, free Google OAuth client. Full walkthrough (Google Cloud setup, in-app config, multi-machine setup, and troubleshooting) is in **[docs/google-drive-backup.md](docs/google-drive-backup.md)**. Once configured, manage it under **Settings → Cloud Backup**.
@@ -126,6 +153,7 @@ Setup needs a one-time, free Google OAuth client. Full walkthrough (Google Cloud
 | `bun run test:coverage` | Frontend tests with coverage |
 | `bun tauri build` | Production desktop build |
 | `bun run android:dev` | Android dev build (one-time `bun run android:init` first) |
+| `bun run android:build` | Production Android build (APK) |
 
 ### Running tests
 
@@ -137,7 +165,9 @@ bun run test
 cd src-tauri && cargo test
 ```
 
-The Rust test suite lives in `src-tauri/src/db.rs` and covers all database operations (CRUD, cascade deletes, validation, search, OPML export, error types). CI runs both suites plus a type-check on every push and pull request.
+The Rust test suite lives alongside the code it covers (`db.rs`, `io.rs`, `merge.rs`, `gdrive.rs`, …) and runs against in-memory SQLite — CRUD, cascade deletes, validation, search, sync merge, and error types. CI runs both suites plus a type-check on every push and pull request.
+
+The Android build is **not** part of per-commit CI — a cross-compile plus a Gradle run costs ~12 minutes, which is too much per commit. It runs on release tags (so every release gets an APK) and on demand via the **Android build** workflow, which can target any branch.
 
 ### Project structure
 
@@ -145,17 +175,23 @@ The Rust test suite lives in `src-tauri/src/db.rs` and covers all database opera
 ferrico/
 ├─ src/                  # React + TypeScript frontend
 │  ├─ components/        # UI components (+ colocated *.test.tsx)
-│  ├─ App.tsx            # Root component / layout
+│  ├─ mobile/            # Read-only Android shell (MobileApp + friends)
+│  ├─ platform.ts        # Picks the mobile vs desktop root at startup
+│  ├─ App.tsx            # Desktop root component / layout
 │  └─ types.ts           # Shared TS types
-├─ src-tauri/            # Rust backend (Tauri 2)
+├─ src-tauri/            # Rust backend (Tauri 2) — desktop + Android
 │  ├─ src/
-│  │  ├─ main.rs         # Tauri commands + local HTTP server
+│  │  ├─ lib.rs          # Tauri commands, HTTP server, mobile entry point
+│  │  ├─ main.rs         # Thin desktop shim over lib.rs
 │  │  ├─ db.rs           # Pure DB functions + test suite
+│  │  ├─ gdrive.rs       # Drive sync engine + device pairing
+│  │  ├─ merge.rs        # Per-record sync merge
 │  │  ├─ error.rs        # Typed AppError (serialized to the frontend)
 │  │  └─ io.rs           # Import/export helpers
+│  ├─ gen/android/       # Generated Android/Gradle project (committed)
 │  └─ tauri.conf.json    # Tauri 2 config
 ├─ extension/            # Browser extension (Manifest V3)
-└─ .github/workflows/    # CI, release, and PR-report pipelines
+└─ .github/workflows/    # CI, Android, release, and PR-report pipelines
 ```
 
 ## Contributing

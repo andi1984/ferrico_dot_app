@@ -32,12 +32,22 @@ Done and merged to `main` (all issues closed):
 | P5.1 Pairing import UI | #69 | #95 | `src/mobile/MobileSettings.tsx` — paste pairing code, sync now, unpair |
 | P5.2 Pull lifecycle | #70 | #96 | Foreground-resume pull via `visibilitychange` + cooldown |
 
+**All Phase 1–5 core tickets (#54–#70) are merged and shipped in v0.14.0.** The app runs
+on a real device: pairing, pull sync, browsing, and tap-to-open are all confirmed
+working. Post-merge fixes from that first device session landed in #99 (inotify watch
+limit), #101 (touch behavior) and #102 (the `OpenerExt` bug — see §7). Android CI landed
+in #103.
+
 Remaining:
 
 - **#71** P5.3 End-to-end device verification pass — needs the user with a physical
   device or the emulator; checklist ready at `docs/mobile-v1-device-verification.md`.
+  Parts of it are now informally confirmed, but the full pass — especially the
+  **pull-only proof** (Drive `modifiedTime` must never change from phone activity) —
+  has not been walked end to end.
 - **#72–#75** Stretch (QR scanning, pull-to-refresh, release signing, iOS) — only on
-  explicit user request
+  explicit user request. Note #74 (release signing) is what would let CI ship a
+  properly-signed APK instead of the current debug-signed one.
 
 **Lesson from #67–#70**: they were built in parallel worktrees off the same
 `origin/main` point (all independent per the epic's dependency notes), which meant
@@ -213,3 +223,63 @@ the pull-only proof). Run it on the device, don't attempt to automate the device
    pending `bun tauri dev` manual-check note. Worktree removed after opening.
 6. After the user merges: `git fetch`, ancestor-check the branch tip against
    `origin/main`, confirm the issue closed, then move to the next ticket.
+
+## 7. On-device debugging (learned the hard way)
+
+From the first real-device session (Pixel, Android 16). These cost several rebuild
+cycles to work out; they're cheap to re-apply.
+
+**Instrument before theorizing.** Every mobile `invoke` call site swallows errors with
+`.catch(() => {})`, so a failing command looks identical to a dead click handler. Don't
+guess — temporarily log the rejection and read it:
+
+```tsx
+invoke('open_url', { url })
+  .then(() => console.log('[ferrico] OK'))
+  .catch((e) => console.log('[ferrico] FAILED:', JSON.stringify(e)))
+```
+
+Frontend `console.log` surfaces in logcat under the `Tauri/Console` tag:
+
+```bash
+adb logcat -c                                   # clear, then reproduce on device
+adb logcat | grep -iE "Tauri/Console|ferrico"
+```
+
+One instrumented run gives the exact error string. Three rounds of plausible-looking
+blind fixes gave nothing.
+
+**Check the dev server is actually connected first.** The device can silently sit on
+stale code showing `[vite] server connection lost. Polling for restart...`, which makes
+a correct fix look broken. Confirm before drawing conclusions, and force a reconnect
+with:
+
+```bash
+adb logcat -d | grep '\[vite\]'                 # look for "connected" vs "connection lost"
+adb shell am force-stop com.ferrico.app         # then relaunch from the launcher
+```
+
+Frontend edits hot-reload over HMR (no rebuild); **Rust or capability changes always
+need a full `bun run android:dev` rebuild.**
+
+**Prefer a plugin's `…Ext` trait method over its free function.** Several Tauri plugins
+expose both, and the free function is often desktop-only. `tauri_plugin_opener::open_url`
+has no `#[cfg(mobile)]` variant — it shells out to `xdg-open`/`gio`/`kde-open` and fails
+with `ENOENT (os error 2)` on Android. Only `OpenerExt::open_url` (via `app.opener()`)
+routes to the Android `Intent.ACTION_VIEW` handler. See
+[plugins-workspace#2913](https://github.com/tauri-apps/plugins-workspace/issues/2913).
+
+**Reusing a desktop component on touch? Audit its CSS for `touch-action`.** `.bm-card`
+carried `touch-action: none` for drag-and-drop, which made the read-only grid completely
+unscrollable under touch. Same trap the epic already called out for `BookmarkRow`.
+Read-only mobile surfaces want `touch-action: manipulation`, and should
+`preventDefault()` the `contextmenu` event so Chromium's native long-press menu doesn't
+eat the tap.
+
+**Getting the pairing code onto a device:** focus the pairing textarea, then
+`adb shell input text '<code>'`. The base64 alphabet is shell-safe in single quotes.
+⚠️ That code contains live Google Drive credentials — never paste it into a chat,
+screenshot, or issue.
+
+**Don't run `android:build` while `android:dev` is live** — concurrent Gradle
+invocations on the same project directory contend and can disrupt the dev session.
