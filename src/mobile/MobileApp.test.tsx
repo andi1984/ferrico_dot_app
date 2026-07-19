@@ -49,6 +49,10 @@ function mockBackend({
   vi.mocked(invoke).mockImplementation((cmd: string) => {
     if (cmd === 'get_bookmarks') return Promise.resolve(bookmarks)
     if (cmd === 'get_sidebar') return Promise.resolve(sidebar)
+    if (cmd === 'backup_status') return Promise.resolve({
+      has_credentials: false, connected: false, account_email: null,
+      folder_id: null, folder_name: null, last_sync: null, interval_min: 0, enabled: false,
+    })
     return Promise.resolve(null)
   })
 }
@@ -194,7 +198,7 @@ describe('MobileApp shell', () => {
     render(<MobileApp />)
     await screen.findByText('Example')
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument()
+    expect(await screen.findByLabelText('Pairing code')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Back' }))
     expect(await screen.findByText('Example')).toBeInTheDocument()
   })
