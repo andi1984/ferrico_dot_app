@@ -16,6 +16,14 @@ export default defineConfig({
     strictPort: true,
     host: host || false,
     hmr: host ? { protocol: 'ws', host, port: 1421 } : undefined,
+    // The frontend never imports from src-tauri, so Vite has no reason to
+    // watch it — but by default it does, and `target/` (Rust build, tens of
+    // thousands of dirs) plus `gen/` (Android/Gradle build output) blow
+    // through the inotify watch-limit fast, especially running two Vite
+    // instances at once (desktop `tauri dev` + `android:dev`).
+    watch: {
+      ignored: ['**/src-tauri/**'],
+    },
   },
   test: {
     globals: true,
