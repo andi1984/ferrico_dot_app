@@ -7,10 +7,11 @@ import { IconClose } from './icons'
 
 interface BookmarkCardProps {
   bookmark: Bookmark
-  onDelete: (id: string) => void
-  onContext: (e: React.MouseEvent, bookmark: Bookmark) => void
+  onDelete?: (id: string) => void
+  onContext?: (e: React.MouseEvent, bookmark: Bookmark) => void
   onTagClick?: (tagId: string) => void
   onDragPointerDown?: (e: React.PointerEvent, bookmark: Bookmark) => void
+  readOnly?: boolean
 }
 
 // Stable preview gradients keyed off the URL so each tile reads as its own.
@@ -34,16 +35,30 @@ export const BookmarkCard = memo(function BookmarkCard({
   onContext,
   onTagClick,
   onDragPointerDown,
+  readOnly,
 }: BookmarkCardProps) {
   function openUrl(e: React.MouseEvent | React.KeyboardEvent) {
     e.preventDefault()
+    e.stopPropagation()
     invoke('open_url', { url: bookmark.url }).catch(() => {})
   }
 
   function handlePointerDown(e: React.PointerEvent) {
+    if (readOnly) return
     const target = e.target as HTMLElement
     if (target.closest('a, button, [data-no-drag]')) return
     onDragPointerDown?.(e, bookmark)
+  }
+
+  function handleCardClick() {
+    if (!readOnly) return
+    invoke('open_url', { url: bookmark.url }).catch(() => {})
+  }
+
+  function handleCardKeyDown(e: React.KeyboardEvent) {
+    if (!readOnly || (e.key !== 'Enter' && e.key !== ' ')) return
+    e.preventDefault()
+    invoke('open_url', { url: bookmark.url }).catch(() => {})
   }
 
   const [from, to] = PREVIEW_GRADIENTS[hash(bookmark.url) % PREVIEW_GRADIENTS.length]
@@ -53,9 +68,14 @@ export const BookmarkCard = memo(function BookmarkCard({
 
   return (
     <div
-      className="bm-card group relative cursor-grab select-none flex flex-col"
-      onContextMenu={(e) => onContext(e, bookmark)}
+      className={`bm-card group relative select-none flex flex-col ${readOnly ? 'cursor-pointer' : 'cursor-grab'}`}
+      onContextMenu={readOnly ? undefined : (e) => onContext?.(e, bookmark)}
       onPointerDown={handlePointerDown}
+      onClick={readOnly ? handleCardClick : undefined}
+      onKeyDown={readOnly ? handleCardKeyDown : undefined}
+      role={readOnly ? 'button' : undefined}
+      tabIndex={readOnly ? 0 : undefined}
+      aria-label={readOnly ? (bookmark.title || bookmark.url) : undefined}
     >
       {/* Preview banner */}
       <div
@@ -108,20 +128,22 @@ export const BookmarkCard = memo(function BookmarkCard({
           />
         </div>
 
-        <button
-          onClick={() => onDelete(bookmark.id)}
-          className="bm-card-close absolute top-2.5 right-2.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-150 cursor-pointer flex items-center justify-center"
-          style={{
-            width: 24,
-            height: 24,
-            background: 'rgba(0,0,0,0.4)',
-            backdropFilter: 'blur(6px)',
-          }}
-          aria-label={`Delete ${bookmark.title}`}
-          data-no-drag
-        >
-          <IconClose size={12} />
-        </button>
+        {!readOnly && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onDelete?.(bookmark.id) }}
+            className="bm-card-close absolute top-2.5 right-2.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-150 cursor-pointer flex items-center justify-center"
+            style={{
+              width: 24,
+              height: 24,
+              background: 'rgba(0,0,0,0.4)',
+              backdropFilter: 'blur(6px)',
+            }}
+            aria-label={`Delete ${bookmark.title}`}
+            data-no-drag
+          >
+            <IconClose size={12} />
+          </button>
+        )}
       </div>
 
       {/* Body */}

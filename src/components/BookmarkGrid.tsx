@@ -11,10 +11,11 @@ const PADDING = 20
 
 interface BookmarkGridProps {
   bookmarks: Bookmark[]
-  onDelete: (id: string) => void
-  onContext: (e: React.MouseEvent, bookmark: Bookmark) => void
+  onDelete?: (id: string) => void
+  onContext?: (e: React.MouseEvent, bookmark: Bookmark) => void
   onTagClick?: (tagId: string) => void
   onDragPointerDown?: (e: React.PointerEvent, bookmark: Bookmark) => void
+  readOnly?: boolean
 }
 
 export function computeColumns(width: number): number {
@@ -29,6 +30,7 @@ export const BookmarkGrid = memo(function BookmarkGrid({
   onContext,
   onTagClick,
   onDragPointerDown,
+  readOnly,
 }: BookmarkGridProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const [columns, setColumns] = useState(1)
@@ -99,6 +101,7 @@ export const BookmarkGrid = memo(function BookmarkGrid({
                   onContext={onContext}
                   onTagClick={onTagClick}
                   onDragPointerDown={onDragPointerDown}
+                  readOnly={readOnly}
                 />
               ))}
             </div>

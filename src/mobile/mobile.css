@@ -22,6 +22,10 @@
 
 .mobile-content {
   flex: 1;
+  min-height: 0; /* flex items default to min-height:auto, which would let this
+                    grow past the remaining space instead of giving the
+                    BookmarkGrid/MobileBookmarkList scroll children a bounded
+                    100% height to scroll within. */
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   padding-left: env(safe-area-inset-left);
@@ -214,32 +218,4 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-/* Temporary bookmark grid (replaced by #68) */
-.mobile-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  padding: 12px 16px;
-}
-
-.mobile-card {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 0 0 10px;
-  text-align: left;
-  background: var(--card-bg);
-  border: 1px solid var(--border-soft);
-  border-radius: 12px;
-  overflow: hidden;
-  color: inherit;
-}
-
-.mobile-card-cover {
-  width: 100%;
-  aspect-ratio: 16 / 10;
-  object-fit: cover;
-  background: var(--bg-elev);
 }
