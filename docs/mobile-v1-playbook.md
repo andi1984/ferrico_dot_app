@@ -122,6 +122,10 @@ real Drive sync.
   `export PATH="$HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin:$PATH"`
   (The root `CLAUDE.md` claim that plain `cargo` works is stale — `~/.cargo/bin` is empty.)
 - Node 24 required (`nvm use`); package manager is **Bun** (`bun add`, `bun run …`).
+- **Every fresh worktree needs `bun install` before `bun run typecheck`/`bun run test`**
+  — `node_modules` isn't shared across worktrees (hit repeatedly across #63's session
+  and the #67–#70 session; `tsc` fails with `Cannot find module 'qrcode'` or similar
+  until you run it).
 - First `cargo test` in a fresh worktree recompiles everything (~minutes); later runs are fast.
 - Rust tests must stay in-memory SQLite, no disk fixtures (`src-tauri/CLAUDE.md`).
 
