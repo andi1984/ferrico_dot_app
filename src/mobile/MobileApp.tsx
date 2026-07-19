@@ -5,6 +5,7 @@ import type { Bookmark, Counts, Folder, SidebarData, Tag, ViewMode } from '../ty
 import { domainOf, extractErrorMessage } from '../utils'
 import { IconArrowLeft } from '../components/icons'
 import { MobileHeader } from './MobileHeader'
+import { FilterDrawer } from './FilterDrawer'
 import './mobile.css'
 
 type Theme = 'dark' | 'light'
@@ -15,10 +16,6 @@ export type MobileSelection =
   | { type: 'all' }
   | { type: 'folder'; id: string }
   | { type: 'tag'; id: string }
-
-function selectionKey(sel: MobileSelection): string {
-  return sel.type === 'all' ? 'all' : `${sel.type}:${sel.id}`
-}
 
 // ─── Loading skeleton (mirrors the desktop LoadingSkeleton in App.tsx) ────────
 
@@ -59,6 +56,7 @@ export function MobileApp() {
   const [screen, setScreen] = useState<Screen>('browse')
   const [error, setError] = useState<string | null>(null)
   const [syncing, setSyncing] = useState(false)
+  const [filterOpen, setFilterOpen] = useState(false)
 
   const [viewMode, setViewMode] = useState<ViewMode>(() =>
     (localStorage.getItem('ferrico:mobile:viewMode') as ViewMode) ?? 'list'
@@ -195,8 +193,6 @@ export function MobileApp() {
 
   // ─── Browse screen ───────────────────────────────────────────────────────────
 
-  const activeKey = selectionKey(selection)
-
   return (
     <div className="mobile-shell">
       <MobileHeader
@@ -206,43 +202,19 @@ export function MobileApp() {
         theme={theme}
         onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
         onOpenSettings={() => setScreen('settings')}
+        onOpenFilter={() => setFilterOpen(true)}
         syncing={syncing}
-      >
-        {/* Horizontal chips — replaced by the FilterDrawer in #66, wired
-            through MobileHeader's onOpenFilter */}
-        <div className="mobile-chips">
-          <button
-            className={`mobile-chip${activeKey === 'all' ? ' is-active' : ''}`}
-            onClick={() => setSelection({ type: 'all' })}
-          >
-            All <span className="tabnum">{counts.total}</span>
-          </button>
-          {folders.map((f) => {
-            const key = selectionKey({ type: 'folder', id: f.id })
-            return (
-              <button
-                key={f.id}
-                className={`mobile-chip${activeKey === key ? ' is-active' : ''}`}
-                onClick={() => setSelection({ type: 'folder', id: f.id })}
-              >
-                {f.name}
-              </button>
-            )
-          })}
-          {tags.map((t) => {
-            const key = selectionKey({ type: 'tag', id: t.id })
-            return (
-              <button
-                key={t.id}
-                className={`mobile-chip${activeKey === key ? ' is-active' : ''}`}
-                onClick={() => setSelection({ type: 'tag', id: t.id })}
-              >
-                #{t.name}
-              </button>
-            )
-          })}
-        </div>
-      </MobileHeader>
+      />
+
+      <FilterDrawer
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        folders={folders}
+        tags={tags}
+        counts={counts}
+        selection={selection}
+        onSelect={setSelection}
+      />
 
       {error && (
         <div

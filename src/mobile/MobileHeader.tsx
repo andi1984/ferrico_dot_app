@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { SearchBox } from '../components/SearchBox'
 import {
@@ -32,12 +32,10 @@ interface MobileHeaderProps {
   theme: 'dark' | 'light'
   onToggleTheme: () => void
   onOpenSettings: () => void
-  /** The filter button renders only when provided — the FilterDrawer lands in #66. */
+  /** The filter button renders only when provided — opens the FilterDrawer. */
   onOpenFilter?: () => void
   /** True while a sync cycle runs (from the `backup-syncing` event, manual or automatic). */
   syncing: boolean
-  /** Extra chrome rendered at the bottom of the header (filter chips until #66). */
-  children?: ReactNode
 }
 
 /**
@@ -56,7 +54,6 @@ export function MobileHeader({
   onOpenSettings,
   onOpenFilter,
   syncing,
-  children,
 }: MobileHeaderProps) {
   const [backup, setBackup] = useState<BackupStatus | null>(null)
 
@@ -145,8 +142,6 @@ export function MobileHeader({
           Last sync: {formatLastSync(backup!.last_sync)}
         </p>
       )}
-
-      {children}
     </header>
   )
 }

@@ -34,6 +34,7 @@ pub struct Folder {
     pub name: String,
     pub parent_id: Option<String>,
     pub created_at: i64,
+    pub bookmark_count: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1029,9 +1030,15 @@ pub fn db_import_bookmarks(
 }
 
 pub fn db_get_folders(conn: &Connection) -> Result<Vec<Folder>, AppError> {
+    // `bookmark_count` counts only bookmarks directly in the folder (not in
+    // subfolders), matching `db_get_bookmarks`' non-recursive `folder_id = ?` filter.
     let mut stmt = conn.prepare(
-        "SELECT id, name, parent_id, created_at FROM folders \
-         WHERE deleted_at IS NULL ORDER BY name",
+        "SELECT f.id, f.name, f.parent_id, f.created_at, COUNT(b.id) as bookmark_count \
+         FROM folders f \
+         LEFT JOIN bookmarks b ON b.folder_id = f.id AND b.deleted_at IS NULL \
+         WHERE f.deleted_at IS NULL \
+         GROUP BY f.id \
+         ORDER BY f.name",
     )?;
     let folders = stmt
         .query_map([], |row| {
@@ -1040,6 +1047,7 @@ pub fn db_get_folders(conn: &Connection) -> Result<Vec<Folder>, AppError> {
                 name: row.get(1)?,
                 parent_id: row.get(2)?,
                 created_at: row.get(3)?,
+                bookmark_count: Some(row.get(4)?),
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -1130,7 +1138,7 @@ pub fn db_add_folder(
          VALUES (?1, ?2, ?3, ?4, ?4)",
         params![id, name, parent_id, ts],
     )?;
-    Ok(Folder { id, name, parent_id, created_at: ts })
+    Ok(Folder { id, name, parent_id, created_at: ts, bookmark_count: Some(0) })
 }
 
 /// Re-parent a folder. `new_parent_id == None` moves it to the top level.
@@ -2356,6 +2364,44 @@ mod tests {
         let folders = db_get_folders(&conn).unwrap();
         assert_eq!(folders.len(), 1);
         assert_eq!(folders[0].id, f.id);
+    }
+
+    #[test]
+    fn get_folders_counts_direct_bookmarks_only() {
+        let conn = mem();
+        let parent = mk_folder(&conn, "Work");
+        let child = db_add_folder(&conn, "Projects".to_string(), Some(parent.id.clone())).unwrap();
+
+        db_add_bookmark(&conn, CreateBookmarkInput {
+            url: "https://a.com".to_string(),
+            title: "A".to_string(),
+            description: None, favicon_url: None, feed_url: None,
+            folder_id: Some(parent.id.clone()),
+            tag_ids: None,
+        }).unwrap();
+        db_add_bookmark(&conn, CreateBookmarkInput {
+            url: "https://b.com".to_string(),
+            title: "B".to_string(),
+            description: None, favicon_url: None, feed_url: None,
+            folder_id: Some(child.id.clone()),
+            tag_ids: None,
+        }).unwrap();
+
+        let folders = db_get_folders(&conn).unwrap();
+        let parent = folders.iter().find(|f| f.id == parent.id).unwrap();
+        let child = folders.iter().find(|f| f.id == child.id).unwrap();
+        // Direct-only, matching db_get_bookmarks' non-recursive folder_id filter —
+        // the child's bookmark doesn't roll up into the parent's count.
+        assert_eq!(parent.bookmark_count, Some(1));
+        assert_eq!(child.bookmark_count, Some(1));
+    }
+
+    #[test]
+    fn get_folders_empty_folder_has_zero_count() {
+        let conn = mem();
+        let f = mk_folder(&conn, "Empty");
+        let folders = db_get_folders(&conn).unwrap();
+        assert_eq!(folders.iter().find(|x| x.id == f.id).unwrap().bookmark_count, Some(0));
     }
 
     #[test]

@@ -90,11 +90,12 @@ describe('MobileApp shell', () => {
     expect(await screen.findByText('Your library is empty')).toBeInTheDocument()
   })
 
-  it('refetches with the folder filter when a folder chip is tapped', async () => {
+  it('refetches with the folder filter when a folder is picked from the FilterDrawer', async () => {
     mockBackend()
     render(<MobileApp />)
     await screen.findByText('Example')
-    fireEvent.click(screen.getByRole('button', { name: 'Reading' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Filter by folder or tag' }))
+    fireEvent.click(screen.getByRole('button', { name: /Reading/ }))
     await waitFor(() => {
       expect(invoke).toHaveBeenCalledWith('get_bookmarks', {
         folderId: 'folder-1',
@@ -103,6 +104,8 @@ describe('MobileApp shell', () => {
         inboxOnly: false,
       })
     })
+    // Picking a filter closes the drawer.
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
   it('refetches with the search term when the search input changes', async () => {

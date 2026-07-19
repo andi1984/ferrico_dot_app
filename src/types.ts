@@ -11,6 +11,7 @@ export interface Folder {
   name: string
   parent_id: string | null
   created_at: number
+  bookmark_count?: number
 }
 
 export interface Bookmark {

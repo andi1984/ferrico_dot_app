@@ -730,6 +730,7 @@ pub fn export_opml(conn: &Connection) -> Result<String, AppError> {
                 name: row.get(1)?,
                 parent_id: row.get(2)?,
                 created_at: row.get(3)?,
+                bookmark_count: None,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
