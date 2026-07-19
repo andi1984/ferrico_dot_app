@@ -6,6 +6,7 @@ import { domainOf, extractErrorMessage } from '../utils'
 import { IconArrowLeft } from '../components/icons'
 import { MobileHeader } from './MobileHeader'
 import { FilterDrawer } from './FilterDrawer'
+import { MobileBookmarkList } from './MobileBookmarkList'
 import './mobile.css'
 
 type Theme = 'dark' | 'light'
@@ -256,19 +257,7 @@ export function MobileApp() {
             ))}
           </div>
         ) : (
-          /* Placeholder list — the virtualized list view lands in #67 */
-          <div>
-            {bookmarks.map((b) => (
-              <button key={b.id} className="mobile-row" onClick={() => openBookmark(b)}>
-                <span className="text-sm font-medium truncate" style={{ color: 'var(--text-1)' }}>
-                  {b.title || b.url}
-                </span>
-                <span className="text-xs" style={{ color: 'var(--text-3)' }}>
-                  {domainOf(b.url)}
-                </span>
-              </button>
-            ))}
-          </div>
+          <MobileBookmarkList bookmarks={bookmarks} />
         )}
       </main>
     </div>
