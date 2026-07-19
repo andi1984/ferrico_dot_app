@@ -3,11 +3,11 @@ import { invoke } from '@tauri-apps/api/core'
 import { subscribeToBackupSync, subscribeToCoverUpdated, type UnlistenFn } from '../events'
 import type { Bookmark, Counts, Folder, SidebarData, Tag, ViewMode } from '../types'
 import { extractErrorMessage } from '../utils'
-import { IconArrowLeft } from '../components/icons'
 import { MobileHeader } from './MobileHeader'
 import { FilterDrawer } from './FilterDrawer'
 import { MobileBookmarkList } from './MobileBookmarkList'
 import { BookmarkGrid } from '../components/BookmarkGrid'
+import { MobileSettings } from './MobileSettings'
 import './mobile.css'
 
 type Theme = 'dark' | 'light'
@@ -196,29 +196,15 @@ export function MobileApp() {
     }
   }, [])
 
-  // ─── Settings screen (placeholder — pairing import lands in #69) ────────────
+  // ─── Settings screen ─────────────────────────────────────────────────────────
 
   if (screen === 'settings') {
     return (
-      <div className="mobile-shell">
-        <header className="mobile-chrome">
-          <div className="flex items-center gap-2 px-3" style={{ height: 52 }}>
-            <button
-              onClick={() => setScreen('browse')}
-              aria-label="Back"
-              className="mobile-icon-btn"
-            >
-              <IconArrowLeft size={18} />
-            </button>
-            <h1 className="text-base font-semibold" style={{ fontFamily: 'var(--font-display)' }}>Settings</h1>
-          </div>
-        </header>
-        <main className="mobile-content">
-          <p className="px-4 py-6 text-sm" style={{ color: 'var(--text-2)' }}>
-            Pairing and sync settings are coming soon.
-          </p>
-        </main>
-      </div>
+      <MobileSettings
+        onClose={() => setScreen('browse')}
+        theme={theme}
+        onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+      />
     )
   }
 
