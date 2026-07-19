@@ -8,10 +8,13 @@ interface MobileBookmarkListItemProps {
   bookmark: Bookmark
 }
 
-// Read-only row for the mobile list view. No drag, no context menu, no hover
-// affordances — whole row is a single tap target that opens the URL in the
-// system browser. Unlike the desktop BookmarkRow, this sets no `touchAction`
-// override, so the list scrolls normally under touch.
+// Read-only row for the mobile list view. No drag, no custom context menu, no
+// hover affordances — whole row is a single tap target that opens the URL in
+// the system browser. Unlike the desktop BookmarkRow, this sets no
+// `touchAction` override, so the list scrolls normally under touch.
+// `onContextMenu` preventDefaults the *native* long-press menu Chromium's
+// Android WebView shows by default — without it, a long-press eats the touch
+// before the click ever reaches us (haptic + sound, nothing happens).
 export const MobileBookmarkListItem = memo(function MobileBookmarkListItem({ bookmark }: MobileBookmarkListItemProps) {
   function openUrl() {
     invoke('open_url', { url: bookmark.url }).catch(() => {})
@@ -21,7 +24,8 @@ export const MobileBookmarkListItem = memo(function MobileBookmarkListItem({ boo
     <button
       type="button"
       onClick={openUrl}
-      className="mobile-list-item"
+      onContextMenu={(e) => e.preventDefault()}
+      className="mobile-list-item select-none"
       aria-label={bookmark.title || bookmark.url}
     >
       <Favicon

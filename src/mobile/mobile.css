@@ -182,6 +182,11 @@
   border: none;
   border-bottom: 1px solid var(--border-dim);
   color: inherit;
+  /* Android WebView shows a text-selection callout on a long-press by
+     default even inside a <button> — `select-none` (Tailwind) handles
+     standard user-select, this catches WebKit's separate touch-callout
+     menu so a tap reliably reaches the onClick handler instead. */
+  -webkit-touch-callout: none;
 }
 .mobile-list-item:active {
   background: var(--btn-hover-bg);

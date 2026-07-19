@@ -98,14 +98,19 @@ describe('BookmarkGrid', () => {
   })
 
   describe('readOnly', () => {
-    it('hides the delete pill and skips onContextMenu wiring', () => {
+    it('hides the delete pill, skips the custom onContext callback, and suppresses the native long-press menu', () => {
+      // On Android WebView (Chromium) the native context menu fires on
+      // long-press unless `contextmenu` is preventDefault()'d — without
+      // that, a long-press eats the touch before our click handler runs.
       const onContext = vi.fn()
       const bm = makeBookmark({ id: 'bm-1', title: 'Test' })
       render(<BookmarkGrid bookmarks={[bm]} readOnly onContext={onContext} />)
       expect(screen.queryByRole('button', { name: 'Delete Test' })).toBeNull()
-      const link = screen.getByRole('link', { name: 'Test' })
-      link.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))
+      const card = screen.getByRole('button', { name: 'Test' })
+      const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+      card.dispatchEvent(event)
       expect(onContext).not.toHaveBeenCalled()
+      expect(event.defaultPrevented).toBe(true)
     })
 
     it('tapping anywhere on the card opens the bookmark URL exactly once', () => {
@@ -123,11 +128,21 @@ describe('BookmarkGrid', () => {
       expect(invoke).toHaveBeenCalledTimes(1)
     })
 
-    it('default (non-readOnly) mode is unchanged: delete pill present, card not a button', () => {
+    it('overrides the desktop touch-action so the grid still scrolls under touch', () => {
+      // `.bm-card` sets `touch-action: none` for desktop drag-and-drop; leaving
+      // that on mobile makes the grid unscrollable and turns taps into drags.
       const bm = makeBookmark({ id: 'bm-1', title: 'Test' })
-      render(<BookmarkGrid bookmarks={[bm]} onDelete={() => {}} onContext={() => {}} />)
+      render(<BookmarkGrid bookmarks={[bm]} readOnly />)
+      expect(screen.getByRole('button', { name: 'Test' }).style.touchAction).toBe('manipulation')
+    })
+
+    it('default (non-readOnly) mode is unchanged: delete pill present, card not a button, drag touch-action intact', () => {
+      const bm = makeBookmark({ id: 'bm-1', title: 'Test' })
+      const { container } = render(<BookmarkGrid bookmarks={[bm]} onDelete={() => {}} onContext={() => {}} />)
       expect(screen.getByRole('button', { name: 'Delete Test' })).toBeInTheDocument()
       expect(screen.queryByRole('button', { name: 'Test' })).toBeNull()
+      // No inline override — the desktop `touch-action: none` from CSS stands.
+      expect(container.querySelector<HTMLElement>('.bm-card')!.style.touchAction).toBe('')
     })
   })
 })
