@@ -69,7 +69,7 @@ export const BookmarkCard = memo(function BookmarkCard({
   return (
     <div
       className={`bm-card group relative select-none flex flex-col ${readOnly ? 'cursor-pointer' : 'cursor-grab'}`}
-      onContextMenu={readOnly ? undefined : (e) => onContext?.(e, bookmark)}
+      onContextMenu={readOnly ? (e) => e.preventDefault() : (e) => onContext?.(e, bookmark)}
       onPointerDown={handlePointerDown}
       onClick={readOnly ? handleCardClick : undefined}
       onKeyDown={readOnly ? handleCardKeyDown : undefined}
