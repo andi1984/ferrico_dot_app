@@ -42,6 +42,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use rusqlite::Connection;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_opener::OpenerExt;
 #[cfg(desktop)]
 use tower_http::cors::{Any, CorsLayer};
 
@@ -298,9 +299,19 @@ fn export_csv(state: State<'_, AppState>) -> Result<String, AppError> {
     io::export_csv(&db)
 }
 
+/// Open a URL in the system browser.
+///
+/// Must go through the `OpenerExt` trait method (`app.opener()`), **not** the
+/// free `tauri_plugin_opener::open_url` function: the free function has no
+/// `#[cfg(mobile)]` variant and always takes the desktop path, shelling out to
+/// `xdg-open`/`gio`/`kde-open`. None of those exist on Android, so it fails with
+/// ENOENT ("No such file or directory (os error 2)") and the plugin's Kotlin
+/// `Intent.ACTION_VIEW` handler is never reached.
+/// See https://github.com/tauri-apps/plugins-workspace/issues/2913.
 #[tauri::command]
-fn open_url(url: String) -> Result<(), AppError> {
-    tauri_plugin_opener::open_url(url, None::<&str>)
+fn open_url(app: AppHandle, url: String) -> Result<(), AppError> {
+    app.opener()
+        .open_url(url, None::<&str>)
         .map_err(|e| AppError::Validation { message: e.to_string() })
 }
 
