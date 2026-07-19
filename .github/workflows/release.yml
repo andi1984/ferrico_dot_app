@@ -268,9 +268,111 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # Android is its own job rather than a matrix entry: it needs a JDK, the
+  # Android SDK/NDK and cross-compilation targets, none of which the desktop
+  # platforms use.
+  #
+  # If this job fails the run goes red — but the `release` job below still
+  # publishes (see its `if:`). `prepare` has already pushed the tag by then, so
+  # letting a mobile-only hiccup abort the workflow would strand a tag with no
+  # release at all. Shipping without an APK is recoverable; a stranded tag is
+  # not. The red run is deliberate: a missing APK should be loud, not silent.
+  android:
+    name: Build (android)
+    needs: prepare
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      # Use the runner's preinstalled NDK rather than downloading ~1GB. If a
+      # future NDK breaks the rusqlite `cc` cross-compile (the classic failure
+      # mode — see docs/mobile-v1-playbook.md), pin a known-good one here with
+      # `sdkmanager --install "ndk;<version>"` and point NDK_HOME at it.
+      - name: Resolve NDK
+        run: |
+          echo "NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+          echo "Using NDK at $ANDROID_NDK_LATEST_HOME"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Rust Android targets
+        run: rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workdir: src-tauri
+          # Cross-compiled artifacts don't share a cache with the host build.
+          key: android-release
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('src-tauri/gen/android/**/*.gradle*') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Debug-signed on purpose: a plain `--release` APK is *unsigned* and
+      # therefore uninstallable, and we have no signing keystore yet. The
+      # debug keystore is generated automatically, so this needs no secrets.
+      # Proper release signing is tracked in #74; the asset name below says
+      # "debug-signed" so nobody mistakes this for a Play-ready build.
+      - name: Build APK
+        run: bun run android:build -- --debug --apk
+
+      - name: Stage APK
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p staged-artifacts
+          found=0
+          while IFS= read -r apk; do
+            cp -v "$apk" "staged-artifacts/ferrico_${VERSION}_android_$(basename "$apk")"
+            found=1
+          done < <(find src-tauri/gen/android -name '*.apk' -type f)
+          if [ "$found" -eq 0 ]; then
+            echo "::error::No APK produced by 'tauri android build'."
+            find src-tauri/gen/android -name '*.apk' -o -name '*.aab' || true
+            exit 1
+          fi
+          ls -la staged-artifacts/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          # `binaries-*` is what the release job globs for, so naming it this
+          # way is all that's needed to get the APK attached to the release.
+          name: binaries-android
+          path: staged-artifacts/*
+          if-no-files-found: error
+          retention-days: 1
+
   release:
     name: Create GitHub release
-    needs: [prepare, build]
+    needs: [prepare, build, android]
+    # Publish as long as the desktop bundles are there. `!cancelled()` overrides
+    # the default "skip if a dependency failed", so a failed `android` job does
+    # not block the release — the desktop artifacts still ship and the APK is
+    # simply absent from the assets.
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
 
     steps:

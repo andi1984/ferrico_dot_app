@@ -1,15 +1,17 @@
 name: Android build
 
-# Deliberately NOT run per-push/PR — a full Android build is a Rust
-# cross-compile plus a Gradle run, ~10 minutes uncached. Too much to spend on
-# every commit for a target that changes rarely.
+# On-demand only. A full Android build is a Rust cross-compile plus a Gradle
+# run (~12 min uncached), which is far too much to spend on every commit for a
+# target that changes rarely.
 #
-# It runs:
-#   - on release tags (v*), so every release gets a matching APK;
-#   - on demand from the Actions UI, against whichever branch you pick.
+# Release APKs are NOT built here — the `android` job in release.yml handles
+# those, so they get attached to the GitHub release alongside the desktop
+# bundles. Triggering on `v*` here too would just build Android twice per
+# release.
+#
+# Use this to test the Android build on a branch before merging: the Actions UI
+# lets you pick any branch when dispatching.
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
     inputs:
       all-abis:
@@ -52,16 +54,11 @@ jobs:
           echo "Using NDK at $ANDROID_NDK_LATEST_HOME"
           "$ANDROID_NDK_LATEST_HOME/ndk-build" --version | head -1
 
-      # A tagged release gets every ABI; a manual run defaults to arm64 for
-      # speed unless you explicitly ask for the full set.
+      # Defaults to arm64 for fast feedback; opt into the full set when you
+      # actually need to check the other ABIs cross-compile.
       - name: Decide ABI scope
         id: scope
-        run: |
-          if [ "${{ github.ref_type }}" = "tag" ] || [ "${{ inputs.all-abis }}" = "true" ]; then
-            echo "all=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "all=false" >> "$GITHUB_OUTPUT"
-          fi
+        run: echo "all=${{ inputs.all-abis }}" >> "$GITHUB_OUTPUT"
 
       - uses: dtolnay/rust-toolchain@stable
 
