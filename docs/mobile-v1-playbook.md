@@ -27,28 +27,31 @@ Done and merged to `main` (all issues closed):
 | P4.4 Mobile shell | #64 | #89 | `src/mobile/MobileApp.tsx` — state, data loading, theme, events |
 | P4.5 Mobile header | #65 | #91 | `src/mobile/MobileHeader.tsx` — search, view toggle, refresh + sync status |
 | P4.6 FilterDrawer | #66 | #92 | `src/mobile/FilterDrawer.tsx` — folders/tags bottom sheet |
-
-Opened, **not yet merged** — verify each landed on `main` before treating it as done
-(see the post-merge check in §3):
-
-| Phase | Issue | PR | What it adds |
-|---|---|---|---|
 | P4.7 Mobile list view | #67 | #93 | `MobileBookmarkListItem`/`MobileBookmarkList` — virtualized read-only row |
 | P4.8 readOnly grid | #68 | #94 | `readOnly` prop on `BookmarkGrid`/`BookmarkCard`, wired into `MobileApp` |
 | P5.1 Pairing import UI | #69 | #95 | `src/mobile/MobileSettings.tsx` — paste pairing code, sync now, unpair |
 | P5.2 Pull lifecycle | #70 | #96 | Foreground-resume pull via `visibilitychange` + cooldown |
 
-Remaining, in dependency order:
+Remaining:
 
 - **#71** P5.3 End-to-end device verification pass — needs the user with a physical
-  device or the emulator; prepare a checklist, don't attempt to automate.
+  device or the emulator; checklist ready at `docs/mobile-v1-device-verification.md`.
 - **#72–#75** Stretch (QR scanning, pull-to-refresh, release signing, iOS) — only on
   explicit user request
 
-#67–#70 were built in parallel worktrees off the same `origin/main` point (all
-independent per the epic's dependency notes) — if merging out of PR-number order,
-re-run `bun run typecheck`/`bun run test` after each merge in case a later PR's
-branch predates an earlier one's changes to a shared file (`MobileApp.tsx`).
+**Lesson from #67–#70**: they were built in parallel worktrees off the same
+`origin/main` point (all independent per the epic's dependency notes), which meant
+each PR's branch predated the others' edits to the shared `MobileApp.tsx`. Every PR
+after the first to merge hit a real conflict (not just a stale-branch warning) and
+needed `git rebase origin/main` + manual resolution — twice for #95, since #94 and
+#96 both merged while it was still open. Watch for two things when resolving: (1)
+dead imports/helpers left behind once a sibling PR's placeholder code is gone
+(e.g. `openBookmark`, `domainOf`, `IconArrowLeft` all went dead across these merges
+as the real components replaced the placeholders they'd been serving) — delete them,
+don't just resolve the textual conflict; (2) `cargo test` + `bun run typecheck` +
+`bun run test` green in the worktree before force-pushing the rebase, same as any
+other push. Same-parallel-batch tickets touching a shared shell file next time:
+consider landing them serially instead, or expect a rebase pass per PR.
 
 ## 2. Settled architecture decisions — do not re-litigate
 
@@ -106,9 +109,8 @@ cd .. && bun run typecheck         # clean
 bun run test                       # all green
 ```
 
-Baselines as of #66 merged (2026-07-19): **328 Rust tests**, **181 frontend tests /
-21 files** (grows as tickets add tests — #67–#70 add roughly 19 more across 4 new
-files once merged; re-run `bun run test` after merging to get the exact count).
+Baselines as of #70 merged (2026-07-19): **328 Rust tests**, **200 frontend tests /
+24 files** (grows as tickets add tests).
 
 State in the PR body that the `bun tauri dev` manual sanity check is pending — the
 user runs it before merging (working agreement from #76). Don't run `bun tauri dev`
@@ -193,8 +195,11 @@ delayed open-pull spawn in `setup()`). This ticket adds foreground-resume pull
 (Tauri `Resumed`/visibility event on Android) and a manual refresh command path.
 Keep every path funneling through `run_sync` — mode selection stays compile-time.
 
-**#71 (device E2E)** — needs the user with a physical device. Prepare a checklist,
-don't attempt to automate.
+**#71 (device E2E)** — needs the user with a physical device. Checklist prepared:
+`docs/mobile-v1-device-verification.md` — a step-by-step expansion of the issue's
+checklist mapped to this repo's actual UI/commands (pairing flow, `adb` snippets for
+airplane mode and WebView version, where to check the Drive file's `modifiedTime` for
+the pull-only proof). Run it on the device, don't attempt to automate the device parts.
 
 ## 6. Definition of done (every ticket)
 
