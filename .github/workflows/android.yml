@@ -1,0 +1,129 @@
+name: Android build
+
+# Deliberately NOT run per-push/PR — a full Android build is a Rust
+# cross-compile plus a Gradle run, ~10 minutes uncached. Too much to spend on
+# every commit for a target that changes rarely.
+#
+# It runs:
+#   - on release tags (v*), so every release gets a matching APK;
+#   - on demand from the Actions UI, against whichever branch you pick.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      all-abis:
+        description: 'Build every ABI (slower) instead of arm64 only'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build debug APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # `src-tauri/gen/android` is committed, so no `tauri android init` here —
+      # CI builds the same Gradle project that's in the repo.
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      # The runner ships an NDK already; point Tauri at it rather than
+      # downloading ~1GB. If a future NDK breaks the rusqlite `cc`
+      # cross-compile (the classic failure mode — see docs/mobile-v1-playbook.md),
+      # pin a known-good one here with `sdkmanager --install "ndk;<version>"`
+      # and set NDK_HOME to that path instead.
+      - name: Resolve NDK
+        run: |
+          echo "NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+          echo "Using NDK at $ANDROID_NDK_LATEST_HOME"
+          "$ANDROID_NDK_LATEST_HOME/ndk-build" --version | head -1
+
+      # A tagged release gets every ABI; a manual run defaults to arm64 for
+      # speed unless you explicitly ask for the full set.
+      - name: Decide ABI scope
+        id: scope
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ] || [ "${{ inputs.all-abis }}" = "true" ]; then
+            echo "all=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "all=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Rust Android targets
+        run: |
+          if [ "${{ steps.scope.outputs.all }}" = "true" ]; then
+            rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
+          else
+            rustup target add aarch64-linux-android
+          fi
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workdir: src-tauri
+          # Cross-compiled artifacts don't share a cache with the host build.
+          key: android-${{ steps.scope.outputs.all == 'true' && 'all' || 'arm64' }}
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('src-tauri/gen/android/**/*.gradle*', 'src-tauri/gen/android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # `--debug` uses the auto-generated debug keystore, so this needs no
+      # signing secrets. Release signing is tracked separately (#74).
+      # `--apk` skips the AAB — this job is a compile check, not a store upload.
+      - name: Build APK
+        run: |
+          if [ "${{ steps.scope.outputs.all }}" = "true" ]; then
+            bun run android:build -- --debug --apk
+          else
+            bun run android:build -- --debug --apk --target aarch64
+          fi
+
+      - name: Locate APK
+        id: apk
+        run: |
+          # Fail loudly rather than uploading an empty artifact if the output
+          # path changes in a future Tauri release.
+          apk=$(find src-tauri/gen/android -name '*.apk' -print -quit)
+          if [ -z "$apk" ]; then
+            echo "No APK produced — build reported success but emitted nothing." >&2
+            find src-tauri/gen/android -name '*.apk' -o -name '*.aab' || true
+            exit 1
+          fi
+          echo "path=$apk" >> "$GITHUB_OUTPUT"
+          ls -lh "$apk"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ferrico-debug-apk-${{ github.ref_name }}
+          path: ${{ steps.apk.outputs.path }}
+          if-no-files-found: error
+          retention-days: 14
