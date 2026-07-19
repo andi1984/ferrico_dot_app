@@ -2,11 +2,12 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { subscribeToBackupSync, subscribeToCoverUpdated, type UnlistenFn } from '../events'
 import type { Bookmark, Counts, Folder, SidebarData, Tag, ViewMode } from '../types'
-import { domainOf, extractErrorMessage } from '../utils'
+import { extractErrorMessage } from '../utils'
 import { IconArrowLeft } from '../components/icons'
 import { MobileHeader } from './MobileHeader'
 import { FilterDrawer } from './FilterDrawer'
 import { MobileBookmarkList } from './MobileBookmarkList'
+import { BookmarkGrid } from '../components/BookmarkGrid'
 import './mobile.css'
 
 type Theme = 'dark' | 'light'
@@ -162,10 +163,6 @@ export function MobileApp() {
     }
   }, [])
 
-  const openBookmark = (b: Bookmark) => {
-    invoke('open_url', { url: b.url }).catch(() => {})
-  }
-
   // ─── Settings screen (placeholder — pairing import lands in #69) ────────────
 
   if (screen === 'settings') {
@@ -242,20 +239,7 @@ export function MobileApp() {
             </p>
           </div>
         ) : viewMode === 'grid' ? (
-          /* Placeholder grid — the readOnly BookmarkGrid lands in #68 */
-          <div className="mobile-grid">
-            {bookmarks.map((b) => (
-              <button key={b.id} className="mobile-card" onClick={() => openBookmark(b)}>
-                {b.cover_url && <img className="mobile-card-cover" src={b.cover_url} alt="" loading="lazy" />}
-                <span className="px-2.5 text-sm font-medium line-clamp-2" style={{ color: 'var(--text-1)' }}>
-                  {b.title || b.url}
-                </span>
-                <span className="px-2.5 text-xs" style={{ color: 'var(--text-3)' }}>
-                  {domainOf(b.url)}
-                </span>
-              </button>
-            ))}
-          </div>
+          <BookmarkGrid bookmarks={bookmarks} readOnly />
         ) : (
           <MobileBookmarkList bookmarks={bookmarks} />
         )}

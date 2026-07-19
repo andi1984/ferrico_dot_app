@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react'
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { invoke } from '@tauri-apps/api/core'
 import { BookmarkGrid, computeColumns } from './BookmarkGrid'
 import { makeBookmark } from '../test-utils'
 
@@ -49,6 +50,8 @@ describe('computeColumns', () => {
 })
 
 describe('BookmarkGrid', () => {
+  beforeEach(() => vi.clearAllMocks())
+
   it('renders nothing when there are no bookmarks', () => {
     const { container } = render(
       <BookmarkGrid bookmarks={[]} onDelete={() => {}} onContext={() => {}} />,
@@ -92,5 +95,39 @@ describe('BookmarkGrid', () => {
     const link = screen.getByRole('link', { name: 'Test' })
     link.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))
     expect(onContext).toHaveBeenCalledWith(expect.any(Object), bm)
+  })
+
+  describe('readOnly', () => {
+    it('hides the delete pill and skips onContextMenu wiring', () => {
+      const onContext = vi.fn()
+      const bm = makeBookmark({ id: 'bm-1', title: 'Test' })
+      render(<BookmarkGrid bookmarks={[bm]} readOnly onContext={onContext} />)
+      expect(screen.queryByRole('button', { name: 'Delete Test' })).toBeNull()
+      const link = screen.getByRole('link', { name: 'Test' })
+      link.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))
+      expect(onContext).not.toHaveBeenCalled()
+    })
+
+    it('tapping anywhere on the card opens the bookmark URL exactly once', () => {
+      const bm = makeBookmark({ id: 'bm-1', title: 'Test', url: 'https://example.com/foo' })
+      render(<BookmarkGrid bookmarks={[bm]} readOnly />)
+      screen.getByRole('button', { name: 'Test' }).click()
+      expect(invoke).toHaveBeenCalledTimes(1)
+      expect(invoke).toHaveBeenCalledWith('open_url', { url: 'https://example.com/foo' })
+    })
+
+    it('tapping the title link opens the URL exactly once (no double-invoke from bubbling)', () => {
+      const bm = makeBookmark({ id: 'bm-1', title: 'Test', url: 'https://example.com/foo' })
+      render(<BookmarkGrid bookmarks={[bm]} readOnly />)
+      screen.getByRole('link', { name: 'Test' }).click()
+      expect(invoke).toHaveBeenCalledTimes(1)
+    })
+
+    it('default (non-readOnly) mode is unchanged: delete pill present, card not a button', () => {
+      const bm = makeBookmark({ id: 'bm-1', title: 'Test' })
+      render(<BookmarkGrid bookmarks={[bm]} onDelete={() => {}} onContext={() => {}} />)
+      expect(screen.getByRole('button', { name: 'Delete Test' })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Test' })).toBeNull()
+    })
   })
 })

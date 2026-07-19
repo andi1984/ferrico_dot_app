@@ -11,8 +11,9 @@ vi.mock('../events', () => ({
   subscribeToBackupSync: vi.fn(),
 }))
 
-// happy-dom returns 0 for clientHeight, which would make the list virtualizer
-// render zero rows — mock it to render every row (see BookmarkList.test.tsx).
+// happy-dom returns 0 for clientHeight, which would make the grid/list
+// virtualizer render zero items — mock it to render every item (see
+// BookmarkList.test.tsx).
 vi.mock('@tanstack/react-virtual', () => ({
   useVirtualizer: ({ count, estimateSize }: { count: number; estimateSize: (i: number) => number }) => ({
     getTotalSize: () => Array.from({ length: count }, (_, i) => estimateSize(i)).reduce((a, b) => a + b, 0),
@@ -172,11 +173,11 @@ describe('MobileApp shell', () => {
     mockBackend({ bookmarks: [makeBookmark({ id: 'bm-1', title: 'Example', cover_url: null })] })
     const { container } = render(<MobileApp />)
     await screen.findByText('Example')
-    expect(container.querySelector('img.mobile-card-cover')).toBeNull()
+    expect(container.querySelector('img[aria-hidden="true"]')).toBeNull()
 
     const handler = vi.mocked(subscribeToCoverUpdated).mock.calls[0][0]
     act(() => { handler({ id: 'bm-1', cover_url: 'https://example.com/cover.png' }) })
-    const img = container.querySelector<HTMLImageElement>('img.mobile-card-cover')
+    const img = container.querySelector<HTMLImageElement>('img[aria-hidden="true"]')
     expect(img).not.toBeNull()
     expect(img!.src).toBe('https://example.com/cover.png')
   })
