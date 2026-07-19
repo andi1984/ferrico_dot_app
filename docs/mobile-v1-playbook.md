@@ -21,21 +21,34 @@ Done and merged to `main` (all issues closed):
 | P1 Rust restructure | #54–#57 | #77–#81 | `main.rs` → `lib.rs` split (`ferrico_lib`, `pub fn run()` + `#[cfg_attr(mobile, tauri::mobile_entry_point)]`); DB/AppState init inside `setup()`; `resolve_data_dir()` platform split; `open` crate → `tauri-plugin-opener`; `#[cfg(desktop)]` gates on HTTP server, cover scanner, close-push, autosave, `rfd` pickers |
 | P2 Sync backend | #58, #59 | #82, #83 | `SyncMode { Full, PullOnly }` on `sync_once` (mode picked via `cfg!(mobile)` — compile-time read-only); `PairingPayload` v1 + `export_pairing`/`import_pairing` + `backup_export_pairing`/`backup_import_pairing` commands |
 | P3 Desktop pairing UI | #60 | #84 | "Pair a mobile device" section in `BackupSettingsPage.tsx` (QR + copy string), `qrcode` dependency |
+| P4.1 Android toolchain | #61 | #87 | SDK/NDK/rustup targets installed, AVD `ferrico_dev` created (Linux docs) |
+| P4.2 Android scaffold | #62 | #88 | `tauri android init` output committed, vite `host: true`, CSP `img-src` fix |
+| P4.3 Platform detection | #63 | #86 | `src/platform.ts` UA sniff, `src/main.tsx` mobile/desktop split |
+| P4.4 Mobile shell | #64 | #89 | `src/mobile/MobileApp.tsx` — state, data loading, theme, events |
+| P4.5 Mobile header | #65 | #91 | `src/mobile/MobileHeader.tsx` — search, view toggle, refresh + sync status |
+| P4.6 FilterDrawer | #66 | #92 | `src/mobile/FilterDrawer.tsx` — folders/tags bottom sheet |
+
+Opened, **not yet merged** — verify each landed on `main` before treating it as done
+(see the post-merge check in §3):
+
+| Phase | Issue | PR | What it adds |
+|---|---|---|---|
+| P4.7 Mobile list view | #67 | #93 | `MobileBookmarkListItem`/`MobileBookmarkList` — virtualized read-only row |
+| P4.8 readOnly grid | #68 | #94 | `readOnly` prop on `BookmarkGrid`/`BookmarkCard`, wired into `MobileApp` |
+| P5.1 Pairing import UI | #69 | #95 | `src/mobile/MobileSettings.tsx` — paste pairing code, sync now, unpair |
+| P5.2 Pull lifecycle | #70 | #96 | Foreground-resume pull via `visibilitychange` + cooldown |
 
 Remaining, in dependency order:
 
-- **#61** P4.1 Android toolchain setup — ⚠️ installs SDK/NDK system-wide; the user
-  wants to be present. Do not start this unattended.
-- **#62** P4.2 `tauri android init` scaffold + config fixes (needs #61 for on-device
-  verification, but config edits can be prepared without it)
-- **#63** P4.3 Platform detection + mobile entry split (frontend-only, no toolchain needed)
-- **#64–#68** P4.4–P4.8 Mobile shell: `MobileApp`, header, `FilterDrawer`, list view,
-  `readOnly` grid (frontend-only; on-device testing needs #61/#62, development doesn't)
-- **#69–#71** Phase 5: pairing import UI, pull lifecycle, end-to-end device pass
+- **#71** P5.3 End-to-end device verification pass — needs the user with a physical
+  device or the emulator; prepare a checklist, don't attempt to automate.
 - **#72–#75** Stretch (QR scanning, pull-to-refresh, release signing, iOS) — only on
   explicit user request
 
-Parallelizable without the Android toolchain: #63, and #64–#68 after #63.
+#67–#70 were built in parallel worktrees off the same `origin/main` point (all
+independent per the epic's dependency notes) — if merging out of PR-number order,
+re-run `bun run typecheck`/`bun run test` after each merge in case a later PR's
+branch predates an earlier one's changes to a shared file (`MobileApp.tsx`).
 
 ## 2. Settled architecture decisions — do not re-litigate
 
@@ -93,8 +106,9 @@ cd .. && bun run typecheck         # clean
 bun run test                       # all green
 ```
 
-Baselines after Phase 3: **323 Rust tests** (grows as tickets add tests),
-**142 frontend tests / 17 files**.
+Baselines as of #66 merged (2026-07-19): **328 Rust tests**, **181 frontend tests /
+21 files** (grows as tickets add tests — #67–#70 add roughly 19 more across 4 new
+files once merged; re-run `bun run test` after merging to get the exact count).
 
 State in the PR body that the `bun tauri dev` manual sanity check is pending — the
 user runs it before merging (working agreement from #76). Don't run `bun tauri dev`
