@@ -128,11 +128,21 @@ describe('BookmarkGrid', () => {
       expect(invoke).toHaveBeenCalledTimes(1)
     })
 
-    it('default (non-readOnly) mode is unchanged: delete pill present, card not a button', () => {
+    it('overrides the desktop touch-action so the grid still scrolls under touch', () => {
+      // `.bm-card` sets `touch-action: none` for desktop drag-and-drop; leaving
+      // that on mobile makes the grid unscrollable and turns taps into drags.
       const bm = makeBookmark({ id: 'bm-1', title: 'Test' })
-      render(<BookmarkGrid bookmarks={[bm]} onDelete={() => {}} onContext={() => {}} />)
+      render(<BookmarkGrid bookmarks={[bm]} readOnly />)
+      expect(screen.getByRole('button', { name: 'Test' }).style.touchAction).toBe('manipulation')
+    })
+
+    it('default (non-readOnly) mode is unchanged: delete pill present, card not a button, drag touch-action intact', () => {
+      const bm = makeBookmark({ id: 'bm-1', title: 'Test' })
+      const { container } = render(<BookmarkGrid bookmarks={[bm]} onDelete={() => {}} onContext={() => {}} />)
       expect(screen.getByRole('button', { name: 'Delete Test' })).toBeInTheDocument()
       expect(screen.queryByRole('button', { name: 'Test' })).toBeNull()
+      // No inline override — the desktop `touch-action: none` from CSS stands.
+      expect(container.querySelector<HTMLElement>('.bm-card')!.style.touchAction).toBe('')
     })
   })
 })

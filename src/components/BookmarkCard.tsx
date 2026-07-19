@@ -69,6 +69,13 @@ export const BookmarkCard = memo(function BookmarkCard({
   return (
     <div
       className={`bm-card group relative select-none flex flex-col ${readOnly ? 'cursor-pointer' : 'cursor-grab'}`}
+      // `.bm-card` sets `touch-action: none` for desktop drag-and-drop, which on
+      // touch devices also kills scrolling over the card and makes the browser
+      // treat every touch as a potential drag/long-press instead of a tap.
+      // Read-only (mobile) has no drag, so hand gestures back to the browser:
+      // `manipulation` keeps pan/pinch-zoom while dropping the double-tap-zoom
+      // delay that would otherwise add ~300ms to every tap.
+      style={readOnly ? { touchAction: 'manipulation' } : undefined}
       onContextMenu={readOnly ? (e) => e.preventDefault() : (e) => onContext?.(e, bookmark)}
       onPointerDown={handlePointerDown}
       onClick={readOnly ? handleCardClick : undefined}
