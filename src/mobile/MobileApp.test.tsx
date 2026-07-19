@@ -1,6 +1,6 @@
 import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { MobileApp } from './MobileApp'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { MobileApp, FOREGROUND_SYNC_MIN_INTERVAL_MS } from './MobileApp'
 import { makeBookmark, makeFolder, makeTag } from '../test-utils'
 import type { Bookmark, SidebarData } from '../types'
 
@@ -197,5 +197,101 @@ describe('MobileApp shell', () => {
     expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Back' }))
     expect(await screen.findByText('Example')).toBeInTheDocument()
+  })
+})
+
+describe('MobileApp foreground resume sync', () => {
+  let now: number
+  let dateNowSpy: ReturnType<typeof vi.spyOn>
+
+  function setVisibility(state: 'visible' | 'hidden') {
+    Object.defineProperty(document, 'visibilityState', { value: state, configurable: true })
+  }
+
+  function resume() {
+    document.dispatchEvent(new Event('visibilitychange'))
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.clear()
+    document.documentElement.removeAttribute('data-theme')
+    vi.mocked(subscribeToBackupSync).mockResolvedValue(() => {})
+    vi.mocked(subscribeToCoverUpdated).mockResolvedValue(() => {})
+    now = 1_700_000_000_000
+    dateNowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now)
+    setVisibility('visible')
+  })
+
+  afterEach(() => {
+    dateNowSpy.mockRestore()
+    setVisibility('visible')
+  })
+
+  function mockBackendWithBackupStatus(enabled: boolean) {
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'get_bookmarks') return Promise.resolve([])
+      if (cmd === 'get_sidebar') return Promise.resolve(makeSidebar())
+      if (cmd === 'backup_status') return Promise.resolve({ enabled })
+      return Promise.resolve(null)
+    })
+  }
+
+  it('syncs when the app becomes visible, is paired, and the cooldown elapsed', async () => {
+    mockBackendWithBackupStatus(true)
+    render(<MobileApp />)
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_bookmarks', expect.anything()))
+
+    now += FOREGROUND_SYNC_MIN_INTERVAL_MS + 1
+    act(() => resume())
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('backup_sync_now')
+    })
+  })
+
+  it('does not sync when unpaired', async () => {
+    mockBackendWithBackupStatus(false)
+    render(<MobileApp />)
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_bookmarks', expect.anything()))
+
+    now += FOREGROUND_SYNC_MIN_INTERVAL_MS + 1
+    act(() => resume())
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('backup_status')
+    })
+    expect(invoke).not.toHaveBeenCalledWith('backup_sync_now')
+  })
+
+  it('does not sync again before the cooldown elapses', async () => {
+    mockBackendWithBackupStatus(true)
+    render(<MobileApp />)
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_bookmarks', expect.anything()))
+
+    now += FOREGROUND_SYNC_MIN_INTERVAL_MS + 1
+    act(() => resume())
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('backup_sync_now'))
+    const callsAfterFirst = vi.mocked(invoke).mock.calls.length
+
+    // Well within the cooldown — a second resume right away should be a no-op.
+    now += 1000
+    act(() => resume())
+    expect(vi.mocked(invoke).mock.calls.length).toBe(callsAfterFirst)
+  })
+
+  it('does not sync when the document is hidden', async () => {
+    mockBackendWithBackupStatus(true)
+    render(<MobileApp />)
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_bookmarks', expect.anything()))
+
+    now += FOREGROUND_SYNC_MIN_INTERVAL_MS + 1
+    setVisibility('hidden')
+    act(() => resume())
+
+    // MobileHeader fetches backup_status on its own mount regardless — the
+    // assertion that matters here is that a hidden document never triggers a
+    // sync attempt.
+    expect(invoke).not.toHaveBeenCalledWith('backup_sync_now')
   })
 })
