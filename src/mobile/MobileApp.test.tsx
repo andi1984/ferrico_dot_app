@@ -11,6 +11,21 @@ vi.mock('../events', () => ({
   subscribeToBackupSync: vi.fn(),
 }))
 
+// happy-dom returns 0 for clientHeight, which would make the list virtualizer
+// render zero rows — mock it to render every row (see BookmarkList.test.tsx).
+vi.mock('@tanstack/react-virtual', () => ({
+  useVirtualizer: ({ count, estimateSize }: { count: number; estimateSize: (i: number) => number }) => ({
+    getTotalSize: () => Array.from({ length: count }, (_, i) => estimateSize(i)).reduce((a, b) => a + b, 0),
+    getVirtualItems: () => Array.from({ length: count }, (_, i) => ({
+      key: i,
+      index: i,
+      start: Array.from({ length: i }, (_, j) => estimateSize(j)).reduce((a, b) => a + b, 0),
+      size: estimateSize(i),
+    })),
+    measureElement: () => {},
+  }),
+}))
+
 import { invoke } from '@tauri-apps/api/core'
 import { subscribeToBackupSync, subscribeToBookmarkAdded, subscribeToCoverUpdated } from '../events'
 

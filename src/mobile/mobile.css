@@ -159,12 +159,19 @@
   border-radius: 999px;
 }
 
-/* Temporary bookmark list/grid (replaced by #67 / #68) */
-.mobile-row {
+/* MobileBookmarkList — virtualized read-only row */
+.mobile-list-scroll {
+  height: 100%;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.mobile-list-item {
   display: flex;
-  flex-direction: column;
-  gap: 3px;
+  align-items: flex-start;
+  gap: 12px;
   width: 100%;
+  min-height: 48px;
   padding: 12px 16px;
   text-align: left;
   background: transparent;
@@ -172,7 +179,44 @@
   border-bottom: 1px solid var(--border-dim);
   color: inherit;
 }
+.mobile-list-item:active {
+  background: var(--btn-hover-bg);
+}
 
+.mobile-list-item-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mobile-list-item-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mobile-list-item-desc {
+  font-size: 12.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mobile-list-item-domain {
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Temporary bookmark grid (replaced by #68) */
 .mobile-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
