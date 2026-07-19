@@ -11,6 +11,10 @@ import './mobile.css'
 type Theme = 'dark' | 'light'
 type Screen = 'browse' | 'settings'
 
+// Foreground-resume pull cooldown — avoids hammering backup_sync_now every
+// time the user briefly switches away and back. Exported for the test.
+export const FOREGROUND_SYNC_MIN_INTERVAL_MS = 10 * 60 * 1000
+
 // Mobile navigation scope — read-only v1 has no inbox/bin/broken views.
 export type MobileSelection =
   | { type: 'all' }
@@ -112,6 +116,11 @@ export function MobileApp() {
   const reloadRef = useRef(reload)
   useEffect(() => { reloadRef.current = reload }, [reload])
 
+  // Cooldown clock for the foreground-resume sync below — reset whenever any
+  // sync cycle completes (launch pull, manual refresh, or foreground-resume
+  // itself), not just by the resume trigger, so they don't pile up.
+  const lastSyncAttemptRef = useRef(Date.now())
+
   // Sync engine applied a new snapshot → reflect it. Mobile sync is compile-time
   // pull-only, so `changed` always means new local data.
   useEffect(() => {
@@ -121,10 +130,12 @@ export function MobileApp() {
       onSyncing: () => setSyncing(true),
       onSynced: ({ changed }) => {
         setSyncing(false)
+        lastSyncAttemptRef.current = Date.now()
         if (changed) reloadRef.current()
       },
       onError: ({ message }) => {
         setSyncing(false)
+        lastSyncAttemptRef.current = Date.now()
         setError(message)
       },
     })
@@ -137,6 +148,28 @@ export function MobileApp() {
       active = false
       unlisten?.()
     }
+  }, [])
+
+  // Foreground resume: the app already gets a pull on launch (Rust-side
+  // open-pull, both platforms) and a manual pull via the header's refresh
+  // button — this adds a third trigger for the common "leave app, come back"
+  // case, without touching Rust (see #70 for why: cheap, testable, with the
+  // native `RunEvent::Resumed` noted as an upgrade path if this proves
+  // unreliable on-device). Only fires when paired (`backup_status().enabled`)
+  // so unpaired users never see a spurious "not connected" error banner.
+  useEffect(() => {
+    function onVisibilityChange() {
+      if (document.visibilityState !== 'visible') return
+      if (Date.now() - lastSyncAttemptRef.current < FOREGROUND_SYNC_MIN_INTERVAL_MS) return
+      lastSyncAttemptRef.current = Date.now()
+      invoke<{ enabled: boolean } | null>('backup_status')
+        .then((status) => {
+          if (status?.enabled) return invoke('backup_sync_now')
+        })
+        .catch(() => {})
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange)
   }, [])
 
   // Live cover updates from the sync-applied snapshot's background fetches
