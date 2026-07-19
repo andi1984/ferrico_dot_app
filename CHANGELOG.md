@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.14.0] - 2026-07-19
+
+### Features
+
+- MobileSettings — pairing import UI (P5.1)
+- readOnly mode for BookmarkGrid/BookmarkCard (P4.8)
+- foreground-resume pull (P5.2)
+- virtualized read-only list view (P4.7)
+- FilterDrawer — folders/tags navigation (P4.6)
+- MobileHeader — search, view toggle, refresh with sync status
+- MobileApp shell — state, data loading, theme, events
+- tauri android init scaffold + config fixes
+- platform detection + mobile entry split
+- desktop pairing UI (QR + copy string) in Drive settings
+- pairing payload export/import + backup commands
+- add SyncMode { Full, PullOnly } to the sync engine
+
+### Bug Fixes
+
+- restore touch scrolling over readOnly grid cards
+- open_url via OpenerExt so links work on Android
+- suppress native long-press context menu blocking taps
+- stop watching src-tauri, avoid inotify watch-limit crash
+
+
 ## [0.13.0] - 2026-07-05
 
 ### Features
