@@ -159,3 +159,16 @@ export const IconSend = ({ size = 14 }: { size?: number }) => (
     <path d="M22 2 11 13" />
   </svg>
 )
+
+export const IconRefresh = ({ size = 14 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+    <path d="M21 3v6h-6" />
+  </svg>
+)
+
+export const IconFilter = ({ size = 14 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3Z" />
+  </svg>
+)
