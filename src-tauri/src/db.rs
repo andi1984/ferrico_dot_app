@@ -302,6 +302,65 @@ pub fn init_schema(conn: &Connection) -> Result<(), AppError> {
         }
     }
 
+    // Incremental sync (Neon/Postgres) support: `sync_dirty` records which rows
+    // changed locally since the last push, so a sync only uploads what moved.
+    // Rows are marked by AFTER INSERT/UPDATE triggers rather than by editing
+    // every `db_*` mutation — that way imports, the extension HTTP server and
+    // every future write path are covered automatically. Deletes are NOT
+    // tracked: user-visible deletion is an UPDATE (tombstone), and hard deletes
+    // (apply/clear) must never be pushed — absence always loses a merge anyway.
+    //
+    // `sync_meta.dirty_tracking` gates the triggers so `db_apply_sync_snapshot`
+    // can rebuild the DB from a merged snapshot without marking every row dirty
+    // (which would re-push the whole dataset on the next sync).
+    //
+    // Triggers are DROP+CREATE (not IF NOT EXISTS) so a changed trigger body in
+    // a future build actually replaces the old one at startup.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS sync_dirty (
+           kind TEXT NOT NULL CHECK (kind IN ('folder','tag','bookmark')),
+           id   TEXT NOT NULL,
+           PRIMARY KEY (kind, id)
+         );
+         CREATE TABLE IF NOT EXISTS sync_meta (
+           key   TEXT PRIMARY KEY,
+           value TEXT NOT NULL
+         );
+         INSERT OR IGNORE INTO sync_meta (key, value) VALUES ('dirty_tracking', '1');",
+    )?;
+    for (table, kind) in [("folders", "folder"), ("tags", "tag"), ("bookmarks", "bookmark")] {
+        conn.execute_batch(&format!(
+            "DROP TRIGGER IF EXISTS trg_{table}_dirty_ins;
+             CREATE TRIGGER trg_{table}_dirty_ins AFTER INSERT ON {table}
+             WHEN (SELECT value FROM sync_meta WHERE key = 'dirty_tracking') = '1'
+             BEGIN
+               INSERT OR REPLACE INTO sync_dirty (kind, id) VALUES ('{kind}', NEW.id);
+             END;
+             DROP TRIGGER IF EXISTS trg_{table}_dirty_upd;
+             CREATE TRIGGER trg_{table}_dirty_upd AFTER UPDATE ON {table}
+             WHEN (SELECT value FROM sync_meta WHERE key = 'dirty_tracking') = '1'
+             BEGIN
+               INSERT OR REPLACE INTO sync_dirty (kind, id) VALUES ('{kind}', NEW.id);
+             END;",
+        ))?;
+    }
+    // Tag links travel inside the bookmark's sync record (`tag_ids`), so a
+    // link change dirties the bookmark.
+    conn.execute_batch(
+        "DROP TRIGGER IF EXISTS trg_bt_dirty_ins;
+         CREATE TRIGGER trg_bt_dirty_ins AFTER INSERT ON bookmark_tags
+         WHEN (SELECT value FROM sync_meta WHERE key = 'dirty_tracking') = '1'
+         BEGIN
+           INSERT OR REPLACE INTO sync_dirty (kind, id) VALUES ('bookmark', NEW.bookmark_id);
+         END;
+         DROP TRIGGER IF EXISTS trg_bt_dirty_del;
+         CREATE TRIGGER trg_bt_dirty_del AFTER DELETE ON bookmark_tags
+         WHEN (SELECT value FROM sync_meta WHERE key = 'dirty_tracking') = '1'
+         BEGIN
+           INSERT OR REPLACE INTO sync_dirty (kind, id) VALUES ('bookmark', OLD.bookmark_id);
+         END;",
+    )?;
+
     Ok(())
 }
 
@@ -1436,12 +1495,52 @@ pub fn db_delete_tag(conn: &Connection, id: &str) -> Result<(), AppError> {
 }
 
 pub fn db_clear_all_data(conn: &Connection) -> Result<(), AppError> {
-    // Delete junction table first, then leaf tables, then folders
+    // Delete junction table first, then leaf tables, then folders. A user reset
+    // also drops the pending sync marks — there is nothing left to push.
     conn.execute_batch(
         "DELETE FROM bookmark_tags;
          DELETE FROM bookmarks;
          DELETE FROM tags;
-         DELETE FROM folders;",
+         DELETE FROM folders;
+         DELETE FROM sync_dirty;",
+    )?;
+    Ok(())
+}
+
+// ─── Incremental-sync dirty tracking ────────────────────────────────────────────
+
+/// One pending local change: `(kind, id)` with kind ∈ folder | tag | bookmark.
+pub type DirtyEntry = (String, String);
+
+/// Rows changed locally since their last successful push (maintained by the
+/// `trg_*_dirty_*` triggers in `init_schema`).
+pub fn db_get_dirty(conn: &Connection) -> Result<Vec<DirtyEntry>, AppError> {
+    let rows = conn
+        .prepare("SELECT kind, id FROM sync_dirty ORDER BY kind, id")?
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Remove exactly the given entries — never `DELETE FROM sync_dirty` wholesale:
+/// rows the user touched *while* a sync was in flight must keep their mark so
+/// the next cycle pushes them.
+pub fn db_clear_dirty(conn: &Connection, entries: &[DirtyEntry]) -> Result<(), AppError> {
+    let mut stmt = conn.prepare("DELETE FROM sync_dirty WHERE kind = ?1 AND id = ?2")?;
+    for (kind, id) in entries {
+        stmt.execute(params![kind, id])?;
+    }
+    Ok(())
+}
+
+/// Mark every row dirty. Bootstrap for a database that predates dirty tracking
+/// (or whose remote cursor was reset): the first incremental sync must push the
+/// full dataset, and only trigger-time marks exist otherwise.
+pub fn db_mark_all_dirty(conn: &Connection) -> Result<(), AppError> {
+    conn.execute_batch(
+        "INSERT OR REPLACE INTO sync_dirty (kind, id) SELECT 'folder', id FROM folders;
+         INSERT OR REPLACE INTO sync_dirty (kind, id) SELECT 'tag', id FROM tags;
+         INSERT OR REPLACE INTO sync_dirty (kind, id) SELECT 'bookmark', id FROM bookmarks;",
     )?;
     Ok(())
 }
@@ -1568,6 +1667,12 @@ pub fn db_apply_sync_snapshot(
     // folders.parent_id FK doesn't fire mid-loop on out-of-order rows.
     tx.execute_batch("PRAGMA defer_foreign_keys = ON")?;
 
+    // Rebuilding from a merged snapshot is not a *local* change — gate the
+    // dirty-tracking triggers off for the duration of this transaction, or the
+    // rebuild would mark the whole dataset for re-push. Restored below; the
+    // flag flip is transactional, so a rollback can't leave tracking off.
+    tx.execute("UPDATE sync_meta SET value = '0' WHERE key = 'dirty_tracking'", [])?;
+
     // Preserve machine-local health state across the wipe-and-rebuild.
     let mut health: HashMap<String, (i64, Option<i64>)> = HashMap::new();
     {
@@ -1584,7 +1689,15 @@ pub fn db_apply_sync_snapshot(
         }
     }
 
-    db_clear_all_data(&tx)?;
+    // Inline wipe of the four data tables — deliberately NOT `db_clear_all_data`,
+    // which also drops `sync_dirty`: marks left by user edits racing this apply
+    // must survive so those rows are pushed on the next cycle.
+    tx.execute_batch(
+        "DELETE FROM bookmark_tags;
+         DELETE FROM bookmarks;
+         DELETE FROM tags;
+         DELETE FROM folders;",
+    )?;
 
     for f in &snap.folders {
         // Drop a parent reference the merge didn't carry (parent tombstoned/omitted on
@@ -1641,6 +1754,7 @@ pub fn db_apply_sync_snapshot(
         )?;
     }
 
+    tx.execute("UPDATE sync_meta SET value = '1' WHERE key = 'dirty_tracking'", [])?;
     tx.commit()?;
     Ok(())
 }
@@ -3793,5 +3907,135 @@ mod tests {
         let res = db_lookup_by_url(&conn, "").unwrap();
         assert_eq!(res.domain, None);
         assert!(res.exact.is_empty() && res.same_domain.is_empty());
+    }
+
+    // ── Incremental-sync dirty tracking ───────────────────────────────────────
+
+    fn dirty_set(conn: &Connection) -> Vec<(String, String)> {
+        db_get_dirty(conn).unwrap()
+    }
+
+    #[test]
+    fn mutations_mark_rows_dirty() {
+        let conn = mem();
+        let f = mk_folder(&conn, "News");
+        let t = mk_tag(&conn, "rust");
+        let b = mk_bookmark(&conn, "https://example.com", "Example");
+
+        let d = dirty_set(&conn);
+        assert!(d.contains(&("folder".into(), f.id.clone())));
+        assert!(d.contains(&("tag".into(), t.id.clone())));
+        assert!(d.contains(&("bookmark".into(), b.id.clone())));
+    }
+
+    #[test]
+    fn tombstone_delete_marks_dirty() {
+        let conn = mem();
+        let b = mk_bookmark(&conn, "https://example.com", "Example");
+        db_clear_dirty(&conn, &dirty_set(&conn)).unwrap();
+
+        db_delete_bookmark(&conn, &b.id).unwrap();
+        assert_eq!(dirty_set(&conn), vec![("bookmark".to_string(), b.id)]);
+    }
+
+    #[test]
+    fn tag_link_change_marks_bookmark_dirty() {
+        let conn = mem();
+        let t = mk_tag(&conn, "rust");
+        let b = db_add_bookmark(
+            &conn,
+            CreateBookmarkInput {
+                url: "https://example.com".into(),
+                title: "Example".into(),
+                description: None,
+                favicon_url: None,
+                feed_url: None,
+                folder_id: None,
+                tag_ids: Some(vec![t.id.clone()]),
+            },
+        )
+        .unwrap();
+        db_clear_dirty(&conn, &dirty_set(&conn)).unwrap();
+
+        // A junction-row delete alone (no touch on the bookmark row itself —
+        // e.g. the link-cutting half of a purge) must re-dirty the bookmark,
+        // because tag_ids ride inside the bookmark's sync record.
+        conn.execute("DELETE FROM bookmark_tags WHERE bookmark_id = ?1", params![b.id])
+            .unwrap();
+        assert_eq!(dirty_set(&conn), vec![("bookmark".to_string(), b.id)]);
+    }
+
+    #[test]
+    fn clear_dirty_removes_only_given_entries() {
+        let conn = mem();
+        let a = mk_bookmark(&conn, "https://a.com", "A");
+        let b = mk_bookmark(&conn, "https://b.com", "B");
+
+        db_clear_dirty(&conn, &[("bookmark".into(), a.id)]).unwrap();
+        let d = dirty_set(&conn);
+        assert_eq!(d, vec![("bookmark".to_string(), b.id)]);
+    }
+
+    #[test]
+    fn apply_sync_snapshot_does_not_mark_dirty_but_keeps_existing_marks() {
+        let conn = mem();
+        let survivor = mk_bookmark(&conn, "https://race.com", "Race");
+        // Simulate a user edit racing the sync: its mark must survive the apply.
+        let racing_mark = ("bookmark".to_string(), survivor.id.clone());
+
+        let snap = crate::merge::SyncSnapshot {
+            folders: vec![],
+            tags: vec![],
+            bookmarks: vec![crate::merge::SyncBookmark {
+                id: "remote-1".into(),
+                url: "https://remote.com".into(),
+                title: "Remote".into(),
+                description: None,
+                favicon_url: None,
+                feed_url: None,
+                cover_url: None,
+                folder_id: None,
+                tag_ids: vec![],
+                created_at: 1,
+                updated_at: 1,
+                deleted_at: None,
+                purged_at: None,
+            }],
+        };
+        db_apply_sync_snapshot(&conn, &snap).unwrap();
+
+        // The rebuild itself must not have marked the applied rows…
+        let d = dirty_set(&conn);
+        assert!(!d.contains(&("bookmark".into(), "remote-1".into())));
+        // …but the pre-existing mark survives.
+        assert!(d.contains(&racing_mark));
+
+        // And tracking is back ON after the apply.
+        let b = mk_bookmark(&conn, "https://after.com", "After");
+        assert!(dirty_set(&conn).contains(&("bookmark".into(), b.id)));
+    }
+
+    #[test]
+    fn mark_all_dirty_covers_every_row() {
+        let conn = mem();
+        let f = mk_folder(&conn, "News");
+        let t = mk_tag(&conn, "rust");
+        let b = mk_bookmark(&conn, "https://example.com", "Example");
+        db_clear_dirty(&conn, &dirty_set(&conn)).unwrap();
+
+        db_mark_all_dirty(&conn).unwrap();
+        let d = dirty_set(&conn);
+        assert!(d.contains(&("folder".into(), f.id)));
+        assert!(d.contains(&("tag".into(), t.id)));
+        assert!(d.contains(&("bookmark".into(), b.id)));
+    }
+
+    #[test]
+    fn clear_all_data_drops_dirty_marks() {
+        let conn = mem();
+        mk_bookmark(&conn, "https://example.com", "Example");
+        assert!(!dirty_set(&conn).is_empty());
+        db_clear_all_data(&conn).unwrap();
+        assert!(dirty_set(&conn).is_empty());
     }
 }
