@@ -6,6 +6,7 @@ mod io;
 mod io_validate;
 mod merge;
 mod og_image;
+mod pgsync;
 
 #[cfg(desktop)]
 use axum::{
