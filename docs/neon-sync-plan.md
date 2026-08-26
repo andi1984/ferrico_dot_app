@@ -1,6 +1,7 @@
 # Neon sync — implementation plan
 
-Status: **approved design, implementation in progress** (branch `neon-sync`).
+Status: **implemented** on branch `neon-sync` (pending on-device verification).
+User/contributor doc: [`neon-sync.md`](./neon-sync.md).
 
 Ferrico gains a second sync backend: a user-owned [Neon](https://neon.tech) Postgres
 project, spoken to over the raw Postgres wire protocol. Neon becomes the *primary*

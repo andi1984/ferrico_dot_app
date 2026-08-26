@@ -2,7 +2,8 @@
 
 A local-first bookmark manager. **Tauri 2 + React 19 + TypeScript + Tailwind CSS 4**,
 targeting desktop (macOS/Linux/Windows) and Android. Bookmarks live in local SQLite;
-optional Google Drive sync; an AI panel powered by the local `claude` CLI; and a
+sync across devices via the user's own Neon/Postgres database (Google Drive as a
+manual backup fallback); an AI panel powered by the local `claude` CLI; and a
 companion browser extension.
 
 ## Stack
@@ -19,7 +20,7 @@ companion browser extension.
 | `src-tauri/` | Rust backend (DB, commands, sync, HTTP server) | `src-tauri/CLAUDE.md` |
 | `extension/` | MV3 browser extension (popup + options) | `extension/CLAUDE.md` |
 | `site/` | Landing page deployed to GitHub Pages | — |
-| `docs/` | Contributor docs (e.g. `google-drive-backup.md`) | — |
+| `docs/` | Contributor docs (e.g. `neon-sync.md`, `google-drive-backup.md`) | — |
 
 > **Nested `CLAUDE.md` files** — this root file is always in context. The per-directory
 > files above are loaded automatically when you read or edit files in that directory, so
