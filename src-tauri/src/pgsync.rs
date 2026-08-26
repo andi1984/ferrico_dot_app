@@ -363,8 +363,49 @@ const REMOTE_SCHEMA_VERSION: &str = "1";
 /// (arbitrary constant; FNV-1a-64 of "ferrico-sync" truncated to i64 range).
 const SYNC_LOCK_KEY: i64 = 0x6665_7272_6963_6f31;
 
+/// Split a pasted `postgres://user:pass@host[:port][/db][?params]` connection
+/// string. Returns `None` when the input is not URL-shaped (a bare hostname).
+/// No percent-decoding — Neon-generated passwords are URL-safe; a hand-crafted
+/// password containing `%xx` should be entered via the password field instead.
+fn split_conn_string(raw: &str) -> Option<(String, Option<String>, Option<String>, Option<String>)> {
+    let rest = raw
+        .strip_prefix("postgresql://")
+        .or_else(|| raw.strip_prefix("postgres://"))?;
+    // rsplit: passwords may contain '@' but hostnames never do.
+    let (creds, host_part) = match rest.rsplit_once('@') {
+        Some((c, h)) => (Some(c), h),
+        None => (None, rest),
+    };
+    let (host_port, db_part) = match host_part.split_once('/') {
+        Some((h, d)) => (h, Some(d)),
+        None => (host_part, None),
+    };
+    let host = host_port.split(':').next().unwrap_or_default().to_string();
+    let dbname = db_part
+        .and_then(|d| d.split('?').next())
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    let (user, password) = match creds {
+        Some(c) => match c.split_once(':') {
+            Some((u, p)) => (Some(u.to_string()), Some(p.to_string())),
+            None => (Some(c.to_string()), None),
+        },
+        None => (None, None),
+    };
+    Some((host, dbname, user, password))
+}
+
+/// tokio-postgres `Display` hides the cause ("error connecting to server"
+/// says nothing about DNS vs refused vs TLS) — walk the source chain so the
+/// settings UI shows something diagnosable.
 fn pgerr(e: tokio_postgres::Error) -> AppError {
-    serr(format!("Postgres: {e}"))
+    let mut msg = format!("Postgres: {e}");
+    let mut source = std::error::Error::source(&e);
+    while let Some(s) = source {
+        msg.push_str(&format!(": {s}"));
+        source = s.source();
+    }
+    serr(msg)
 }
 
 fn make_tls() -> Result<tokio_postgres_rustls::MakeRustlsConnect, AppError> {
@@ -794,6 +835,11 @@ impl SyncEngine {
     /// Update connection settings. An empty `password` keeps the stored one; a
     /// changed host or user resets the cursor (a different remote's `seq`
     /// numbering means nothing to us) and re-homes the stored password.
+    ///
+    /// The host field tolerates the natural mistake of pasting Neon's full
+    /// connection string: `postgres://user:pass@host/db` is split into its
+    /// parts (filling only fields the user left blank), and a stray `:5432`
+    /// is stripped.
     pub fn set_config(
         &self,
         host: String,
@@ -801,10 +847,25 @@ impl SyncEngine {
         user: String,
         password: String,
     ) -> Result<NeonStatus, AppError> {
-        let host = host.trim().to_string();
-        let dbname = dbname.trim().to_string();
-        let user = user.trim().to_string();
-        let password = password.trim().to_string();
+        let mut host = host.trim().to_string();
+        let mut dbname = dbname.trim().to_string();
+        let mut user = user.trim().to_string();
+        let mut password = password.trim().to_string();
+        if let Some((h, db, u, p)) = split_conn_string(&host) {
+            host = h;
+            if dbname.is_empty() {
+                dbname = db.unwrap_or_default();
+            }
+            if user.is_empty() {
+                user = u.unwrap_or_default();
+            }
+            if password.is_empty() {
+                password = p.unwrap_or_default();
+            }
+        }
+        if let Some((h, _)) = host.split_once(':') {
+            host = h.to_string();
+        }
         if host.is_empty() || user.is_empty() {
             return Err(serr("host and user are required"));
         }
@@ -1472,6 +1533,32 @@ mod tests {
         let out = a.sync(&store).await;
         assert_eq!(out.pushed, 0);
         assert!(!out.changed_local);
+    }
+
+    #[test]
+    fn conn_string_paste_is_split_into_parts() {
+        let (h, db, u, p) = split_conn_string(
+            "postgresql://neondb_owner:npg_abc123@ep-cool-name-123456.eu-central-1.aws.neon.tech/neondb?sslmode=require",
+        )
+        .unwrap();
+        assert_eq!(h, "ep-cool-name-123456.eu-central-1.aws.neon.tech");
+        assert_eq!(db.as_deref(), Some("neondb"));
+        assert_eq!(u.as_deref(), Some("neondb_owner"));
+        assert_eq!(p.as_deref(), Some("npg_abc123"));
+
+        // Port and missing db/creds variants.
+        let (h, db, u, p) = split_conn_string("postgres://host.example:5432").unwrap();
+        assert_eq!(h, "host.example");
+        assert!(db.is_none() && u.is_none() && p.is_none());
+
+        // Password containing '@' still splits on the LAST '@'.
+        let (h, _, u, p) = split_conn_string("postgres://u:p@ss@host.example/db").unwrap();
+        assert_eq!(h, "host.example");
+        assert_eq!(u.as_deref(), Some("u"));
+        assert_eq!(p.as_deref(), Some("p@ss"));
+
+        // A bare hostname is not URL-shaped.
+        assert!(split_conn_string("ep-cool-name.aws.neon.tech").is_none());
     }
 
     #[tokio::test]
