@@ -33,13 +33,23 @@ scraper = "0.20"
 nucleo-matcher = "0.3"
 sha2 = "0.10"
 base64 = "0.22"
+# Neon/Postgres sync. TLS is rustls with the `ring` provider — the same stack
+# reqwest already uses, so the Android cross-compile stays proven (aws-lc-rs
+# would drag cmake into the NDK build).
+tokio-postgres = { version = "0.7", features = ["with-serde_json-1"] }
+tokio-postgres-rustls = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+webpki-roots = "0.26"
 
 # Desktop-only: `dirs::data_dir()` resolves the legacy desktop data dir (mobile
-# uses Tauri's `app_data_dir()` — see `resolve_data_dir` in lib.rs), and `rfd`
-# file dialogs have no Android/iOS backend.
+# uses Tauri's `app_data_dir()` — see `resolve_data_dir` in lib.rs), `rfd`
+# file dialogs have no Android/iOS backend, and `keyring` (Neon password in the
+# OS keychain) has no mobile backend — mobile stores it in the app-private
+# settings.json instead.
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 dirs = "5"
 rfd = "0.15"
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }

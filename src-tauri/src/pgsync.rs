@@ -282,6 +282,426 @@ pub async fn sync_once<S: SyncStore>(
     Ok(SyncOutcome { merged, changed_local, new_cursor, pushed })
 }
 
+// ─── Password storage ───────────────────────────────────────────────────────────
+//
+// Desktop: OS keyring (Keychain / Credential Manager / Secret Service), keyed by
+// user@host so switching Neon projects keeps credentials apart. If the keyring
+// is unavailable (e.g. a Linux session without a Secret Service), fall back to
+// the settings.json field — same trust level as the Drive refresh token that
+// already lives there. Mobile: always settings.json; the file sits in the
+// app-private sandbox and there is no cross-platform keyring backend.
+
+#[cfg(desktop)]
+const KEYRING_SERVICE: &str = "ferrico-neon";
+
+#[cfg(desktop)]
+fn keyring_entry(user: &str, host: &str) -> Result<keyring::Entry, keyring::Error> {
+    keyring::Entry::new(KEYRING_SERVICE, &format!("{user}@{host}"))
+}
+
+/// Store the password as securely as the platform allows. Returns the value to
+/// persist in `NeonConfig.password` (`None` when the keyring took it).
+pub fn store_password(user: &str, host: &str, password: &str) -> Option<String> {
+    #[cfg(desktop)]
+    {
+        match keyring_entry(user, host).and_then(|e| e.set_password(password)) {
+            Ok(()) => return None,
+            Err(e) => {
+                eprintln!("keyring unavailable ({e}); storing Neon password in settings.json");
+            }
+        }
+    }
+    Some(password.to_string())
+}
+
+/// Resolve the password for a connection attempt.
+pub fn load_password(cfg: &NeonConfig) -> Option<String> {
+    if let Some(p) = cfg.password.clone().filter(|p| !p.is_empty()) {
+        return Some(p);
+    }
+    #[cfg(desktop)]
+    {
+        if let (Some(user), Some(host)) = (cfg.effective_user(), cfg.effective_host()) {
+            if let Ok(p) = keyring_entry(&user, &host).and_then(|e| e.get_password()) {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// Remove a stored password everywhere.
+pub fn delete_password(cfg: &NeonConfig) {
+    #[cfg(desktop)]
+    {
+        if let (Some(user), Some(host)) = (cfg.effective_user(), cfg.effective_host()) {
+            if let Ok(e) = keyring_entry(&user, &host) {
+                e.delete_credential().ok();
+            }
+        }
+    }
+    let _ = cfg; // silence unused on mobile — the settings field is cleared by the caller
+}
+
+// ─── Real Postgres store ────────────────────────────────────────────────────────
+
+/// Remote schema version, recorded in `schema_meta`. Bump when a migration is
+/// added; `init_remote_schema` is idempotent DDL, so re-running it is the
+/// migration mechanism (mirrors `db::init_schema`).
+const REMOTE_SCHEMA_VERSION: &str = "1";
+
+/// Advisory-lock key serializing Ferrico sync cycles per database
+/// (arbitrary constant; FNV-1a-64 of "ferrico-sync" truncated to i64 range).
+const SYNC_LOCK_KEY: i64 = 0x6665_7272_6963_6f31;
+
+fn pgerr(e: tokio_postgres::Error) -> AppError {
+    serr(format!("Postgres: {e}"))
+}
+
+fn make_tls() -> Result<tokio_postgres_rustls::MakeRustlsConnect, AppError> {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    // Explicit ring provider: both reqwest and this module link rustls, and a
+    // process-default lookup panics if more than one provider is compiled in.
+    let config = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(serr)?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    Ok(tokio_postgres_rustls::MakeRustlsConnect::new(config))
+}
+
+/// A live connection implementing [`SyncStore`] over the Postgres wire
+/// protocol. One instance = one sync cycle; the transaction state is plain
+/// `BEGIN`/`COMMIT` SQL because the client is exclusively ours.
+pub struct PgStore {
+    client: tokio_postgres::Client,
+    // Drives the connection I/O; aborted when the store drops.
+    io: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for PgStore {
+    fn drop(&mut self) {
+        // An uncommitted transaction rolls back when the connection closes.
+        self.io.abort();
+    }
+}
+
+impl PgStore {
+    /// Connect (TLS required — Neon rejects plaintext) and ensure the remote
+    /// schema exists and is current.
+    pub async fn connect(
+        host: &str,
+        dbname: &str,
+        user: &str,
+        password: &str,
+    ) -> Result<Self, AppError> {
+        let mut cfg = tokio_postgres::Config::new();
+        cfg.host(host)
+            .port(5432)
+            .user(user)
+            .password(password)
+            .dbname(dbname)
+            .ssl_mode(tokio_postgres::config::SslMode::Require)
+            .connect_timeout(std::time::Duration::from_secs(15));
+        let (client, connection) = cfg.connect(make_tls()?).await.map_err(pgerr)?;
+        let io = tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                eprintln!("neon connection error: {e}");
+            }
+        });
+        let store = PgStore { client, io };
+        store.init_remote_schema().await?;
+        Ok(store)
+    }
+
+    /// Idempotent DDL, app-managed (the user never runs SQL). `seq` is set by a
+    /// BEFORE INSERT OR UPDATE trigger from ONE global sequence, giving a
+    /// database-wide monotonic change counter for cursor pulls. No foreign keys
+    /// on purpose: tombstones travel and `merge::normalize` repairs cross-row
+    /// invariants at merge time — remote FKs would only fight upsert order.
+    /// `tag_ids` is JSONB on the bookmark row (matching the sync wire format)
+    /// instead of a junction table.
+    async fn init_remote_schema(&self) -> Result<(), AppError> {
+        self.client
+            .batch_execute(
+                "CREATE TABLE IF NOT EXISTS schema_meta (
+                   key   TEXT PRIMARY KEY,
+                   value TEXT NOT NULL
+                 );
+
+                 CREATE SEQUENCE IF NOT EXISTS ferrico_seq;
+
+                 CREATE TABLE IF NOT EXISTS folders (
+                   id         TEXT PRIMARY KEY,
+                   name       TEXT NOT NULL,
+                   parent_id  TEXT,
+                   created_at BIGINT NOT NULL,
+                   updated_at BIGINT NOT NULL DEFAULT 0,
+                   deleted_at BIGINT,
+                   seq        BIGINT NOT NULL DEFAULT 0
+                 );
+
+                 CREATE TABLE IF NOT EXISTS tags (
+                   id         TEXT PRIMARY KEY,
+                   name       TEXT NOT NULL,
+                   color      TEXT NOT NULL,
+                   created_at BIGINT NOT NULL,
+                   updated_at BIGINT NOT NULL DEFAULT 0,
+                   deleted_at BIGINT,
+                   seq        BIGINT NOT NULL DEFAULT 0
+                 );
+
+                 CREATE TABLE IF NOT EXISTS bookmarks (
+                   id          TEXT PRIMARY KEY,
+                   url         TEXT NOT NULL,
+                   title       TEXT NOT NULL,
+                   description TEXT,
+                   favicon_url TEXT,
+                   feed_url    TEXT,
+                   cover_url   TEXT,
+                   folder_id   TEXT,
+                   tag_ids     JSONB NOT NULL DEFAULT '[]',
+                   created_at  BIGINT NOT NULL,
+                   updated_at  BIGINT NOT NULL,
+                   deleted_at  BIGINT,
+                   purged_at   BIGINT,
+                   seq         BIGINT NOT NULL DEFAULT 0
+                 );
+
+                 CREATE OR REPLACE FUNCTION ferrico_bump_seq() RETURNS trigger AS $$
+                 BEGIN
+                   NEW.seq := nextval('ferrico_seq');
+                   RETURN NEW;
+                 END
+                 $$ LANGUAGE plpgsql;
+
+                 DROP TRIGGER IF EXISTS folders_seq ON folders;
+                 CREATE TRIGGER folders_seq BEFORE INSERT OR UPDATE ON folders
+                   FOR EACH ROW EXECUTE FUNCTION ferrico_bump_seq();
+                 DROP TRIGGER IF EXISTS tags_seq ON tags;
+                 CREATE TRIGGER tags_seq BEFORE INSERT OR UPDATE ON tags
+                   FOR EACH ROW EXECUTE FUNCTION ferrico_bump_seq();
+                 DROP TRIGGER IF EXISTS bookmarks_seq ON bookmarks;
+                 CREATE TRIGGER bookmarks_seq BEFORE INSERT OR UPDATE ON bookmarks
+                   FOR EACH ROW EXECUTE FUNCTION ferrico_bump_seq();
+
+                 CREATE INDEX IF NOT EXISTS folders_seq_idx   ON folders (seq);
+                 CREATE INDEX IF NOT EXISTS tags_seq_idx      ON tags (seq);
+                 CREATE INDEX IF NOT EXISTS bookmarks_seq_idx ON bookmarks (seq);",
+            )
+            .await
+            .map_err(pgerr)?;
+        self.client
+            .execute(
+                "INSERT INTO schema_meta (key, value) VALUES ('schema_version', $1)
+                 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+                &[&REMOTE_SCHEMA_VERSION],
+            )
+            .await
+            .map_err(pgerr)?;
+        Ok(())
+    }
+
+    fn tag_ids_from_row(row: &tokio_postgres::Row, idx: usize) -> Vec<String> {
+        row.get::<_, serde_json::Value>(idx)
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default()
+    }
+}
+
+impl SyncStore for PgStore {
+    async fn begin(&mut self) -> Result<(), AppError> {
+        // The advisory lock serializes concurrent devices for the whole cycle;
+        // it releases automatically at COMMIT/ROLLBACK (xact-scoped).
+        self.client.batch_execute("BEGIN").await.map_err(pgerr)?;
+        self.client
+            .execute("SELECT pg_advisory_xact_lock($1)", &[&SYNC_LOCK_KEY])
+            .await
+            .map_err(pgerr)?;
+        Ok(())
+    }
+
+    async fn pull_since(&mut self, cursor: i64) -> Result<SyncSnapshot, AppError> {
+        let folders = self
+            .client
+            .query(
+                "SELECT id, name, parent_id, created_at, updated_at, deleted_at
+                 FROM folders WHERE seq > $1",
+                &[&cursor],
+            )
+            .await
+            .map_err(pgerr)?
+            .iter()
+            .map(|r| merge::SyncFolder {
+                id: r.get(0),
+                name: r.get(1),
+                parent_id: r.get(2),
+                created_at: r.get(3),
+                updated_at: r.get(4),
+                deleted_at: r.get(5),
+            })
+            .collect();
+        let tags = self
+            .client
+            .query(
+                "SELECT id, name, color, created_at, updated_at, deleted_at
+                 FROM tags WHERE seq > $1",
+                &[&cursor],
+            )
+            .await
+            .map_err(pgerr)?
+            .iter()
+            .map(|r| merge::SyncTag {
+                id: r.get(0),
+                name: r.get(1),
+                color: r.get(2),
+                created_at: r.get(3),
+                updated_at: r.get(4),
+                deleted_at: r.get(5),
+            })
+            .collect();
+        let bookmarks = self
+            .client
+            .query(
+                "SELECT id, url, title, description, favicon_url, feed_url, cover_url,
+                        folder_id, tag_ids, created_at, updated_at, deleted_at, purged_at
+                 FROM bookmarks WHERE seq > $1",
+                &[&cursor],
+            )
+            .await
+            .map_err(pgerr)?
+            .iter()
+            .map(|r| merge::SyncBookmark {
+                id: r.get(0),
+                url: r.get(1),
+                title: r.get(2),
+                description: r.get(3),
+                favicon_url: r.get(4),
+                feed_url: r.get(5),
+                cover_url: r.get(6),
+                folder_id: r.get(7),
+                tag_ids: Self::tag_ids_from_row(r, 8),
+                created_at: r.get(9),
+                updated_at: r.get(10),
+                deleted_at: r.get(11),
+                purged_at: r.get(12),
+            })
+            .collect();
+        Ok(SyncSnapshot { folders, tags, bookmarks })
+    }
+
+    async fn push(&mut self, changes: &SyncSnapshot) -> Result<(), AppError> {
+        let fstmt = self
+            .client
+            .prepare(
+                "INSERT INTO folders (id, name, parent_id, created_at, updated_at, deleted_at)
+                 VALUES ($1, $2, $3, $4, $5, $6)
+                 ON CONFLICT (id) DO UPDATE SET
+                   name = EXCLUDED.name, parent_id = EXCLUDED.parent_id,
+                   created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at,
+                   deleted_at = EXCLUDED.deleted_at",
+            )
+            .await
+            .map_err(pgerr)?;
+        for f in &changes.folders {
+            self.client
+                .execute(
+                    &fstmt,
+                    &[&f.id, &f.name, &f.parent_id, &f.created_at, &f.updated_at, &f.deleted_at],
+                )
+                .await
+                .map_err(pgerr)?;
+        }
+
+        let tstmt = self
+            .client
+            .prepare(
+                "INSERT INTO tags (id, name, color, created_at, updated_at, deleted_at)
+                 VALUES ($1, $2, $3, $4, $5, $6)
+                 ON CONFLICT (id) DO UPDATE SET
+                   name = EXCLUDED.name, color = EXCLUDED.color,
+                   created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at,
+                   deleted_at = EXCLUDED.deleted_at",
+            )
+            .await
+            .map_err(pgerr)?;
+        for t in &changes.tags {
+            self.client
+                .execute(
+                    &tstmt,
+                    &[&t.id, &t.name, &t.color, &t.created_at, &t.updated_at, &t.deleted_at],
+                )
+                .await
+                .map_err(pgerr)?;
+        }
+
+        let bstmt = self
+            .client
+            .prepare(
+                "INSERT INTO bookmarks (id, url, title, description, favicon_url, feed_url,
+                                        cover_url, folder_id, tag_ids, created_at, updated_at,
+                                        deleted_at, purged_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                 ON CONFLICT (id) DO UPDATE SET
+                   url = EXCLUDED.url, title = EXCLUDED.title,
+                   description = EXCLUDED.description, favicon_url = EXCLUDED.favicon_url,
+                   feed_url = EXCLUDED.feed_url, cover_url = EXCLUDED.cover_url,
+                   folder_id = EXCLUDED.folder_id, tag_ids = EXCLUDED.tag_ids,
+                   created_at = EXCLUDED.created_at, updated_at = EXCLUDED.updated_at,
+                   deleted_at = EXCLUDED.deleted_at, purged_at = EXCLUDED.purged_at",
+            )
+            .await
+            .map_err(pgerr)?;
+        for b in &changes.bookmarks {
+            let tag_ids = serde_json::Value::from(b.tag_ids.clone());
+            self.client
+                .execute(
+                    &bstmt,
+                    &[
+                        &b.id,
+                        &b.url,
+                        &b.title,
+                        &b.description,
+                        &b.favicon_url,
+                        &b.feed_url,
+                        &b.cover_url,
+                        &b.folder_id,
+                        &tag_ids,
+                        &b.created_at,
+                        &b.updated_at,
+                        &b.deleted_at,
+                        &b.purged_at,
+                    ],
+                )
+                .await
+                .map_err(pgerr)?;
+        }
+        Ok(())
+    }
+
+    async fn current_seq(&mut self) -> Result<i64, AppError> {
+        // Inside the advisory lock no other Ferrico device can call nextval,
+        // so the sequence's last handed-out value is a safe cursor. Before any
+        // nextval, `is_called` is false and `last_value` is a phantom 1.
+        let row = self
+            .client
+            .query_one("SELECT last_value, is_called FROM ferrico_seq", &[])
+            .await
+            .map_err(pgerr)?;
+        let last: i64 = row.get(0);
+        let called: bool = row.get(1);
+        Ok(if called { last } else { 0 })
+    }
+
+    async fn commit(&mut self) -> Result<(), AppError> {
+        self.client.batch_execute("COMMIT").await.map_err(pgerr)
+    }
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
