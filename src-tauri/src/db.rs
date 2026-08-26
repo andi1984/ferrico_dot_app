@@ -1522,13 +1522,29 @@ pub fn db_get_dirty(conn: &Connection) -> Result<Vec<DirtyEntry>, AppError> {
     Ok(rows)
 }
 
-/// Remove exactly the given entries — never `DELETE FROM sync_dirty` wholesale:
-/// rows the user touched *while* a sync was in flight must keep their mark so
-/// the next cycle pushes them.
-pub fn db_clear_dirty(conn: &Connection, entries: &[DirtyEntry]) -> Result<(), AppError> {
-    let mut stmt = conn.prepare("DELETE FROM sync_dirty WHERE kind = ?1 AND id = ?2")?;
+/// Fence for [`db_clear_dirty`]: the highest `sync_dirty` rowid at capture
+/// time. The dirty triggers use `INSERT OR REPLACE`, which re-inserts (fresh,
+/// higher rowid) even for a (kind, id) that is already marked — so a row the
+/// user touches *while* a sync is in flight lands above the fence and survives
+/// the post-sync clear, even though its pair was in the captured set. Capture
+/// this under the same DB lock as `db_get_dirty`.
+pub fn db_dirty_fence(conn: &Connection) -> Result<i64, AppError> {
+    Ok(conn.query_row("SELECT COALESCE(MAX(rowid), 0) FROM sync_dirty", [], |r| r.get(0))?)
+}
+
+/// Remove the given entries, but only marks at or below `fence` — never
+/// `DELETE FROM sync_dirty` wholesale: rows the user touched while a sync was
+/// in flight (re-marked above the fence) keep their mark so the next cycle
+/// pushes them.
+pub fn db_clear_dirty(
+    conn: &Connection,
+    entries: &[DirtyEntry],
+    fence: i64,
+) -> Result<(), AppError> {
+    let mut stmt =
+        conn.prepare("DELETE FROM sync_dirty WHERE kind = ?1 AND id = ?2 AND rowid <= ?3")?;
     for (kind, id) in entries {
-        stmt.execute(params![kind, id])?;
+        stmt.execute(params![kind, id, fence])?;
     }
     Ok(())
 }
@@ -3932,7 +3948,7 @@ mod tests {
     fn tombstone_delete_marks_dirty() {
         let conn = mem();
         let b = mk_bookmark(&conn, "https://example.com", "Example");
-        db_clear_dirty(&conn, &dirty_set(&conn)).unwrap();
+        db_clear_dirty(&conn, &dirty_set(&conn), db_dirty_fence(&conn).unwrap()).unwrap();
 
         db_delete_bookmark(&conn, &b.id).unwrap();
         assert_eq!(dirty_set(&conn), vec![("bookmark".to_string(), b.id)]);
@@ -3955,7 +3971,7 @@ mod tests {
             },
         )
         .unwrap();
-        db_clear_dirty(&conn, &dirty_set(&conn)).unwrap();
+        db_clear_dirty(&conn, &dirty_set(&conn), db_dirty_fence(&conn).unwrap()).unwrap();
 
         // A junction-row delete alone (no touch on the bookmark row itself —
         // e.g. the link-cutting half of a purge) must re-dirty the bookmark,
@@ -3971,9 +3987,37 @@ mod tests {
         let a = mk_bookmark(&conn, "https://a.com", "A");
         let b = mk_bookmark(&conn, "https://b.com", "B");
 
-        db_clear_dirty(&conn, &[("bookmark".into(), a.id)]).unwrap();
+        db_clear_dirty(&conn, &[("bookmark".into(), a.id)], db_dirty_fence(&conn).unwrap()).unwrap();
         let d = dirty_set(&conn);
         assert_eq!(d, vec![("bookmark".to_string(), b.id)]);
+    }
+
+    /// The mid-sync race: a row is captured dirty, the user edits it again
+    /// while the cycle is in flight (trigger re-marks it above the fence), and
+    /// the post-sync clear must NOT delete the fresh mark — otherwise the
+    /// second edit would never be pushed.
+    #[test]
+    fn clear_dirty_keeps_marks_re_added_after_the_fence() {
+        let conn = mem();
+        let a = mk_bookmark(&conn, "https://a.com", "A");
+
+        // Sync start: capture the dirty set + fence.
+        let captured = dirty_set(&conn);
+        let fence = db_dirty_fence(&conn).unwrap();
+        assert_eq!(captured, vec![("bookmark".to_string(), a.id.clone())]);
+
+        // Mid-flight edit re-marks the same (kind, id) — INSERT OR REPLACE
+        // gives it a fresh rowid above the fence.
+        conn.execute(
+            "UPDATE bookmarks SET title = 'edited mid-sync', updated_at = updated_at + 1 \
+             WHERE id = ?1",
+            params![a.id],
+        )
+        .unwrap();
+
+        // Sync end: clearing the captured set must leave the fresh mark.
+        db_clear_dirty(&conn, &captured, fence).unwrap();
+        assert_eq!(dirty_set(&conn), vec![("bookmark".to_string(), a.id)]);
     }
 
     #[test]
@@ -4021,7 +4065,7 @@ mod tests {
         let f = mk_folder(&conn, "News");
         let t = mk_tag(&conn, "rust");
         let b = mk_bookmark(&conn, "https://example.com", "Example");
-        db_clear_dirty(&conn, &dirty_set(&conn)).unwrap();
+        db_clear_dirty(&conn, &dirty_set(&conn), db_dirty_fence(&conn).unwrap()).unwrap();
 
         db_mark_all_dirty(&conn).unwrap();
         let d = dirty_set(&conn);

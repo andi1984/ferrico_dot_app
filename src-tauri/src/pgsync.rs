@@ -919,14 +919,18 @@ impl SyncEngine {
         self.app.emit("backup-syncing", serde_json::json!({ "op": op })).ok();
 
         let result = async {
-            let (dirty, local) = {
+            let (dirty, fence, local) = {
                 let conn = self.lock_conn()?;
                 // First contact with this remote: rows predating dirty tracking
                 // exist only in the tables, so everything must count as dirty.
                 if cfg.last_seq == 0 {
                     crate::db::db_mark_all_dirty(&conn)?;
                 }
-                (crate::db::db_get_dirty(&conn)?, crate::db::db_export_sync_snapshot(&conn)?)
+                (
+                    crate::db::db_get_dirty(&conn)?,
+                    crate::db::db_dirty_fence(&conn)?,
+                    crate::db::db_export_sync_snapshot(&conn)?,
+                )
             };
 
             let mut store = self.connect(&cfg).await?;
@@ -938,7 +942,10 @@ impl SyncEngine {
                 if outcome.changed_local {
                     crate::db::db_apply_sync_snapshot(&conn, &outcome.merged)?;
                 }
-                crate::db::db_clear_dirty(&conn, &dirty)?;
+                // Fence-bounded: an edit that raced this cycle re-marked its
+                // row above the fence, so its mark survives and the next cycle
+                // pushes it.
+                crate::db::db_clear_dirty(&conn, &dirty, fence)?;
             }
             self.update_cfg(|c| {
                 c.last_seq = outcome.new_cursor;

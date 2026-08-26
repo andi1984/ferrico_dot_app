@@ -69,6 +69,11 @@ fn drive_block(cfg: &BackupConfig) -> Option<DrivePairing> {
     }
 }
 
+// The database password travels in the code in plaintext — unavoidable for a
+// hands-off phone setup, and the same trust model as the v1 payload (which
+// carried the Drive refresh token + client secret). The pairing channel
+// (QR shown on the local screen / manual paste) is assumed trusted; the UI
+// warns the user to keep the code out of chats, screenshots and backups.
 fn neon_block(cfg: &NeonConfig) -> Option<NeonPairing> {
     let host = cfg.effective_host()?;
     let user = cfg.effective_user()?;
