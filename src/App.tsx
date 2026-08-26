@@ -325,25 +325,25 @@ export default function App() {
     }
   }, [])
 
-  // Google Drive backup sync. A `pull` that replaces local data refreshes the
-  // visible list; `backupSyncing` drives a small in-progress indicator. The
-  // listener reads `refresh` from the ref so it registers exactly once.
+  // Sync lifecycle (Neon cycles + manual Drive export/restore). Any cycle that
+  // changed local data refreshes the visible list; `backupSyncing` drives a
+  // small in-progress indicator. The listener reads `refresh` from the ref so
+  // it registers exactly once.
   const [backupSyncing, setBackupSyncing] = useState(false)
   useEffect(() => {
     let active = true
     let unlisten: UnlistenFn | undefined
     subscribeToBackupSync({
       onSyncing: () => setBackupSyncing(true),
-      onSynced: ({ op, changed }) => {
+      onSynced: ({ changed }) => {
         setBackupSyncing(false)
-        if (op === 'pull' && changed) refreshRef.current()
+        if (changed) refreshRef.current()
       },
       onError: ({ message }) => {
         setBackupSyncing(false)
-        // Surface sync failures (e.g. an unreadable remote the engine refused
-        // to overwrite) instead of swallowing them — otherwise the backup
+        // Surface sync failures instead of swallowing them — otherwise sync
         // silently stops working.
-        if (message) setError(`Google Drive sync: ${message}`)
+        if (message) setError(`Sync: ${message}`)
       },
     })
       .then((fn) => {
@@ -1100,7 +1100,7 @@ export default function App() {
 
       {ctxMenu && <ContextMenu state={ctxMenu} onClose={() => setCtxMenu(null)} />}
 
-      {/* Cloud backup sync indicator */}
+      {/* Sync-in-progress indicator */}
       {backupSyncing && (
         <div
           className="fixed bottom-4 right-4 z-[90] flex items-center gap-2 rounded-lg px-3 py-2 shadow-lg text-xs"
@@ -1110,7 +1110,7 @@ export default function App() {
             className="inline-block w-3 h-3 rounded-full border-2 animate-spin flex-none"
             style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }}
           />
-          Syncing backup…
+          Syncing…
         </div>
       )}
 

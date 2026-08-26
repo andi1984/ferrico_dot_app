@@ -49,9 +49,9 @@ function mockBackend({
   vi.mocked(invoke).mockImplementation((cmd: string) => {
     if (cmd === 'get_bookmarks') return Promise.resolve(bookmarks)
     if (cmd === 'get_sidebar') return Promise.resolve(sidebar)
-    if (cmd === 'backup_status') return Promise.resolve({
-      has_credentials: false, connected: false, account_email: null,
-      folder_id: null, folder_name: null, last_sync: null, interval_min: 0, enabled: false,
+    if (cmd === 'neon_status') return Promise.resolve({
+      configured: false, enabled: false, host: null, dbname: 'neondb', user: null,
+      interval_min: 0, last_seq: 0, last_sync: null,
     })
     return Promise.resolve(null)
   })
@@ -236,7 +236,7 @@ describe('MobileApp foreground resume sync', () => {
     vi.mocked(invoke).mockImplementation((cmd: string) => {
       if (cmd === 'get_bookmarks') return Promise.resolve([])
       if (cmd === 'get_sidebar') return Promise.resolve(makeSidebar())
-      if (cmd === 'backup_status') return Promise.resolve({ enabled })
+      if (cmd === 'neon_status') return Promise.resolve({ enabled })
       return Promise.resolve(null)
     })
   }
@@ -250,7 +250,7 @@ describe('MobileApp foreground resume sync', () => {
     act(() => resume())
 
     await waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith('backup_sync_now')
+      expect(invoke).toHaveBeenCalledWith('neon_sync_now')
     })
   })
 
@@ -263,9 +263,9 @@ describe('MobileApp foreground resume sync', () => {
     act(() => resume())
 
     await waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith('backup_status')
+      expect(invoke).toHaveBeenCalledWith('neon_status')
     })
-    expect(invoke).not.toHaveBeenCalledWith('backup_sync_now')
+    expect(invoke).not.toHaveBeenCalledWith('neon_sync_now')
   })
 
   it('does not sync again before the cooldown elapses', async () => {
@@ -275,7 +275,7 @@ describe('MobileApp foreground resume sync', () => {
 
     now += FOREGROUND_SYNC_MIN_INTERVAL_MS + 1
     act(() => resume())
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('backup_sync_now'))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('neon_sync_now'))
     const callsAfterFirst = vi.mocked(invoke).mock.calls.length
 
     // Well within the cooldown — a second resume right away should be a no-op.
@@ -296,6 +296,6 @@ describe('MobileApp foreground resume sync', () => {
     // MobileHeader fetches backup_status on its own mount regardless — the
     // assertion that matters here is that a hidden document never triggers a
     // sync attempt.
-    expect(invoke).not.toHaveBeenCalledWith('backup_sync_now')
+    expect(invoke).not.toHaveBeenCalledWith('neon_sync_now')
   })
 })

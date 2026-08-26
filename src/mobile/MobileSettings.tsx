@@ -6,25 +6,23 @@ import { FieldLabel } from '../components/ModalShell'
 import { IconRestore, IconSun, IconMoon } from '../components/icons'
 import { extractErrorMessage } from '../utils'
 
-// Mirrors `gdrive::BackupStatus` (serde snake_case) — same shape BackupSettingsPage uses.
-interface BackupStatus {
-  has_credentials: boolean
-  connected: boolean
-  account_email: string | null
-  folder_id: string | null
-  folder_name: string | null
-  last_sync: string | null
-  interval_min: number
+// Mirrors `pgsync::NeonStatus` (serde snake_case) — same shape BackupSettingsPage uses.
+interface NeonStatus {
+  configured: boolean
   enabled: boolean
+  host: string | null
+  dbname: string
+  user: string | null
+  interval_min: number
+  last_seq: number
+  last_sync: number | null
 }
 
 type Theme = 'dark' | 'light'
 
-function formatLastSync(iso: string | null): string {
-  if (!iso) return 'never'
-  const d = new Date(iso)
-  if (isNaN(d.getTime())) return iso
-  return d.toLocaleString()
+function formatLastSync(secs: number | null): string {
+  if (!secs) return 'never'
+  return new Date(secs * 1000).toLocaleString()
 }
 
 export function MobileSettings({ onClose, theme, onToggleTheme }: {
@@ -32,7 +30,7 @@ export function MobileSettings({ onClose, theme, onToggleTheme }: {
   theme: Theme
   onToggleTheme: () => void
 }) {
-  const [status, setStatus] = useState<BackupStatus | null>(null)
+  const [status, setStatus] = useState<NeonStatus | null>(null)
   const [pairingInput, setPairingInput] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -54,7 +52,7 @@ export function MobileSettings({ onClose, theme, onToggleTheme }: {
   )
 
   useEffect(() => {
-    invoke<BackupStatus>('backup_status')
+    invoke<NeonStatus>('neon_status')
       .then(setStatus)
       .catch((e) => setError(extractErrorMessage(e)))
   }, [])
@@ -63,7 +61,7 @@ export function MobileSettings({ onClose, theme, onToggleTheme }: {
     if (!pairingInput.trim()) return
     run(
       'import',
-      () => invoke<BackupStatus>('backup_import_pairing', { payload: pairingInput.trim() }),
+      () => invoke<NeonStatus>('backup_import_pairing', { payload: pairingInput.trim() }),
       (s) => {
         setStatus(s)
         setPairingInput('')
@@ -72,11 +70,11 @@ export function MobileSettings({ onClose, theme, onToggleTheme }: {
   }
 
   function syncNow() {
-    run('sync', () => invoke<BackupStatus>('backup_sync_now'), setStatus)
+    run('sync', () => invoke<NeonStatus>('neon_sync_now'), setStatus)
   }
 
   function unpair() {
-    run('unpair', () => invoke<BackupStatus>('backup_disconnect'), setStatus)
+    run('unpair', () => invoke<NeonStatus>('neon_disconnect'), setStatus)
   }
 
   const spinner = (
@@ -102,18 +100,18 @@ export function MobileSettings({ onClose, theme, onToggleTheme }: {
         <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--text-2)' }}>
           {spinner} Loading…
         </div>
-      ) : !status.connected ? (
+      ) : !status.configured || !status.enabled ? (
         // ── Pairing import ──
         <div className="flex flex-col gap-3">
           <FieldLabel>Pair with desktop</FieldLabel>
           <p className="text-xs" style={{ color: 'var(--text-2)', lineHeight: 1.5 }}>
-            On your desktop, open Settings → Cloud Backup → Pair a mobile device, then paste
-            the code here. This device only ever pulls — it never writes back to Drive.
+            On your desktop, open Settings → Sync &amp; Backup → Pair a mobile device, then
+            paste the code here. This device only ever pulls — it never writes back.
           </p>
           <textarea
             value={pairingInput}
             onChange={(e) => setPairingInput(e.target.value)}
-            placeholder="ferrico-pair:v1:…"
+            placeholder="ferrico-pair:v2:…"
             rows={4}
             aria-label="Pairing code"
             className="w-full px-3 py-2 rounded-lg text-xs font-mono resize-none"
@@ -133,10 +131,10 @@ export function MobileSettings({ onClose, theme, onToggleTheme }: {
         // ── Paired dashboard ──
         <div className="flex flex-col gap-5">
           <div>
-            <FieldLabel>Account</FieldLabel>
+            <FieldLabel>Sync database</FieldLabel>
             <div className="flex items-center justify-between gap-2">
-              <span className="text-xs truncate" style={{ color: 'var(--text-1)' }}>
-                {status.account_email ?? 'Connected'}
+              <span className="text-xs truncate font-mono" style={{ color: 'var(--text-1)' }}>
+                {status.user}@{status.host}
               </span>
               <button
                 onClick={unpair}
@@ -149,20 +147,13 @@ export function MobileSettings({ onClose, theme, onToggleTheme }: {
             </div>
           </div>
 
-          {status.folder_name && (
-            <div style={{ borderTop: '1px solid var(--border-dim)', paddingTop: '1.25rem' }}>
-              <FieldLabel>Folder</FieldLabel>
-              <span className="text-xs" style={{ color: 'var(--text-1)' }}>{status.folder_name}</span>
-            </div>
-          )}
-
           <div style={{ borderTop: '1px solid var(--border-dim)', paddingTop: '1.25rem' }} className="flex items-center justify-between gap-2">
             <div className="flex flex-col gap-0.5">
               <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
                 Last synced: {formatLastSync(status.last_sync)}
               </span>
               <span className="text-xs" style={{ color: 'var(--text-3)' }}>
-                This device is download-only — it never pushes changes back to Drive.
+                This device is download-only — it never pushes changes back.
               </span>
             </div>
             <button
