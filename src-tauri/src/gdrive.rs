@@ -1,21 +1,15 @@
-//! Google Drive backup + multi-machine sync.
+//! Google Drive backup — a MANUAL export/import fallback.
 //!
-//! Strategy: **per-record merge-reconcile** (see [`crate::merge`]). The whole
-//! dataset — including tombstones — travels as one versioned `SyncSnapshot`
-//! JSON file (`ferrico-backup.json`) inside a user-chosen Drive folder.
+//! Since Neon/Postgres became the sync backend (see [`crate::pgsync`]), Drive
+//! no longer auto-syncs. What remains is a user-triggered, one-way pair of
+//! operations on the same versioned `SyncSnapshot` JSON file
+//! (`ferrico-backup.json`) in a user-chosen Drive folder:
 //!
-//! Every sync (open, close, periodic, manual) runs the same [`sync_once`]
-//! cycle:
-//!   1. if the remote file's `modifiedTime` (RFC-3339, server-side — immune to
-//!      machine clock skew) advanced past `last_sync`, or the local DB is
-//!      empty, download it and **merge** it with the local snapshot;
-//!   2. normalize the result (folder/tag de-duplication, cycle breaking,
-//!      tombstone reference cleanup — `merge::normalize`);
-//!   3. publish when the union carries anything the remote lacks; a digest
-//!      gate keeps idle clients from ping-ponging `modifiedTime` bumps.
-//!
-//! There is deliberately no push-only path: a blind overwrite is what used to
-//! let a stale client erase another machine's edits.
+//! * **Export**: overwrite the remote backup file with the local dataset
+//!   (tombstones included);
+//! * **Import (restore)**: replace the local database with the remote file's
+//!   contents — destructive, so the frontend confirms first and the engine
+//!   writes a local safety export before applying.
 //!
 //! Auth: OAuth2 for native apps — PKCE + loopback redirect. Scope is `drive.file`
 //! (non-sensitive: the app only ever touches files it created, so no Google
@@ -279,6 +273,10 @@ pub struct PairingPayload {
 /// Serialize the connected config as `"ferrico-pair:v1:" + base64(json)`.
 /// Requires an established connection: OAuth client credentials, a refresh
 /// token, and a selected backup folder.
+///
+/// Production export moved to the v2 format (`crate::pairing`); this stays so
+/// the v1 round-trip remains covered by tests against real import code.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn export_pairing(cfg: &BackupConfig) -> Result<String, AppError> {
     let (client_id, client_secret) = match (&cfg.client_id, &cfg.client_secret) {
         (Some(i), Some(s)) => (i.clone(), s.clone()),
@@ -645,14 +643,6 @@ impl BackupEngine {
         })
     }
 
-    /// Backup is "active" (eligible for automatic open/close/periodic sync) only
-    /// when enabled, connected, and a target folder is selected.
-    pub fn is_active(&self) -> bool {
-        self.cfg()
-            .map(|c| c.enabled && c.refresh_token.is_some() && c.folder_id.is_some())
-            .unwrap_or(false)
-    }
-
     async fn access_token(&self) -> Result<String, AppError> {
         let c = self.cfg()?;
         match (c.client_id, c.client_secret, c.refresh_token) {
@@ -769,16 +759,6 @@ impl BackupEngine {
         self.status()
     }
 
-    pub fn set_enabled(&self, enabled: bool) -> Result<BackupStatus, AppError> {
-        self.update_cfg(|c| c.enabled = enabled)?;
-        self.status()
-    }
-
-    pub fn set_interval(&self, interval_min: u64) -> Result<BackupStatus, AppError> {
-        self.update_cfg(|c| c.interval_min = interval_min)?;
-        self.status()
-    }
-
     // ── pairing ─────────────────────────────────────────────────────────────────
 
     /// Current config, for the v2 pairing exporter (`crate::pairing`).
@@ -806,61 +786,74 @@ impl BackupEngine {
         Ok(())
     }
 
-    // ── sync (per-record merge; see `merge.rs`) ──────────────────────────────────
+    // ── manual export / import (one-way; no merge, no auto triggers) ────────────
 
-    /// Full reconcile: pull the remote, MERGE it with the local DB
-    /// record-by-record, and write the union back to both sides. Unlike the old
-    /// snapshot last-write-wins (a blind overwrite), this cannot clobber another
-    /// client's edits — a stale push merges the newer remote in first, so a
-    /// just-opened or idle client can never stomp fresh remote changes. Returns
-    /// `true` if the local DB changed.
-    async fn run_sync(&self, op: &str) -> Result<bool, AppError> {
+    /// Overwrite the remote backup file with the local dataset. One-way: the
+    /// remote's previous contents are NOT consulted.
+    pub async fn export_to_drive(&self) -> Result<BackupStatus, AppError> {
         let cfg = self.cfg()?;
         let folder_id = cfg
             .folder_id
             .clone()
             .ok_or_else(|| berr("no backup folder selected"))?;
-        self.app.emit("backup-syncing", serde_json::json!({ "op": op })).ok();
+        self.app.emit("backup-syncing", serde_json::json!({ "op": "export" })).ok();
 
         let result = async {
             let token = self.access_token().await?;
             let store = HttpDrive { http: self.http.clone(), token };
             let local = self.export_local_snapshot()?;
-            // Compile-time platform split: a mobile binary can never construct
-            // a pushing sync through any command or lifecycle path.
-            let mode = if cfg!(mobile) { SyncMode::PullOnly } else { SyncMode::Full };
-            let outcome = sync_once(
-                &store,
-                &folder_id,
-                local,
-                cfg.last_sync.clone(),
-                cfg.file_id.clone(),
-                cfg.last_pushed_digest.clone(),
-                mode,
-            )
-            .await?;
-
-            if outcome.changed_local {
-                self.apply_local_snapshot(&outcome.merged)?;
-            }
+            let json = crate::merge::to_json(&local).map_err(berr)?;
+            let meta = export_once(&store, &folder_id, &json).await?;
             self.update_cfg(|c| {
-                c.last_sync = outcome.new_last_sync.clone();
-                c.file_id = outcome.new_file_id.clone();
-                c.last_pushed_digest = outcome.new_digest.clone();
+                c.file_id = Some(meta.id.clone());
+                c.last_sync = meta.modified_time.clone();
             })?;
-            Ok::<bool, AppError>(outcome.changed_local)
+            Ok::<bool, AppError>(false)
         }
         .await;
 
-        self.emit_result(op, result.as_ref().copied());
-        result
+        self.emit_result("export", result.as_ref().copied());
+        result?;
+        self.status()
     }
 
-    /// Manual "Sync now" command. The open/close/periodic lifecycle hooks run the
-    /// very same full merge cycle — there is no longer a push-only path that
-    /// could overwrite the remote without first reconciling it.
-    pub async fn sync_now(&self) -> Result<BackupStatus, AppError> {
-        self.run_sync("sync").await?;
+    /// Replace the local database with the remote backup file (restore). The
+    /// frontend shows the confirm dialog; this method still writes a local
+    /// safety export (`pre-restore-backup-<ts>.json` beside the DB) before
+    /// touching anything, so a mis-click is recoverable.
+    ///
+    /// Note: this restores the LOCAL device only. If Neon sync is enabled, the
+    /// next cycle merges the remote Neon state back in — restore does not
+    /// rewrite sync history.
+    pub async fn import_from_drive(&self) -> Result<BackupStatus, AppError> {
+        let cfg = self.cfg()?;
+        let folder_id = cfg
+            .folder_id
+            .clone()
+            .ok_or_else(|| berr("no backup folder selected"))?;
+        self.app.emit("backup-syncing", serde_json::json!({ "op": "restore" })).ok();
+
+        let result = async {
+            let token = self.access_token().await?;
+            let store = HttpDrive { http: self.http.clone(), token };
+            let (snapshot, modified_time) = import_once(&store, &folder_id).await?;
+
+            let local = self.export_local_snapshot()?;
+            let safety = crate::merge::to_json(&local).map_err(berr)?;
+            let path = self
+                .data_dir
+                .join(format!("pre-restore-backup-{}.json", crate::db::now()));
+            std::fs::write(&path, safety)
+                .map_err(|e| berr(format!("could not write safety export {path:?}: {e}")))?;
+
+            self.apply_local_snapshot(&snapshot)?;
+            self.update_cfg(|c| c.last_sync = modified_time.clone())?;
+            Ok::<bool, AppError>(true)
+        }
+        .await;
+
+        self.emit_result("restore", result.as_ref().copied());
+        result?;
         self.status()
     }
 
@@ -876,40 +869,6 @@ impl BackupEngine {
                     .emit("backup-error", serde_json::json!({ "op": op, "message": e.to_string() }))
                     .ok();
             }
-        }
-    }
-
-    // ── lifecycle entry points (best-effort, errors only logged) ──────────────────
-
-    pub async fn pull_if_active(&self) {
-        if self.is_active() {
-            if let Err(e) = self.run_sync("pull").await {
-                eprintln!("backup sync (open) failed: {e}");
-            }
-        }
-    }
-
-    #[cfg(desktop)]
-    pub async fn push_if_active(&self) {
-        if self.is_active() {
-            if let Err(e) = self.run_sync("push").await {
-                eprintln!("backup sync (close) failed: {e}");
-            }
-        }
-    }
-
-    /// Periodic autosave loop. Re-reads the interval each tick so changes in
-    /// settings take effect without a restart; `interval_min == 0` idles.
-    #[cfg(desktop)]
-    pub async fn run_autosave(self) {
-        loop {
-            let interval = self.cfg().map(|c| c.interval_min).unwrap_or(0);
-            if interval == 0 {
-                tokio::time::sleep(Duration::from_secs(60)).await;
-                continue;
-            }
-            tokio::time::sleep(Duration::from_secs(interval * 60)).await;
-            self.push_if_active().await;
         }
     }
 }
@@ -954,48 +913,33 @@ impl DriveStore for HttpDrive {
     }
 }
 
-/// How a sync cycle may touch Drive. `PullOnly` is the mobile mode: the merge
-/// still runs (remote rows land locally), but nothing is ever uploaded —
-/// `should_push` is forced off, so `create_empty`/`update_content` are
-/// unreachable. Selected once per cycle via `cfg!(mobile)` in `run_sync`, which
-/// makes read-only sync a compile-time property of the mobile binary rather
-/// than a runtime setting someone could flip.
-#[derive(Clone, Copy, PartialEq)]
-pub enum SyncMode {
-    Full,
-    PullOnly,
+/// Find-or-create the backup file, then overwrite its contents. Generic over
+/// [`DriveStore`] so the tests run it against the in-memory fake.
+async fn export_once<S: DriveStore>(
+    store: &S,
+    folder_id: &str,
+    json: &str,
+) -> Result<DriveFileMeta, AppError> {
+    let file = match store.find_backup(folder_id).await? {
+        Some(f) => f,
+        None => store.create_empty(folder_id).await?,
+    };
+    store.update_content(&file.id, json).await
 }
 
-/// Outcome of one reconcile pass. The engine applies `merged` to the DB (only
-/// when `changed_local`) and persists the three config fields.
-struct SyncOutcome {
-    merged: crate::merge::SyncSnapshot,
-    changed_local: bool,
-    new_last_sync: Option<String>,
-    new_file_id: Option<String>,
-    new_digest: Option<String>,
-}
-
-/// FNV-1a 64-bit, hex. Deterministic across machines and runs (unlike the std
-/// hasher), so it's safe to persist as the "snapshot we last published" marker.
-fn digest(s: &str) -> String {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in s.as_bytes() {
-        h ^= *b as u64;
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("{h:016x}")
-}
-
-/// True if the remote `modifiedTime` is strictly newer than our last
-/// reconciliation point (or we've never reconciled). RFC-3339 `Z` timestamps
-/// order correctly lexicographically.
-fn rfc3339_after(remote: &Option<String>, last: &Option<String>) -> bool {
-    match (remote, last) {
-        (Some(r), Some(l)) => r.as_str() > l.as_str(),
-        (Some(_), None) => true,
-        _ => false,
-    }
+/// Download and parse the backup file for a restore. Errors when no backup
+/// file exists or the file is non-empty but unreadable (never silently treats
+/// a corrupt backup as empty data).
+async fn import_once<S: DriveStore>(
+    store: &S,
+    folder_id: &str,
+) -> Result<(crate::merge::SyncSnapshot, Option<String>), AppError> {
+    let file = store
+        .find_backup(folder_id)
+        .await?
+        .ok_or_else(|| berr("no ferrico-backup.json found in the selected Drive folder"))?;
+    let json = store.download(&file.id).await?;
+    Ok((parse_remote_snapshot(&json)?, file.modified_time))
 }
 
 /// Parse a remote file into a snapshot, tolerating the legacy v1 (active-only)
@@ -1021,93 +965,6 @@ fn parse_remote_snapshot(json: &str) -> Result<crate::merge::SyncSnapshot, AppEr
          corrupt format) — refusing to overwrite it. Inspect ferrico-backup.json \
          in your Drive folder, then retry.",
     ))
-}
-
-/// The reconcile core: pure orchestration over a `DriveStore`. No DB, no Tauri,
-/// no clock — every input is passed in, so it runs identically against the real
-/// Drive and against the in-memory fake in the tests below.
-///
-/// 1. If the remote advanced past `last_sync`, download and **merge** it into
-///    the local snapshot (never overwrite — merge can't lose either side).
-/// 2. Publish the merged snapshot when it adds anything the remote lacks: after
-///    a merge, unless the union already equals the remote; otherwise only when
-///    the local snapshot changed since our last push (the digest gate stops two
-///    idle clients ping-ponging `modifiedTime` bumps).
-/// 3. Reuse the existing remote file id when present, so concurrent clients
-///    converge on a single backup file instead of spawning duplicates.
-async fn sync_once<S: DriveStore>(
-    store: &S,
-    folder_id: &str,
-    local: crate::merge::SyncSnapshot,
-    last_sync: Option<String>,
-    file_id: Option<String>,
-    last_pushed_digest: Option<String>,
-    mode: SyncMode,
-) -> Result<SyncOutcome, AppError> {
-    let local_json = crate::merge::to_json(&local).map_err(berr)?;
-    let local_digest = digest(&local_json);
-
-    let remote = store.find_backup(folder_id).await?;
-
-    // Drive has precedence over an empty local. Pull when the remote advanced
-    // past our last reconcile point OR whenever the local snapshot is empty: a
-    // fresh install or a wiped DB (with a stale `last_sync` that survived in
-    // settings.json) must reconcile the remote in, never blind-overwrite a
-    // populated backup with nothing.
-    let local_empty =
-        local.bookmarks.is_empty() && local.folders.is_empty() && local.tags.is_empty();
-    let pulled_json = match &remote {
-        Some(f) if rfc3339_after(&f.modified_time, &last_sync) || local_empty => {
-            Some(store.download(&f.id).await?)
-        }
-        _ => None,
-    };
-    // `?` here aborts the whole sync (before any push) if the remote is present
-    // but unreadable, so a corrupt/unknown remote is preserved, not erased.
-    // With nothing to pull the local snapshot is still normalized: a DB whose
-    // data predates a normalization rule (e.g. one already carrying duplicate
-    // folders from the pre-collapse builds) heals on its very next sync
-    // instead of waiting for a remote change to trigger a merge.
-    let merged = match &pulled_json {
-        Some(json) => crate::merge::merge(local.clone(), parse_remote_snapshot(json)?),
-        None => crate::merge::normalize(local.clone()),
-    };
-    let merged_json = crate::merge::to_json(&merged).map_err(berr)?;
-    let merged_digest = digest(&merged_json);
-    let changed_local = merged_digest != local_digest;
-
-    let should_push = mode == SyncMode::Full
-        && match &pulled_json {
-            Some(remote_json) => merged_digest != digest(remote_json),
-            None => Some(&merged_digest) != last_pushed_digest.as_ref(),
-        };
-
-    let mut new_last_sync = last_sync;
-    let mut new_file_id = file_id.or_else(|| remote.as_ref().map(|f| f.id.clone()));
-
-    if should_push {
-        let fid = match remote.as_ref() {
-            Some(f) => f.id.clone(),
-            None => store.create_empty(folder_id).await?.id,
-        };
-        let meta = store.update_content(&fid, &merged_json).await?;
-        new_last_sync = meta.modified_time;
-        new_file_id = Some(fid);
-    } else if pulled_json.is_some() {
-        // Nothing new to publish, but advance our point to the remote we read so
-        // we don't re-download it next time.
-        if let Some(f) = &remote {
-            new_last_sync = f.modified_time.clone();
-        }
-    }
-
-    Ok(SyncOutcome {
-        merged,
-        changed_local,
-        new_last_sync,
-        new_file_id,
-        new_digest: Some(merged_digest),
-    })
 }
 
 #[cfg(test)]
@@ -1200,106 +1057,67 @@ mod pairing_tests {
 }
 
 #[cfg(test)]
-mod sync_tests {
+mod export_import_tests {
     use super::*;
     use crate::merge::{SyncBookmark, SyncSnapshot};
     use std::sync::Mutex;
 
-    // ── in-memory Drive: one shared folder, monotonic server clock ───────────
-
-    struct FakeFile {
-        id: String,
-        content: String,
-        modified_time: String,
-    }
+    // Minimal in-memory Drive: at most one backup file in one folder.
+    #[derive(Default)]
     struct FakeInner {
-        files: Vec<FakeFile>,
+        file: Option<(String, String)>, // (id, content)
         clock: u64,
     }
+    #[derive(Default)]
     struct FakeDrive {
         inner: Mutex<FakeInner>,
     }
     impl FakeDrive {
-        fn new() -> Self {
-            FakeDrive { inner: Mutex::new(FakeInner { files: Vec::new(), clock: 0 }) }
+        fn seed(&self, content: &str) {
+            let mut g = self.inner.lock().unwrap();
+            g.file = Some(("file-1".into(), content.into()));
         }
-        // Monotonic, zero-padded so it orders the same lexicographically and
-        // numerically — exactly the property the real Drive `modifiedTime` has.
-        fn tick(inner: &mut FakeInner) -> String {
-            inner.clock += 1;
-            format!("2026-01-01T00:00:00.{:06}Z", inner.clock)
-        }
-        fn file_count(&self) -> usize {
-            self.inner.lock().unwrap().files.len()
-        }
-        fn remote(&self) -> SyncSnapshot {
-            let inner = self.inner.lock().unwrap();
-            crate::merge::from_json(&inner.files[0].content).unwrap()
-        }
-        fn remote_mtime(&self) -> String {
-            self.inner.lock().unwrap().files[0].modified_time.clone()
-        }
-        /// Seed a pre-existing remote backup file with raw content (simulating a
-        /// backup written by another machine, an older build, or a corrupt file).
-        /// Returns the assigned `modifiedTime`.
-        fn seed(&self, content: &str) -> String {
-            let mut inner = self.inner.lock().unwrap();
-            let mt = Self::tick(&mut inner);
-            let id = format!("file-{}", inner.files.len() + 1);
-            inner.files.push(FakeFile {
-                id,
-                content: content.to_string(),
-                modified_time: mt.clone(),
-            });
-            mt
-        }
-        fn remote_raw(&self) -> String {
-            self.inner.lock().unwrap().files[0].content.clone()
+        fn content(&self) -> Option<String> {
+            self.inner.lock().unwrap().file.as_ref().map(|(_, c)| c.clone())
         }
     }
     impl DriveStore for FakeDrive {
         async fn find_backup(&self, _folder_id: &str) -> Result<Option<DriveFileMeta>, AppError> {
-            let inner = self.inner.lock().unwrap();
-            Ok(inner.files.first().map(|f| DriveFileMeta {
-                id: f.id.clone(),
+            let g = self.inner.lock().unwrap();
+            Ok(g.file.as_ref().map(|(id, _)| DriveFileMeta {
+                id: id.clone(),
                 name: BACKUP_FILENAME.to_string(),
-                modified_time: Some(f.modified_time.clone()),
+                modified_time: Some(format!("2026-01-01T00:00:00.{:06}Z", g.clock)),
             }))
         }
         async fn create_empty(&self, _folder_id: &str) -> Result<DriveFileMeta, AppError> {
-            let mut inner = self.inner.lock().unwrap();
-            let mt = Self::tick(&mut inner);
-            let id = format!("file-{}", inner.files.len() + 1);
-            inner.files.push(FakeFile {
-                id: id.clone(),
-                content: String::new(),
-                modified_time: mt.clone(),
-            });
-            Ok(DriveFileMeta { id, name: BACKUP_FILENAME.to_string(), modified_time: Some(mt) })
+            let mut g = self.inner.lock().unwrap();
+            g.file = Some(("file-1".into(), String::new()));
+            Ok(DriveFileMeta {
+                id: "file-1".into(),
+                name: BACKUP_FILENAME.to_string(),
+                modified_time: None,
+            })
         }
         async fn download(&self, file_id: &str) -> Result<String, AppError> {
-            let inner = self.inner.lock().unwrap();
-            inner
-                .files
-                .iter()
-                .find(|f| f.id == file_id)
-                .map(|f| f.content.clone())
-                .ok_or_else(|| berr("fake: no such file"))
+            let g = self.inner.lock().unwrap();
+            match &g.file {
+                Some((id, c)) if id == file_id => Ok(c.clone()),
+                _ => Err(berr("fake: no such file")),
+            }
         }
         async fn update_content(
             &self,
             file_id: &str,
             content: &str,
         ) -> Result<DriveFileMeta, AppError> {
-            let mut inner = self.inner.lock().unwrap();
-            let mt = Self::tick(&mut inner);
-            let f = inner
-                .files
-                .iter_mut()
-                .find(|f| f.id == file_id)
-                .ok_or_else(|| berr("fake: no such file"))?;
-            f.content = content.to_string();
-            f.modified_time = mt.clone();
+            let mut g = self.inner.lock().unwrap();
+            g.clock += 1;
+            let mt = format!("2026-01-01T00:00:00.{:06}Z", g.clock);
+            match &mut g.file {
+                Some((id, c)) if id == file_id => *c = content.to_string(),
+                _ => return Err(berr("fake: no such file")),
+            }
             Ok(DriveFileMeta {
                 id: file_id.to_string(),
                 name: BACKUP_FILENAME.to_string(),
@@ -1308,51 +1126,7 @@ mod sync_tests {
         }
     }
 
-    /// One machine: its own local snapshot + persisted sync state. `sync` mirrors
-    /// exactly what `BackupEngine::run_sync` does (apply merged, persist config).
-    struct Client {
-        local: SyncSnapshot,
-        last_sync: Option<String>,
-        file_id: Option<String>,
-        digest: Option<String>,
-    }
-    impl Client {
-        fn new() -> Self {
-            Client { local: SyncSnapshot::default(), last_sync: None, file_id: None, digest: None }
-        }
-        async fn sync(&mut self, drive: &FakeDrive) -> bool {
-            self.sync_with(drive, SyncMode::Full).await
-        }
-        async fn sync_with(&mut self, drive: &FakeDrive, mode: SyncMode) -> bool {
-            let outcome = sync_once(
-                drive,
-                "folder",
-                self.local.clone(),
-                self.last_sync.clone(),
-                self.file_id.clone(),
-                self.digest.clone(),
-                mode,
-            )
-            .await
-            .unwrap();
-            if outcome.changed_local {
-                self.local = outcome.merged.clone();
-            }
-            self.last_sync = outcome.new_last_sync;
-            self.file_id = outcome.new_file_id;
-            self.digest = outcome.new_digest;
-            outcome.changed_local
-        }
-        fn title_of(&self, id: &str) -> Option<&str> {
-            self.local
-                .bookmarks
-                .iter()
-                .find(|b| b.id == id && b.deleted_at.is_none())
-                .map(|b| b.title.as_str())
-        }
-    }
-
-    fn bm(id: &str, title: &str, updated_at: i64, deleted_at: Option<i64>) -> SyncBookmark {
+    fn bm(id: &str, title: &str) -> SyncBookmark {
         SyncBookmark {
             id: id.into(),
             url: format!("https://example.com/{id}"),
@@ -1364,452 +1138,57 @@ mod sync_tests {
             folder_id: None,
             tag_ids: vec![],
             created_at: 1,
-            updated_at,
-            deleted_at,
+            updated_at: 1,
+            deleted_at: None,
             purged_at: None,
         }
     }
-    fn snap(bms: Vec<SyncBookmark>) -> SyncSnapshot {
-        SyncSnapshot { bookmarks: bms, ..Default::default() }
-    }
 
-    /// THE reported bug. Two clients edit different bookmarks "from time to
-    /// time"; with the old blind-overwrite push, whoever pushed last erased the
-    /// other's bookmark. With merge, both survive.
     #[tokio::test]
-    async fn two_clients_disjoint_edits_both_survive() {
-        let drive = FakeDrive::new();
-        let mut a = Client::new();
-        let mut b = Client::new();
+    async fn export_creates_file_then_overwrites_it() {
+        let drive = FakeDrive::default();
+        let snap = SyncSnapshot { bookmarks: vec![bm("A", "a")], ..Default::default() };
+        let json = crate::merge::to_json(&snap).unwrap();
+        export_once(&drive, "folder", &json).await.unwrap();
+        assert_eq!(drive.content().as_deref(), Some(json.as_str()));
 
-        a.local = snap(vec![bm("X", "x", 10, None)]);
-        a.sync(&drive).await; // A publishes X
-
-        b.local = snap(vec![bm("Y", "y", 10, None)]);
-        b.sync(&drive).await; // B pulls X, merges, publishes {X,Y}
-
-        a.sync(&drive).await; // A pulls the union back
-
-        assert_eq!(a.title_of("X"), Some("x"));
-        assert_eq!(a.title_of("Y"), Some("y"));
-        assert_eq!(b.title_of("X"), Some("x"));
-        assert_eq!(b.title_of("Y"), Some("y"));
-        let r = drive.remote();
-        assert_eq!(r.bookmarks.len(), 2);
+        // Second export blindly overwrites — one-way by design.
+        let snap2 = SyncSnapshot { bookmarks: vec![bm("B", "b")], ..Default::default() };
+        let json2 = crate::merge::to_json(&snap2).unwrap();
+        export_once(&drive, "folder", &json2).await.unwrap();
+        assert_eq!(drive.content().as_deref(), Some(json2.as_str()));
     }
 
-    /// The idle-client clobber: A edits and pushes; B has been sitting open with
-    /// stale data and its periodic sync fires. The old push-only autosave would
-    /// stomp A's edit with B's stale copy. Now B reconciles instead.
     #[tokio::test]
-    async fn idle_client_does_not_clobber_fresh_remote() {
-        let drive = FakeDrive::new();
-        let mut a = Client::new();
-        let mut b = Client::new();
+    async fn import_parses_v2_snapshot() {
+        let drive = FakeDrive::default();
+        let snap = SyncSnapshot { bookmarks: vec![bm("A", "a")], ..Default::default() };
+        drive.seed(&crate::merge::to_json(&snap).unwrap());
 
-        a.local = snap(vec![bm("X", "x1", 10, None)]);
-        b.local = snap(vec![bm("X", "x1", 10, None)]);
-        a.sync(&drive).await; // remote = x1
-        b.sync(&drive).await; // B now in sync at x1, idle
-
-        // A edits X and pushes a newer version.
-        a.local = snap(vec![bm("X", "x2", 20, None)]);
-        a.sync(&drive).await;
-
-        // B's periodic sync fires with NO local change.
-        let changed = b.sync(&drive).await;
-
-        assert!(changed, "B should have pulled A's newer edit");
-        assert_eq!(b.title_of("X"), Some("x2"));
-        assert_eq!(drive.remote().bookmarks[0].title, "x2", "remote not clobbered");
+        let (restored, mtime) = import_once(&drive, "folder").await.unwrap();
+        assert_eq!(restored, snap);
+        assert!(mtime.is_some());
     }
 
-    /// A deletion on one machine reaches the other (tombstone travels).
     #[tokio::test]
-    async fn delete_propagates_across_clients() {
-        let drive = FakeDrive::new();
-        let mut a = Client::new();
-        let mut b = Client::new();
-
-        a.local = snap(vec![bm("X", "x", 10, None)]);
-        a.sync(&drive).await;
-        b.sync(&drive).await; // B has X live
-
-        a.local = snap(vec![bm("X", "x", 20, Some(20))]); // delete on A
-        a.sync(&drive).await;
-
-        b.sync(&drive).await;
-        assert_eq!(b.title_of("X"), None, "X should be tombstoned on B");
+    async fn import_without_backup_file_errors() {
+        let drive = FakeDrive::default();
+        assert!(import_once(&drive, "folder").await.is_err());
     }
 
-    /// Concurrent first sync converges on ONE backup file, not a duplicate per
-    /// client (the old `find ? : create` race produced two files).
     #[tokio::test]
-    async fn first_sync_converges_on_single_file() {
-        let drive = FakeDrive::new();
-        let mut a = Client::new();
-        let mut b = Client::new();
-
-        a.local = snap(vec![bm("A", "a", 10, None)]);
-        b.local = snap(vec![bm("B", "b", 10, None)]);
-        a.sync(&drive).await;
-        b.sync(&drive).await;
-
-        assert_eq!(drive.file_count(), 1, "must reuse the one backup file");
-        assert_eq!(drive.remote().bookmarks.len(), 2);
+    async fn import_refuses_unreadable_backup() {
+        let drive = FakeDrive::default();
+        drive.seed("{ definitely not a snapshot");
+        assert!(import_once(&drive, "folder").await.is_err());
     }
 
-    /// A truly idle re-sync must not re-upload — otherwise it bumps the remote
-    /// `modifiedTime` and makes every other client needlessly re-pull (and two
-    /// idle clients would ping-pong forever).
     #[tokio::test]
-    async fn idle_resync_is_a_no_op() {
-        let drive = FakeDrive::new();
-        let mut a = Client::new();
-        a.local = snap(vec![bm("X", "x", 10, None)]);
-        a.sync(&drive).await;
-        let mtime_after_first = drive.remote_mtime();
-
-        let changed = a.sync(&drive).await;
-
-        assert!(!changed);
-        assert_eq!(drive.remote_mtime(), mtime_after_first, "no redundant upload");
-    }
-
-    /// THE reported bug. Drive already holds bookmarks (pushed from another
-    /// machine). A brand-new install — empty DB, no `last_sync`/`file_id` — does
-    /// its first sync. Drive must have precedence: the client pulls the data and
-    /// the remote backup is NOT erased by the empty newcomer.
-    #[tokio::test]
-    async fn fresh_install_does_not_erase_populated_remote() {
-        let drive = FakeDrive::new();
-        let remote_snap = snap(vec![bm("X", "x", 10, None), bm("Y", "y", 20, None)]);
-        drive.seed(&crate::merge::to_json(&remote_snap).unwrap());
-
-        let mut fresh = Client::new(); // empty local, no sync state
-        let changed = fresh.sync(&drive).await;
-
-        assert!(changed, "fresh install must pull the remote backup");
-        assert_eq!(fresh.title_of("X"), Some("x"));
-        assert_eq!(fresh.title_of("Y"), Some("y"));
-        let r = drive.remote();
-        assert_eq!(r.bookmarks.len(), 2, "remote backup must survive an empty client");
-        assert_eq!(drive.file_count(), 1, "must reuse the existing backup file");
-    }
-
-    /// A remote file that exists and is non-empty but cannot be parsed (corrupt,
-    /// unknown format, partial download) must NEVER be silently overwritten with
-    /// an empty snapshot. The sync errors out and leaves the remote untouched.
-    #[tokio::test]
-    async fn unreadable_remote_is_never_overwritten() {
-        let drive = FakeDrive::new();
-        drive.seed("this is not valid ferrico json at all");
-
-        let local = SyncSnapshot::default();
-        let result = sync_once(&drive, "folder", local, None, None, None, SyncMode::Full).await;
-
-        assert!(result.is_err(), "must refuse to sync against an unreadable remote");
-        assert_eq!(
-            drive.remote_raw(),
-            "this is not valid ferrico json at all",
-            "remote backup content must be left byte-for-byte untouched"
-        );
-        assert_eq!(drive.file_count(), 1);
-    }
-
-    /// PullOnly with a diverged, NON-empty local: remote rows must land locally,
-    /// but the remote file must stay byte-for-byte untouched — the mobile mode
-    /// can read Drive, never write it.
-    #[tokio::test]
-    async fn pull_only_never_writes_remote() {
-        let drive = FakeDrive::new();
-        let remote_snap = snap(vec![bm("X", "x", 10, None)]);
-        drive.seed(&crate::merge::to_json(&remote_snap).unwrap());
-        let raw_before = drive.remote_raw();
-        let mtime_before = drive.remote_mtime();
-
-        let mut phone = Client::new();
-        phone.local = snap(vec![bm("Y", "y", 10, None)]); // diverged local
-        let changed = phone.sync_with(&drive, SyncMode::PullOnly).await;
-
-        assert!(changed, "remote rows must land locally");
-        assert_eq!(phone.title_of("X"), Some("x"));
-        assert_eq!(phone.title_of("Y"), Some("y"), "local rows survive the merge");
-        assert_eq!(drive.file_count(), 1);
-        assert_eq!(drive.remote_raw(), raw_before, "remote content untouched");
-        assert_eq!(drive.remote_mtime(), mtime_before, "remote never re-uploaded");
-    }
-
-    /// After a pull-only cycle `last_sync` must advance to the remote
-    /// `modifiedTime` (without any push), so the phone does not re-download an
-    /// unchanged remote on every subsequent sync.
-    #[tokio::test]
-    async fn pull_only_advances_last_sync_without_push() {
-        let drive = FakeDrive::new();
-        let remote_snap = snap(vec![bm("X", "x", 10, None)]);
-        let mt = drive.seed(&crate::merge::to_json(&remote_snap).unwrap());
-
-        let mut phone = Client::new();
-        phone.sync_with(&drive, SyncMode::PullOnly).await;
-
-        assert_eq!(phone.last_sync.as_deref(), Some(mt.as_str()));
-        assert_eq!(drive.remote_mtime(), mt, "no upload happened");
-
-        // Second cycle: nothing new remotely → no re-download, no change.
-        let changed = phone.sync_with(&drive, SyncMode::PullOnly).await;
-        assert!(!changed, "unchanged remote must not re-merge");
-    }
-
-    /// PullOnly against an empty Drive folder must be a complete no-op: no
-    /// backup file may be created (create_empty is unreachable in this mode).
-    #[tokio::test]
-    async fn pull_only_no_remote_is_noop() {
-        let drive = FakeDrive::new();
-
-        let mut phone = Client::new();
-        phone.local = snap(vec![bm("Y", "y", 10, None)]);
-        let changed = phone.sync_with(&drive, SyncMode::PullOnly).await;
-
-        assert_eq!(drive.file_count(), 0, "must not create a remote file");
-        assert!(!changed);
-        assert_eq!(phone.last_sync, None, "nothing was reconciled");
-    }
-
-    /// A legacy v1 export (the pre-merge `export_json` format) sitting on Drive
-    /// must upgrade cleanly on a fresh client's first sync, never be dropped.
-    #[tokio::test]
-    async fn legacy_v1_remote_is_preserved_on_fresh_sync() {
-        let drive = FakeDrive::new();
-        let legacy = r#"{"version":1,"exported_at":0,"folders":[],"tags":[],
-            "bookmarks":[{"id":"X","url":"https://example.com/X","title":"x",
-            "description":null,"favicon_url":null,"feed_url":null,"folder_id":null,
-            "tag_ids":[],"created_at":1,"updated_at":1}]}"#;
-        drive.seed(legacy);
-
-        let mut fresh = Client::new();
-        fresh.sync(&drive).await;
-
-        assert_eq!(fresh.title_of("X"), Some("x"), "legacy bookmark must import");
-        assert_eq!(drive.remote().bookmarks.len(), 1, "legacy data must not be erased");
-    }
-
-    /// A wiped local DB whose `settings.json` survived: it still "remembers"
-    /// `last_sync`/`file_id`/`digest` from before, so the staleness gate alone
-    /// would skip the pull and then push the now-empty DB over the remote. Drive
-    /// precedence on an empty local must force a reconcile instead.
-    #[tokio::test]
-    async fn wiped_local_with_stale_sync_state_does_not_erase_remote() {
-        let drive = FakeDrive::new();
-        let remote_snap = snap(vec![bm("X", "x", 10, None)]);
-        let mt = drive.seed(&crate::merge::to_json(&remote_snap).unwrap());
-        let stale_digest = digest(&crate::merge::to_json(&remote_snap).unwrap());
-
-        let mut client = Client {
-            local: SyncSnapshot::default(), // DB gone
-            last_sync: Some(mt),            // but we "remember" we were in sync
-            file_id: Some("file-1".into()),
-            digest: Some(stale_digest),
-        };
-        client.sync(&drive).await;
-
-        assert_eq!(drive.remote().bookmarks.len(), 1, "remote must survive a wiped local");
-        assert_eq!(client.title_of("X"), Some("x"), "client recovers data from remote");
-    }
-
-    // ── end-to-end: real SQLite DBs on both machines ──────────────────────────
-
-    use crate::db::{
-        db_add_bookmark, db_add_folder, db_apply_sync_snapshot, db_delete_bookmark, db_empty_bin,
-        db_export_sync_snapshot, db_get_bin_count, db_get_bookmarks, db_get_folders,
-        db_restore_bookmark, init_schema, CreateBookmarkInput,
-    };
-
-    /// One machine with a REAL (in-memory) SQLite DB. `sync` mirrors exactly
-    /// what `BackupEngine::run_sync` does: export → `sync_once` → apply the
-    /// merged snapshot when it changed → persist the three config fields.
-    struct DbClient {
-        conn: rusqlite::Connection,
-        last_sync: Option<String>,
-        file_id: Option<String>,
-        digest: Option<String>,
-    }
-    impl DbClient {
-        fn new() -> Self {
-            let conn = rusqlite::Connection::open_in_memory().unwrap();
-            init_schema(&conn).unwrap();
-            DbClient { conn, last_sync: None, file_id: None, digest: None }
-        }
-        async fn sync(&mut self, drive: &FakeDrive) -> bool {
-            let local = db_export_sync_snapshot(&self.conn).unwrap();
-            let outcome = sync_once(
-                drive,
-                "folder",
-                local,
-                self.last_sync.clone(),
-                self.file_id.clone(),
-                self.digest.clone(),
-                SyncMode::Full,
-            )
-            .await
-            .unwrap();
-            if outcome.changed_local {
-                db_apply_sync_snapshot(&self.conn, &outcome.merged).unwrap();
-            }
-            self.last_sync = outcome.new_last_sync;
-            self.file_id = outcome.new_file_id;
-            self.digest = outcome.new_digest;
-            outcome.changed_local
-        }
-        fn add(&self, url: &str, title: &str, folder_id: Option<String>) -> String {
-            db_add_bookmark(
-                &self.conn,
-                CreateBookmarkInput {
-                    url: url.to_string(),
-                    title: title.to_string(),
-                    description: None,
-                    favicon_url: None,
-                    feed_url: None,
-                    folder_id,
-                    tag_ids: None,
-                },
-            )
-            .unwrap()
-            .id
-        }
-    }
-
-    /// THE reported bug, end to end: both machines created a "News" folder by
-    /// hand (different UUIDs) and filed a different bookmark inside, then
-    /// synced. The user ended up with "the same folder twice, each holding
-    /// different bookmarks". Both DBs must converge on ONE News folder that
-    /// holds BOTH bookmarks.
-    #[tokio::test]
-    async fn two_machines_minting_same_folder_converge_on_one() {
-        let drive = FakeDrive::new();
-        let mut a = DbClient::new();
-        let mut b = DbClient::new();
-
-        let fa = db_add_folder(&a.conn, "News".into(), None).unwrap();
-        a.add("https://a.example/1", "from-a", Some(fa.id.clone()));
-        let fb = db_add_folder(&b.conn, "News".into(), None).unwrap();
-        b.add("https://b.example/2", "from-b", Some(fb.id.clone()));
-
-        a.sync(&drive).await;
-        b.sync(&drive).await; // B pulls A's copy — collapse happens here
-        a.sync(&drive).await; // A pulls the collapsed union
-
-        for (name, c) in [("A", &a), ("B", &b)] {
-            let folders = db_get_folders(&c.conn).unwrap();
-            assert_eq!(folders.len(), 1, "machine {name}: exactly one live folder");
-            assert_eq!(folders[0].name, "News");
-            let bms = db_get_bookmarks(&c.conn, None, None, None, false).unwrap();
-            assert_eq!(bms.len(), 2, "machine {name}: both bookmarks survive");
-            for bm in &bms {
-                assert_eq!(
-                    bm.folder_id.as_deref(),
-                    Some(folders[0].id.as_str()),
-                    "machine {name}: bookmark {} must sit in the surviving folder",
-                    bm.title
-                );
-            }
-        }
-    }
-
-    /// Emptying the bin must not resurrect: the purged tombstone propagates,
-    /// and repeated syncs on either machine stay clean (the old hard-DELETE
-    /// ping-ponged rows back into the bin forever).
-    #[tokio::test]
-    async fn emptied_bin_does_not_resurrect_from_other_machine() {
-        let drive = FakeDrive::new();
-        let mut a = DbClient::new();
-        let mut b = DbClient::new();
-
-        let id = a.add("https://gone.example", "doomed", None);
-        a.sync(&drive).await;
-        b.sync(&drive).await;
-
-        db_delete_bookmark(&a.conn, &id).unwrap();
-        a.sync(&drive).await;
-        b.sync(&drive).await;
-        assert_eq!(db_get_bin_count(&b.conn).unwrap(), 1, "delete reached B's bin");
-
-        db_empty_bin(&a.conn).unwrap();
-        a.sync(&drive).await;
-        b.sync(&drive).await;
-
-        assert_eq!(db_get_bin_count(&a.conn).unwrap(), 0);
-        assert_eq!(db_get_bin_count(&b.conn).unwrap(), 0, "purge reached B");
-
-        // extra rounds must not bring anything back
-        a.sync(&drive).await;
-        b.sync(&drive).await;
-        a.sync(&drive).await;
-        assert_eq!(db_get_bin_count(&a.conn).unwrap(), 0, "no resurrection ping-pong");
-        assert_eq!(db_get_bin_count(&b.conn).unwrap(), 0);
-    }
-
-    /// Restoring from the bin must survive the next sync. The old code kept a
-    /// stale `updated_at` on restore, the tombstone on the remote won the tie,
-    /// and the bookmark silently fell back into the bin.
-    #[tokio::test]
-    async fn restore_from_bin_survives_sync() {
-        let drive = FakeDrive::new();
-        let mut a = DbClient::new();
-        let mut b = DbClient::new();
-
-        let id = a.add("https://phoenix.example", "phoenix", None);
-        a.sync(&drive).await;
-        b.sync(&drive).await;
-        db_delete_bookmark(&a.conn, &id).unwrap();
-        a.sync(&drive).await;
-        b.sync(&drive).await; // tombstone everywhere
-
-        db_restore_bookmark(&a.conn, &id).unwrap();
-        a.sync(&drive).await; // must push the restore, not re-pull the tombstone
-        b.sync(&drive).await;
-
-        let alive_on = |c: &DbClient| {
-            db_get_bookmarks(&c.conn, None, None, None, false)
-                .unwrap()
-                .iter()
-                .any(|bm| bm.id == id)
-        };
-        assert!(alive_on(&a), "restore must survive A's own next sync");
-        assert!(alive_on(&b), "restore must propagate to B");
-        assert_eq!(db_get_bin_count(&a.conn).unwrap(), 0);
-        assert_eq!(db_get_bin_count(&b.conn).unwrap(), 0);
-    }
-
-    /// A cover fetched on one machine (scanner does not bump the clock) must
-    /// propagate and STICK — not ping-pong against the cover-less twin row.
-    #[tokio::test]
-    async fn cover_url_propagates_and_sticks() {
-        let drive = FakeDrive::new();
-        let mut a = DbClient::new();
-        let mut b = DbClient::new();
-
-        let id = a.add("https://covered.example", "covered", None);
-        a.sync(&drive).await;
-        b.sync(&drive).await;
-
-        crate::db::db_update_cover_url(&a.conn, &id, "https://covers.example/x.png").unwrap();
-        a.sync(&drive).await;
-        b.sync(&drive).await;
-        a.sync(&drive).await;
-        b.sync(&drive).await;
-
-        let cover_on = |c: &DbClient| {
-            db_get_bookmarks(&c.conn, None, None, None, false)
-                .unwrap()
-                .iter()
-                .find(|bm| bm.id == id)
-                .and_then(|bm| bm.cover_url.clone())
-        };
-        assert_eq!(cover_on(&a).as_deref(), Some("https://covers.example/x.png"));
-        assert_eq!(
-            cover_on(&b).as_deref(),
-            Some("https://covers.example/x.png"),
-            "cover must reach and stick on B"
-        );
+    async fn import_of_blank_file_restores_empty_dataset() {
+        let drive = FakeDrive::default();
+        drive.seed("");
+        let (restored, _) = import_once(&drive, "folder").await.unwrap();
+        assert_eq!(restored, SyncSnapshot::default());
     }
 }
+

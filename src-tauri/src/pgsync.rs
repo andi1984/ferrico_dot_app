@@ -30,7 +30,16 @@ use std::path::Path;
 use crate::error::AppError;
 use crate::merge::{self, SyncSnapshot};
 
-pub use crate::gdrive::SyncMode;
+/// How a sync cycle may touch the remote. `PullOnly` is the mobile mode: the
+/// merge still runs (remote rows land locally), but nothing is ever uploaded.
+/// Selected once per cycle via `cfg!(mobile)` in `run_sync`, which makes
+/// read-only sync a compile-time property of the mobile binary rather than a
+/// runtime setting someone could flip.
+#[derive(Clone, Copy, PartialEq)]
+pub enum SyncMode {
+    Full,
+    PullOnly,
+}
 
 fn serr(msg: impl std::fmt::Display) -> AppError {
     AppError::Backup { message: msg.to_string() }
@@ -904,7 +913,7 @@ impl SyncEngine {
     /// captured dirty entries (marks added mid-flight survive for the next
     /// cycle). Emits the same events as the old Drive engine so the frontend
     /// sync indicator keeps working unchanged.
-    async fn run_sync(&self, op: &str) -> Result<bool, AppError> {
+    async fn run_sync(&self, op: &str) -> Result<(bool, usize), AppError> {
         let _guard = self.running.lock().await;
         let cfg = self.cfg()?;
         self.app.emit("backup-syncing", serde_json::json!({ "op": op })).ok();
@@ -935,14 +944,17 @@ impl SyncEngine {
                 c.last_seq = outcome.new_cursor;
                 c.last_sync = Some(crate::db::now());
             })?;
-            Ok::<bool, AppError>(outcome.changed_local)
+            Ok::<(bool, usize), AppError>((outcome.changed_local, outcome.pushed))
         }
         .await;
 
         match &result {
-            Ok(changed) => {
+            Ok((changed, pushed)) => {
                 self.app
-                    .emit("backup-synced", serde_json::json!({ "op": op, "changed": changed }))
+                    .emit(
+                        "backup-synced",
+                        serde_json::json!({ "op": op, "changed": changed, "pushed": pushed }),
+                    )
                     .ok();
             }
             Err(e) => {

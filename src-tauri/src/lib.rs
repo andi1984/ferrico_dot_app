@@ -999,28 +999,24 @@ fn backup_select_folder(
     engine.select_folder(folder_id, folder_name)
 }
 
+/// Manual one-way upload of the local dataset to the Drive backup file.
 #[tauri::command]
-fn backup_set_enabled(
-    enabled: bool,
-    engine: State<'_, gdrive::BackupEngine>,
-) -> Result<gdrive::BackupStatus, AppError> {
-    engine.set_enabled(enabled)
-}
-
-#[tauri::command]
-fn backup_set_interval(
-    interval_min: u64,
-    engine: State<'_, gdrive::BackupEngine>,
-) -> Result<gdrive::BackupStatus, AppError> {
-    engine.set_interval(interval_min)
-}
-
-#[tauri::command]
-async fn backup_sync_now(
+async fn backup_export_now(
     engine: State<'_, gdrive::BackupEngine>,
 ) -> Result<gdrive::BackupStatus, AppError> {
     let engine = engine.inner().clone();
-    engine.sync_now().await
+    engine.export_to_drive().await
+}
+
+/// Manual restore: REPLACE the local database with the Drive backup file.
+/// Destructive — the frontend confirms first; the engine writes a local
+/// safety export before applying.
+#[tauri::command]
+async fn backup_restore_from_drive(
+    engine: State<'_, gdrive::BackupEngine>,
+) -> Result<gdrive::BackupStatus, AppError> {
+    let engine = engine.inner().clone();
+    engine.import_from_drive().await
 }
 
 /// Export the sync connection(s) as a pairing code for the phone (v2: Neon
@@ -1280,9 +1276,8 @@ pub fn run() {
             backup_list_folders,
             backup_create_folder,
             backup_select_folder,
-            backup_set_enabled,
-            backup_set_interval,
-            backup_sync_now,
+            backup_export_now,
+            backup_restore_from_drive,
             backup_export_pairing,
             backup_import_pairing,
             neon_status,
