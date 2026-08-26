@@ -702,6 +702,319 @@ impl SyncStore for PgStore {
     }
 }
 
+// ─── Engine ─────────────────────────────────────────────────────────────────────
+
+use rusqlite::Connection;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Emitter};
+
+/// Shared, cheaply-cloneable handle wiring the DB, persisted config and the
+/// Tauri app handle — the Neon counterpart of `gdrive::BackupEngine`. Held in
+/// managed state and by the lifecycle tasks (open-pull, change-driven push
+/// loop, close-push).
+#[derive(Clone)]
+pub struct SyncEngine {
+    db: Arc<Mutex<Connection>>,
+    config: Arc<Mutex<NeonConfig>>,
+    data_dir: Arc<PathBuf>,
+    app: AppHandle,
+    /// Serializes sync cycles within this process (the Postgres advisory lock
+    /// serializes across devices).
+    running: Arc<tokio::sync::Mutex<()>>,
+}
+
+impl SyncEngine {
+    pub fn new(db: Arc<Mutex<Connection>>, data_dir: PathBuf, app: AppHandle) -> Self {
+        let config = load_config(&data_dir);
+        SyncEngine {
+            db,
+            config: Arc::new(Mutex::new(config)),
+            data_dir: Arc::new(data_dir),
+            app,
+            running: Arc::new(tokio::sync::Mutex::new(())),
+        }
+    }
+
+    // ── config access ──────────────────────────────────────────────────────────
+
+    fn cfg(&self) -> Result<NeonConfig, AppError> {
+        Ok(self
+            .config
+            .lock()
+            .map_err(|e| AppError::Lock { message: e.to_string() })?
+            .clone())
+    }
+
+    fn update_cfg(&self, f: impl FnOnce(&mut NeonConfig)) -> Result<NeonConfig, AppError> {
+        let mut guard = self
+            .config
+            .lock()
+            .map_err(|e| AppError::Lock { message: e.to_string() })?;
+        f(&mut guard);
+        let snapshot = guard.clone();
+        save_config(self.data_dir.as_path(), &snapshot);
+        Ok(snapshot)
+    }
+
+    pub fn status(&self) -> Result<NeonStatus, AppError> {
+        let c = self.cfg()?;
+        Ok(NeonStatus {
+            configured: c.is_configured(),
+            enabled: c.enabled,
+            host: c.effective_host(),
+            dbname: c.effective_dbname(),
+            user: c.effective_user(),
+            interval_min: c.interval_min,
+            last_seq: c.last_seq,
+            last_sync: c.last_sync,
+        })
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.cfg().map(|c| c.enabled && c.is_configured()).unwrap_or(false)
+    }
+
+    // ── settings commands ───────────────────────────────────────────────────────
+
+    /// Update connection settings. An empty `password` keeps the stored one; a
+    /// changed host or user resets the cursor (a different remote's `seq`
+    /// numbering means nothing to us) and re-homes the stored password.
+    pub fn set_config(
+        &self,
+        host: String,
+        dbname: String,
+        user: String,
+        password: String,
+    ) -> Result<NeonStatus, AppError> {
+        let host = host.trim().to_string();
+        let dbname = dbname.trim().to_string();
+        let user = user.trim().to_string();
+        let password = password.trim().to_string();
+        if host.is_empty() || user.is_empty() {
+            return Err(serr("host and user are required"));
+        }
+
+        let old = self.cfg()?;
+        let target_changed = old.effective_host().as_deref() != Some(host.as_str())
+            || old.effective_user().as_deref() != Some(user.as_str())
+            || old.effective_dbname() != dbname;
+
+        let stored_password = if password.is_empty() {
+            if target_changed {
+                // Old credentials belong to the old target; require a fresh one.
+                return Err(serr("password is required when changing host or user"));
+            }
+            old.password.clone()
+        } else {
+            if target_changed {
+                delete_password(&old);
+            }
+            store_password(&user, &host, &password)
+        };
+
+        self.update_cfg(|c| {
+            c.host = Some(host);
+            c.dbname = if dbname.is_empty() { None } else { Some(dbname) };
+            c.user = Some(user);
+            c.password = stored_password;
+            if target_changed {
+                c.last_seq = 0;
+                c.last_sync = None;
+            }
+        })?;
+        self.status()
+    }
+
+    /// Connect + schema init + trivial round trip, without syncing.
+    pub async fn test_connection(&self) -> Result<(), AppError> {
+        let c = self.cfg()?;
+        let store = self.connect(&c).await?;
+        drop(store);
+        Ok(())
+    }
+
+    pub fn set_enabled(&self, enabled: bool) -> Result<NeonStatus, AppError> {
+        self.update_cfg(|c| c.enabled = enabled)?;
+        self.status()
+    }
+
+    pub fn set_interval(&self, interval_min: u64) -> Result<NeonStatus, AppError> {
+        self.update_cfg(|c| c.interval_min = interval_min)?;
+        self.status()
+    }
+
+    /// Forget the connection: password everywhere, enabled off. Host/db/user
+    /// stay for an easy reconnect.
+    pub fn disconnect(&self) -> Result<NeonStatus, AppError> {
+        let c = self.cfg()?;
+        delete_password(&c);
+        self.update_cfg(|c| {
+            c.password = None;
+            c.enabled = false;
+        })?;
+        self.status()
+    }
+
+    /// Adopt pairing data from a desktop (QR/paste). Stores the password with
+    /// platform-appropriate secrecy and resets the cursor — this device has
+    /// never seen this remote.
+    pub fn apply_pairing(
+        &self,
+        host: String,
+        dbname: Option<String>,
+        user: String,
+        password: String,
+    ) -> Result<NeonStatus, AppError> {
+        let stored = store_password(&user, &host, &password);
+        self.update_cfg(|c| {
+            c.host = Some(host);
+            c.dbname = dbname;
+            c.user = Some(user);
+            c.password = stored;
+            c.enabled = true;
+            c.last_seq = 0;
+            c.last_sync = None;
+        })?;
+        self.status()
+    }
+
+    // ── sync ────────────────────────────────────────────────────────────────────
+
+    async fn connect(&self, c: &NeonConfig) -> Result<PgStore, AppError> {
+        let host = c.effective_host().ok_or_else(|| serr("Neon host is not configured"))?;
+        let user = c.effective_user().ok_or_else(|| serr("Neon user is not configured"))?;
+        let password = load_password(c).ok_or_else(|| {
+            serr("no stored Neon password — enter it in Settings → Sync")
+        })?;
+        PgStore::connect(&host, &c.effective_dbname(), &user, &password).await
+    }
+
+    fn lock_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>, AppError> {
+        self.db.lock().map_err(|e| AppError::Lock { message: e.to_string() })
+    }
+
+    /// One full cycle: capture dirty + local snapshot, exchange with the
+    /// remote, apply the merge, then persist cursor and clear exactly the
+    /// captured dirty entries (marks added mid-flight survive for the next
+    /// cycle). Emits the same events as the old Drive engine so the frontend
+    /// sync indicator keeps working unchanged.
+    async fn run_sync(&self, op: &str) -> Result<bool, AppError> {
+        let _guard = self.running.lock().await;
+        let cfg = self.cfg()?;
+        self.app.emit("backup-syncing", serde_json::json!({ "op": op })).ok();
+
+        let result = async {
+            let (dirty, local) = {
+                let conn = self.lock_conn()?;
+                // First contact with this remote: rows predating dirty tracking
+                // exist only in the tables, so everything must count as dirty.
+                if cfg.last_seq == 0 {
+                    crate::db::db_mark_all_dirty(&conn)?;
+                }
+                (crate::db::db_get_dirty(&conn)?, crate::db::db_export_sync_snapshot(&conn)?)
+            };
+
+            let mut store = self.connect(&cfg).await?;
+            let mode = if cfg!(mobile) { SyncMode::PullOnly } else { SyncMode::Full };
+            let outcome = sync_once(&mut store, local, &dirty, cfg.last_seq, mode).await?;
+
+            {
+                let conn = self.lock_conn()?;
+                if outcome.changed_local {
+                    crate::db::db_apply_sync_snapshot(&conn, &outcome.merged)?;
+                }
+                crate::db::db_clear_dirty(&conn, &dirty)?;
+            }
+            self.update_cfg(|c| {
+                c.last_seq = outcome.new_cursor;
+                c.last_sync = Some(crate::db::now());
+            })?;
+            Ok::<bool, AppError>(outcome.changed_local)
+        }
+        .await;
+
+        match &result {
+            Ok(changed) => {
+                self.app
+                    .emit("backup-synced", serde_json::json!({ "op": op, "changed": changed }))
+                    .ok();
+            }
+            Err(e) => {
+                self.app
+                    .emit("backup-error", serde_json::json!({ "op": op, "message": e.to_string() }))
+                    .ok();
+            }
+        }
+        result
+    }
+
+    pub async fn sync_now(&self) -> Result<NeonStatus, AppError> {
+        self.run_sync("sync").await?;
+        self.status()
+    }
+
+    // ── lifecycle entry points (best-effort, errors only logged/emitted) ────────
+
+    pub async fn pull_if_active(&self) {
+        if self.is_active() {
+            if let Err(e) = self.run_sync("pull").await {
+                eprintln!("neon sync (open) failed: {e}");
+            }
+        }
+    }
+
+    #[cfg(desktop)]
+    pub async fn push_if_active(&self) {
+        if self.is_active() {
+            if let Err(e) = self.run_sync("push").await {
+                eprintln!("neon sync (close) failed: {e}");
+            }
+        }
+    }
+
+    /// Change-driven near-realtime push + periodic pull, in one loop.
+    ///
+    /// Every `TICK` it checks `sync_dirty`; pending local changes trigger a
+    /// full cycle within seconds of the user's edit (the debounce is the tick
+    /// itself). Independently, `interval_min` forces a periodic cycle so
+    /// *remote* changes land without a local edit; `0` disables that part.
+    /// After a failure (offline, bad credentials) it backs off before
+    /// retrying so a closed laptop lid doesn't hammer the network.
+    #[cfg(desktop)]
+    pub async fn run_change_loop(self) {
+        const TICK: std::time::Duration = std::time::Duration::from_secs(5);
+        const ERROR_BACKOFF: std::time::Duration = std::time::Duration::from_secs(60);
+        let mut last_full = std::time::Instant::now();
+        loop {
+            tokio::time::sleep(TICK).await;
+            if !self.is_active() {
+                continue;
+            }
+            let dirty = {
+                match self.lock_conn() {
+                    Ok(conn) => crate::db::db_get_dirty(&conn).map(|d| d.len()).unwrap_or(0),
+                    Err(_) => 0,
+                }
+            };
+            let interval = self.cfg().map(|c| c.interval_min).unwrap_or(0);
+            let interval_due =
+                interval > 0 && last_full.elapsed() >= std::time::Duration::from_secs(interval * 60);
+            if dirty == 0 && !interval_due {
+                continue;
+            }
+            let op = if dirty > 0 { "auto" } else { "interval" };
+            match self.run_sync(op).await {
+                Ok(_) => last_full = std::time::Instant::now(),
+                Err(_) => {
+                    // run_sync already emitted backup-error.
+                    tokio::time::sleep(ERROR_BACKOFF).await;
+                }
+            }
+        }
+    }
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

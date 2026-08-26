@@ -1047,6 +1047,64 @@ fn backup_import_pairing(
     engine.apply_pairing(&payload)
 }
 
+// ─── Neon sync commands ────────────────────────────────────────────────────────
+//
+// Thin wrappers over `pgsync::SyncEngine` (held in managed state) — the
+// primary sync backend. Network-bound operations are `async`.
+
+#[tauri::command]
+fn neon_status(engine: State<'_, pgsync::SyncEngine>) -> Result<pgsync::NeonStatus, AppError> {
+    engine.status()
+}
+
+#[tauri::command]
+fn neon_set_config(
+    host: String,
+    dbname: String,
+    user: String,
+    password: String,
+    engine: State<'_, pgsync::SyncEngine>,
+) -> Result<pgsync::NeonStatus, AppError> {
+    engine.set_config(host, dbname, user, password)
+}
+
+#[tauri::command]
+async fn neon_test_connection(engine: State<'_, pgsync::SyncEngine>) -> Result<(), AppError> {
+    let engine = engine.inner().clone();
+    engine.test_connection().await
+}
+
+#[tauri::command]
+fn neon_set_enabled(
+    enabled: bool,
+    engine: State<'_, pgsync::SyncEngine>,
+) -> Result<pgsync::NeonStatus, AppError> {
+    engine.set_enabled(enabled)
+}
+
+#[tauri::command]
+fn neon_set_interval(
+    interval_min: u64,
+    engine: State<'_, pgsync::SyncEngine>,
+) -> Result<pgsync::NeonStatus, AppError> {
+    engine.set_interval(interval_min)
+}
+
+#[tauri::command]
+async fn neon_sync_now(
+    engine: State<'_, pgsync::SyncEngine>,
+) -> Result<pgsync::NeonStatus, AppError> {
+    let engine = engine.inner().clone();
+    engine.sync_now().await
+}
+
+#[tauri::command]
+fn neon_disconnect(
+    engine: State<'_, pgsync::SyncEngine>,
+) -> Result<pgsync::NeonStatus, AppError> {
+    engine.disconnect()
+}
+
 // ─── Entry Point ──────────────────────────────────────────────────────────────
 
 /// Where the SQLite DB and `settings.json` live. Platform-split on purpose:
@@ -1097,13 +1155,19 @@ pub fn run() {
             #[cfg(desktop)]
             tauri::async_runtime::spawn(background_cover_scanner(db.clone(), handle.clone()));
 
-            // ── Google Drive backup engine + lifecycle wiring ──
-            let engine = gdrive::BackupEngine::new(db.clone(), data_dir, handle.clone());
+            // ── Google Drive backup engine — MANUAL export/import only ──
+            // Automatic Drive sync was retired when Neon became the sync
+            // backend; the engine stays managed for the manual commands.
+            let drive = gdrive::BackupEngine::new(db.clone(), data_dir.clone(), handle.clone());
+            app.manage(drive);
+
+            // ── Neon sync engine + lifecycle wiring ──
+            let engine = pgsync::SyncEngine::new(db.clone(), data_dir, handle.clone());
             app.manage(engine.clone());
 
-            // Pull-and-replace on open: wait briefly for the UI to mount, then
-            // reconcile down from Drive. The engine emits `backup-synced` so the
-            // frontend refreshes once the local DB has been replaced.
+            // Pull-and-reconcile on open: wait briefly for the UI to mount,
+            // then sync down from Neon. The engine emits `backup-synced` so
+            // the frontend refreshes once the local DB has been updated.
             // Runs on BOTH platforms — on mobile this is the launch pull.
             {
                 let engine = engine.clone();
@@ -1113,12 +1177,13 @@ pub fn run() {
                 });
             }
 
-            // Periodic autosave push — desktop only (mobile is pull-only).
+            // Change-driven near-realtime push + periodic pull — desktop only
+            // (mobile is pull-only and syncs on launch/foreground instead).
             #[cfg(desktop)]
-            tauri::async_runtime::spawn(engine.clone().run_autosave());
+            tauri::async_runtime::spawn(engine.clone().run_change_loop());
 
-            // Push-before-close: intercept the main window close, hold it open
-            // while the final backup uploads, then close for real. The atomic
+            // Sync-before-close: intercept the main window close, hold it open
+            // while the final sync runs, then close for real. The atomic
             // guard prevents the re-entrant CloseRequested (from `win.close()`)
             // from looping. Desktop only — mobile has no CloseRequested event.
             #[cfg(desktop)]
@@ -1130,7 +1195,7 @@ pub fn run() {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                         use std::sync::atomic::Ordering;
                         if closing.load(Ordering::SeqCst) || !engine.is_active() {
-                            return; // second pass, or nothing to back up — let it close
+                            return; // second pass, or nothing to sync — let it close
                         }
                         closing.store(true, Ordering::SeqCst);
                         api.prevent_close();
@@ -1206,6 +1271,13 @@ pub fn run() {
             backup_sync_now,
             backup_export_pairing,
             backup_import_pairing,
+            neon_status,
+            neon_set_config,
+            neon_test_connection,
+            neon_set_enabled,
+            neon_set_interval,
+            neon_sync_now,
+            neon_disconnect,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
