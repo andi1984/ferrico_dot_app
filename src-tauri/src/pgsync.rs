@@ -775,6 +775,11 @@ impl SyncEngine {
         self.cfg().map(|c| c.enabled && c.is_configured()).unwrap_or(false)
     }
 
+    /// Current config, for the v2 pairing exporter (`crate::pairing`).
+    pub fn config_snapshot(&self) -> Result<NeonConfig, AppError> {
+        self.cfg()
+    }
+
     // ── settings commands ───────────────────────────────────────────────────────
 
     /// Update connection settings. An empty `password` keeps the stored one; a

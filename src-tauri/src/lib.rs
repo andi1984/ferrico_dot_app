@@ -6,6 +6,7 @@ mod io;
 mod io_validate;
 mod merge;
 mod og_image;
+mod pairing;
 mod pgsync;
 
 #[cfg(desktop)]
@@ -1022,29 +1023,42 @@ async fn backup_sync_now(
     engine.sync_now().await
 }
 
-/// Export the Drive connection as a pairing code for the phone. Desktop only:
-/// a phone must never act as a pairing source (its config is itself a copy).
+/// Export the sync connection(s) as a pairing code for the phone (v2: Neon
+/// primary, Drive fallback if configured). Desktop only: a phone must never
+/// act as a pairing source (its config is itself a copy).
 #[tauri::command]
-fn backup_export_pairing(engine: State<'_, gdrive::BackupEngine>) -> Result<String, AppError> {
+fn backup_export_pairing(
+    drive: State<'_, gdrive::BackupEngine>,
+    neon: State<'_, pgsync::SyncEngine>,
+) -> Result<String, AppError> {
     #[cfg(desktop)]
     {
-        engine.export_pairing_code()
+        pairing::export_pairing(&drive.config_snapshot()?, &neon.config_snapshot()?)
     }
     #[cfg(mobile)]
     {
-        let _ = engine;
+        let _ = (drive, neon);
         Err(AppError::Validation { message: "pairing export is desktop only".into() })
     }
 }
 
-/// Adopt a pairing code exported from a connected desktop. Available on both
-/// platforms — harmless on desktop and useful for testing without a device.
+/// Adopt a pairing code exported from a connected desktop (v1 or v2).
+/// Available on both platforms — harmless on desktop and useful for testing
+/// without a device.
 #[tauri::command]
 fn backup_import_pairing(
     payload: String,
-    engine: State<'_, gdrive::BackupEngine>,
-) -> Result<gdrive::BackupStatus, AppError> {
-    engine.apply_pairing(&payload)
+    drive: State<'_, gdrive::BackupEngine>,
+    neon: State<'_, pgsync::SyncEngine>,
+) -> Result<pgsync::NeonStatus, AppError> {
+    let p = pairing::import_pairing(&payload)?;
+    if let Some(d) = &p.drive {
+        drive.adopt_pairing(d)?;
+    }
+    if let Some(n) = p.neon {
+        neon.apply_pairing(n.host, n.dbname, n.user, n.password)?;
+    }
+    neon.status()
 }
 
 // ─── Neon sync commands ────────────────────────────────────────────────────────

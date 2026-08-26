@@ -781,32 +781,29 @@ impl BackupEngine {
 
     // ── pairing ─────────────────────────────────────────────────────────────────
 
-    /// Export the current connection as a pairing code for a phone.
-    pub fn export_pairing_code(&self) -> Result<String, AppError> {
-        export_pairing(&self.cfg()?)
+    /// Current config, for the v2 pairing exporter (`crate::pairing`).
+    pub fn config_snapshot(&self) -> Result<BackupConfig, AppError> {
+        self.cfg()
     }
 
-    /// Adopt a pairing code: overwrite the Drive connection with the desktop's,
-    /// enable sync, and clear `last_sync`/`last_pushed_digest` so the very next
-    /// cycle pulls the remote (an empty local DB pulls unconditionally anyway).
-    /// `interval_min = 0` keeps the periodic push loop idle — pointless on the
-    /// phone, harmless on desktop.
-    pub fn apply_pairing(&self, code: &str) -> Result<BackupStatus, AppError> {
-        let p = import_pairing(code)?;
+    /// Adopt a paired Drive connection (from a v1 or v2 pairing code). Drive is
+    /// a manual export/import fallback now, so nothing auto-enables; `last_sync`
+    /// and the push digest reset because this device never reconciled anything.
+    pub fn adopt_pairing(&self, p: &crate::pairing::DrivePairing) -> Result<(), AppError> {
         self.update_cfg(|c| {
-            c.client_id = Some(p.client_id);
-            c.client_secret = Some(p.client_secret);
-            c.refresh_token = Some(p.refresh_token);
-            c.account_email = p.account_email;
-            c.folder_id = Some(p.folder_id);
-            c.folder_name = p.folder_name;
-            c.file_id = p.file_id;
-            c.enabled = true;
+            c.client_id = Some(p.client_id.clone());
+            c.client_secret = Some(p.client_secret.clone());
+            c.refresh_token = Some(p.refresh_token.clone());
+            c.account_email = p.account_email.clone();
+            c.folder_id = Some(p.folder_id.clone());
+            c.folder_name = p.folder_name.clone();
+            c.file_id = p.file_id.clone();
+            c.enabled = false;
             c.interval_min = 0;
             c.last_sync = None;
             c.last_pushed_digest = None;
         })?;
-        self.status()
+        Ok(())
     }
 
     // ── sync (per-record merge; see `merge.rs`) ──────────────────────────────────
