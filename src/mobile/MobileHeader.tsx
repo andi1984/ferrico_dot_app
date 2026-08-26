@@ -12,16 +12,15 @@ import {
 } from '../components/icons'
 import type { ViewMode } from '../types'
 
-// Mirrors `gdrive::BackupStatus` — only the fields the header needs.
-interface BackupStatus {
+// Mirrors `pgsync::NeonStatus` — only the fields the header needs.
+interface NeonStatus {
   enabled: boolean
-  last_sync: string | null
+  last_sync: number | null
 }
 
-function formatLastSync(iso: string | null): string {
-  if (!iso) return 'never'
-  const d = new Date(iso)
-  return isNaN(d.getTime()) ? iso : d.toLocaleString()
+function formatLastSync(secs: number | null): string {
+  if (!secs) return 'never'
+  return new Date(secs * 1000).toLocaleString()
 }
 
 interface MobileHeaderProps {
@@ -41,8 +40,8 @@ interface MobileHeaderProps {
 /**
  * Top chrome of the mobile shell: title row with refresh / theme / view /
  * settings buttons, then a full-width search row. The refresh button only
- * appears once the device is paired (backup config enabled) and triggers the
- * pull-only `backup_sync_now`; its spinner and disabled state are driven by the
+ * appears once the device is paired (Neon sync enabled) and triggers the
+ * pull-only `neon_sync_now`; its spinner and disabled state are driven by the
  * event-sourced `syncing` prop so automatic syncs show the same feedback.
  */
 export function MobileHeader({
@@ -55,14 +54,14 @@ export function MobileHeader({
   onOpenFilter,
   syncing,
 }: MobileHeaderProps) {
-  const [backup, setBackup] = useState<BackupStatus | null>(null)
+  const [backup, setBackup] = useState<NeonStatus | null>(null)
 
-  // Load backup status on mount and again after each sync cycle ends, keeping
+  // Load sync status on mount and again after each sync cycle ends, keeping
   // the paired flag and the "last sync" line current.
   useEffect(() => {
     if (syncing) return
     let active = true
-    invoke<BackupStatus | null>('backup_status')
+    invoke<NeonStatus | null>('neon_status')
       .then((s) => {
         if (active) setBackup(s)
       })
@@ -101,7 +100,7 @@ export function MobileHeader({
             onClick={() => {
               // Failures surface through the `backup-error` event, which the
               // shell already renders — nothing to do with the rejection here.
-              invoke('backup_sync_now').catch(() => {})
+              invoke('neon_sync_now').catch(() => {})
             }}
             disabled={syncing}
             aria-label="Refresh bookmarks"

@@ -6,11 +6,11 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 
 import { invoke } from '@tauri-apps/api/core'
 
-const PAIRED = { enabled: true, last_sync: '2026-07-18T10:00:00Z' }
+const PAIRED = { enabled: true, last_sync: Math.floor(new Date('2026-07-18T10:00:00Z').getTime() / 1000) }
 
-function mockBackupStatus(status: unknown) {
+function mockNeonStatus(status: unknown) {
   vi.mocked(invoke).mockImplementation((cmd: string) => {
-    if (cmd === 'backup_status') return Promise.resolve(status)
+    if (cmd === 'neon_status') return Promise.resolve(status)
     return Promise.resolve(null)
   })
 }
@@ -31,7 +31,7 @@ function makeProps(overrides: Partial<Parameters<typeof MobileHeader>[0]> = {}) 
 describe('MobileHeader', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockBackupStatus(null)
+    mockNeonStatus(null)
   })
 
   it('forwards the debounced search query and hides the ⌘F hint', async () => {
@@ -63,35 +63,35 @@ describe('MobileHeader', () => {
   })
 
   it('hides refresh and the last-sync line while not paired', async () => {
-    mockBackupStatus({ enabled: false, last_sync: null })
+    mockNeonStatus({ enabled: false, last_sync: null })
     render(<MobileHeader {...makeProps()} />)
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('backup_status'))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('neon_status'))
     expect(screen.queryByRole('button', { name: 'Refresh bookmarks' })).not.toBeInTheDocument()
     expect(screen.queryByText(/Last sync:/)).not.toBeInTheDocument()
   })
 
   it('shows refresh and the last-sync line when paired', async () => {
-    mockBackupStatus(PAIRED)
+    mockNeonStatus(PAIRED)
     render(<MobileHeader {...makeProps()} />)
     expect(await screen.findByRole('button', { name: 'Refresh bookmarks' })).toBeEnabled()
     expect(screen.getByText(/Last sync:/)).not.toHaveTextContent('never')
   })
 
   it('shows "never" when paired but no sync has completed yet', async () => {
-    mockBackupStatus({ enabled: true, last_sync: null })
+    mockNeonStatus({ enabled: true, last_sync: null })
     render(<MobileHeader {...makeProps()} />)
     expect(await screen.findByText('Last sync: never')).toBeInTheDocument()
   })
 
-  it('invokes backup_sync_now on refresh tap', async () => {
-    mockBackupStatus(PAIRED)
+  it('invokes neon_sync_now on refresh tap', async () => {
+    mockNeonStatus(PAIRED)
     render(<MobileHeader {...makeProps()} />)
     fireEvent.click(await screen.findByRole('button', { name: 'Refresh bookmarks' }))
-    expect(invoke).toHaveBeenCalledWith('backup_sync_now')
+    expect(invoke).toHaveBeenCalledWith('neon_sync_now')
   })
 
   it('disables refresh and shows the spinner while syncing', async () => {
-    mockBackupStatus(PAIRED)
+    mockNeonStatus(PAIRED)
     const { rerender } = render(<MobileHeader {...makeProps()} />)
     await screen.findByRole('button', { name: 'Refresh bookmarks' })
 
@@ -100,16 +100,16 @@ describe('MobileHeader', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Syncing…')
   })
 
-  it('refetches backup_status after a sync cycle ends', async () => {
-    mockBackupStatus(PAIRED)
+  it('refetches neon_status after a sync cycle ends', async () => {
+    mockNeonStatus(PAIRED)
     const { rerender } = render(<MobileHeader {...makeProps()} />)
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('backup_status'))
-    const callsBefore = vi.mocked(invoke).mock.calls.filter((c) => c[0] === 'backup_status').length
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('neon_status'))
+    const callsBefore = vi.mocked(invoke).mock.calls.filter((c) => c[0] === 'neon_status').length
 
     rerender(<MobileHeader {...makeProps({ syncing: true })} />)
     rerender(<MobileHeader {...makeProps({ syncing: false })} />)
     await waitFor(() => {
-      const calls = vi.mocked(invoke).mock.calls.filter((c) => c[0] === 'backup_status').length
+      const calls = vi.mocked(invoke).mock.calls.filter((c) => c[0] === 'neon_status').length
       expect(calls).toBe(callsBefore + 1)
     })
   })

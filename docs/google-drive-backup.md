@@ -1,8 +1,16 @@
-# Google Drive backup & sync
+# Google Drive backup (manual)
 
-Ferrico can mirror your library through **your own Google Drive** so multiple
-machines stay in sync. This document covers what it does, how to set it up, and
-how to troubleshoot it.
+> **Drive is a manual fallback now.** Automatic multi-machine sync moved to
+> Neon/Postgres — see [`neon-sync.md`](./neon-sync.md). Google Drive remains
+> available as a user-triggered, one-way **Export** (upload a snapshot of the
+> local data) and **Restore** (replace the local data with the backup file,
+> after a confirm dialog and an automatic local safety export). Nothing runs
+> on open, close, or a timer anymore, and export/restore never merge. The
+> "How it works" table below describes the historical automatic sync and is
+> kept for context on the file format and its guarantees.
+
+Ferrico can keep a backup of your library in **your own Google Drive**. This
+document covers what it does, how to set it up, and how to troubleshoot it.
 
 > **Privacy model.** There is no Ferrico-operated server. Your bookmarks are
 > written to a folder *in your own Drive* by an OAuth app *you* create. Ferrico

@@ -152,12 +152,12 @@ export function SettingsPage({ onClose, onClear, onDone, onImportCsv, onDeduplic
             </div>
           </div>
 
-          {/* Cloud Backup */}
+          {/* Sync & Backup */}
           <div style={{ borderTop: '1px solid var(--border-dim)', paddingTop: '1.5rem' }}>
-            <FieldLabel>Cloud Backup</FieldLabel>
+            <FieldLabel>Sync &amp; Backup</FieldLabel>
             <p className="text-xs mb-3" style={{ color: 'var(--text-secondary)' }}>
-              Sync your bookmarks through a Google Drive folder. Pulls on launch and backs up
-              before close, so multiple machines stay in sync.
+              Sync your bookmarks across devices through your own Neon Postgres database,
+              with Google Drive available as a manual backup.
             </p>
             <button
               onClick={onBackup}
@@ -171,7 +171,7 @@ export function SettingsPage({ onClose, onClear, onDone, onImportCsv, onDeduplic
               onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--border-mid)')}
             >
               <IconRestore size={13} />
-              Configure Google Drive…
+              Configure sync…
             </button>
           </div>
 

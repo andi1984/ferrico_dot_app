@@ -6,6 +6,8 @@ mod io;
 mod io_validate;
 mod merge;
 mod og_image;
+mod pairing;
+mod pgsync;
 
 #[cfg(desktop)]
 use axum::{
@@ -997,53 +999,120 @@ fn backup_select_folder(
     engine.select_folder(folder_id, folder_name)
 }
 
+/// Manual one-way upload of the local dataset to the Drive backup file.
 #[tauri::command]
-fn backup_set_enabled(
-    enabled: bool,
-    engine: State<'_, gdrive::BackupEngine>,
-) -> Result<gdrive::BackupStatus, AppError> {
-    engine.set_enabled(enabled)
-}
-
-#[tauri::command]
-fn backup_set_interval(
-    interval_min: u64,
-    engine: State<'_, gdrive::BackupEngine>,
-) -> Result<gdrive::BackupStatus, AppError> {
-    engine.set_interval(interval_min)
-}
-
-#[tauri::command]
-async fn backup_sync_now(
+async fn backup_export_now(
     engine: State<'_, gdrive::BackupEngine>,
 ) -> Result<gdrive::BackupStatus, AppError> {
     let engine = engine.inner().clone();
-    engine.sync_now().await
+    engine.export_to_drive().await
 }
 
-/// Export the Drive connection as a pairing code for the phone. Desktop only:
-/// a phone must never act as a pairing source (its config is itself a copy).
+/// Manual restore: REPLACE the local database with the Drive backup file.
+/// Destructive — the frontend confirms first; the engine writes a local
+/// safety export before applying.
 #[tauri::command]
-fn backup_export_pairing(engine: State<'_, gdrive::BackupEngine>) -> Result<String, AppError> {
+async fn backup_restore_from_drive(
+    engine: State<'_, gdrive::BackupEngine>,
+) -> Result<gdrive::BackupStatus, AppError> {
+    let engine = engine.inner().clone();
+    engine.import_from_drive().await
+}
+
+/// Export the sync connection(s) as a pairing code for the phone (v2: Neon
+/// primary, Drive fallback if configured). Desktop only: a phone must never
+/// act as a pairing source (its config is itself a copy).
+#[tauri::command]
+fn backup_export_pairing(
+    drive: State<'_, gdrive::BackupEngine>,
+    neon: State<'_, pgsync::SyncEngine>,
+) -> Result<String, AppError> {
     #[cfg(desktop)]
     {
-        engine.export_pairing_code()
+        pairing::export_pairing(&drive.config_snapshot()?, &neon.config_snapshot()?)
     }
     #[cfg(mobile)]
     {
-        let _ = engine;
+        let _ = (drive, neon);
         Err(AppError::Validation { message: "pairing export is desktop only".into() })
     }
 }
 
-/// Adopt a pairing code exported from a connected desktop. Available on both
-/// platforms — harmless on desktop and useful for testing without a device.
+/// Adopt a pairing code exported from a connected desktop (v1 or v2).
+/// Available on both platforms — harmless on desktop and useful for testing
+/// without a device.
 #[tauri::command]
 fn backup_import_pairing(
     payload: String,
-    engine: State<'_, gdrive::BackupEngine>,
-) -> Result<gdrive::BackupStatus, AppError> {
-    engine.apply_pairing(&payload)
+    drive: State<'_, gdrive::BackupEngine>,
+    neon: State<'_, pgsync::SyncEngine>,
+) -> Result<pgsync::NeonStatus, AppError> {
+    let p = pairing::import_pairing(&payload)?;
+    if let Some(d) = &p.drive {
+        drive.adopt_pairing(d)?;
+    }
+    if let Some(n) = p.neon {
+        neon.apply_pairing(n.host, n.dbname, n.user, n.password)?;
+    }
+    neon.status()
+}
+
+// ─── Neon sync commands ────────────────────────────────────────────────────────
+//
+// Thin wrappers over `pgsync::SyncEngine` (held in managed state) — the
+// primary sync backend. Network-bound operations are `async`.
+
+#[tauri::command]
+fn neon_status(engine: State<'_, pgsync::SyncEngine>) -> Result<pgsync::NeonStatus, AppError> {
+    engine.status()
+}
+
+#[tauri::command]
+fn neon_set_config(
+    host: String,
+    dbname: String,
+    user: String,
+    password: String,
+    engine: State<'_, pgsync::SyncEngine>,
+) -> Result<pgsync::NeonStatus, AppError> {
+    engine.set_config(host, dbname, user, password)
+}
+
+#[tauri::command]
+async fn neon_test_connection(engine: State<'_, pgsync::SyncEngine>) -> Result<(), AppError> {
+    let engine = engine.inner().clone();
+    engine.test_connection().await
+}
+
+#[tauri::command]
+fn neon_set_enabled(
+    enabled: bool,
+    engine: State<'_, pgsync::SyncEngine>,
+) -> Result<pgsync::NeonStatus, AppError> {
+    engine.set_enabled(enabled)
+}
+
+#[tauri::command]
+fn neon_set_interval(
+    interval_min: u64,
+    engine: State<'_, pgsync::SyncEngine>,
+) -> Result<pgsync::NeonStatus, AppError> {
+    engine.set_interval(interval_min)
+}
+
+#[tauri::command]
+async fn neon_sync_now(
+    engine: State<'_, pgsync::SyncEngine>,
+) -> Result<pgsync::NeonStatus, AppError> {
+    let engine = engine.inner().clone();
+    engine.sync_now().await
+}
+
+#[tauri::command]
+fn neon_disconnect(
+    engine: State<'_, pgsync::SyncEngine>,
+) -> Result<pgsync::NeonStatus, AppError> {
+    engine.disconnect()
 }
 
 // ─── Entry Point ──────────────────────────────────────────────────────────────
@@ -1096,13 +1165,19 @@ pub fn run() {
             #[cfg(desktop)]
             tauri::async_runtime::spawn(background_cover_scanner(db.clone(), handle.clone()));
 
-            // ── Google Drive backup engine + lifecycle wiring ──
-            let engine = gdrive::BackupEngine::new(db.clone(), data_dir, handle.clone());
+            // ── Google Drive backup engine — MANUAL export/import only ──
+            // Automatic Drive sync was retired when Neon became the sync
+            // backend; the engine stays managed for the manual commands.
+            let drive = gdrive::BackupEngine::new(db.clone(), data_dir.clone(), handle.clone());
+            app.manage(drive);
+
+            // ── Neon sync engine + lifecycle wiring ──
+            let engine = pgsync::SyncEngine::new(db.clone(), data_dir, handle.clone());
             app.manage(engine.clone());
 
-            // Pull-and-replace on open: wait briefly for the UI to mount, then
-            // reconcile down from Drive. The engine emits `backup-synced` so the
-            // frontend refreshes once the local DB has been replaced.
+            // Pull-and-reconcile on open: wait briefly for the UI to mount,
+            // then sync down from Neon. The engine emits `backup-synced` so
+            // the frontend refreshes once the local DB has been updated.
             // Runs on BOTH platforms — on mobile this is the launch pull.
             {
                 let engine = engine.clone();
@@ -1112,12 +1187,13 @@ pub fn run() {
                 });
             }
 
-            // Periodic autosave push — desktop only (mobile is pull-only).
+            // Change-driven near-realtime push + periodic pull — desktop only
+            // (mobile is pull-only and syncs on launch/foreground instead).
             #[cfg(desktop)]
-            tauri::async_runtime::spawn(engine.clone().run_autosave());
+            tauri::async_runtime::spawn(engine.clone().run_change_loop());
 
-            // Push-before-close: intercept the main window close, hold it open
-            // while the final backup uploads, then close for real. The atomic
+            // Sync-before-close: intercept the main window close, hold it open
+            // while the final sync runs, then close for real. The atomic
             // guard prevents the re-entrant CloseRequested (from `win.close()`)
             // from looping. Desktop only — mobile has no CloseRequested event.
             #[cfg(desktop)]
@@ -1129,7 +1205,7 @@ pub fn run() {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                         use std::sync::atomic::Ordering;
                         if closing.load(Ordering::SeqCst) || !engine.is_active() {
-                            return; // second pass, or nothing to back up — let it close
+                            return; // second pass, or nothing to sync — let it close
                         }
                         closing.store(true, Ordering::SeqCst);
                         api.prevent_close();
@@ -1200,11 +1276,17 @@ pub fn run() {
             backup_list_folders,
             backup_create_folder,
             backup_select_folder,
-            backup_set_enabled,
-            backup_set_interval,
-            backup_sync_now,
+            backup_export_now,
+            backup_restore_from_drive,
             backup_export_pairing,
             backup_import_pairing,
+            neon_status,
+            neon_set_config,
+            neon_test_connection,
+            neon_set_enabled,
+            neon_set_interval,
+            neon_sync_now,
+            neon_disconnect,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

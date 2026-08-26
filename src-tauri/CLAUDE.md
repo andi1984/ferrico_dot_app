@@ -13,8 +13,9 @@ rusqlite). The DB file lives in the OS data dir (see root `CLAUDE.md` → Platfo
   `main.rs` is a thin shim calling `ferrico_lib::run()`; `run()` doubles as the
   Tauri 2 mobile entry point via `#[cfg_attr(mobile, tauri::mobile_entry_point)]`.
 - `setup()` wires lifecycle: open DB, load/create API token, start the HTTP server and
-  background cover scanner, and the Google Drive backup engine (open-pull, periodic
-  autosave, push on `CloseRequested`).
+  background cover scanner, and the Neon sync engine (open-pull, change-driven push
+  loop, final sync on `CloseRequested`). The Drive engine is managed for manual
+  export/import commands only.
 
 ## Module map
 
@@ -25,7 +26,9 @@ rusqlite). The DB file lives in the OS data dir (see root `CLAUDE.md` → Platfo
 | `io.rs` | Import/export: JSON, Netscape HTML, OPML (+ legacy snapshot) |
 | `io_validate.rs` | Input validation/sanitization for imports (URLs, sizes, tags, BOM) |
 | `merge.rs` | Per-record merge for multi-machine sync (`SyncSnapshot`, `merge()`) |
-| `gdrive.rs` | Google Drive backup engine (OAuth2 PKCE, Drive v3 REST) |
+| `pgsync.rs` | Neon/Postgres sync engine — the primary sync backend (incremental, `SyncStore` seam) |
+| `pairing.rs` | Device pairing codes (v2: Neon + Drive blocks; legacy v1 imports) |
+| `gdrive.rs` | Google Drive manual backup (OAuth2 PKCE, Drive v3 REST, one-way export/restore) |
 | `og_image.rs` | Fetch Open Graph cover images for bookmarks |
 | `health_check.rs` | Async URL liveness checks (dead-link detection) |
 | `lib.rs` | Tauri commands, `lock_db!`, HTTP server, scanners, `setup()` |
@@ -50,18 +53,30 @@ rusqlite). The DB file lives in the OS data dir (see root `CLAUDE.md` → Platfo
 - `background_cover_scanner(db, app)` backfills missing cover images via `og_image.rs`,
   emitting `cover-updated` events to the frontend.
 
-## Google Drive backup (`gdrive.rs`)
+## Neon sync (`pgsync.rs`)
 
-- Optional cloud sync via the user's own Drive. OAuth2 PKCE + loopback flow, Drive v3 REST.
-- **Per-record merge-reconcile** (via `merge.rs`), not blind last-write-wins: local and
-  remote `SyncSnapshot`s are merged row-by-row (rank: `updated_at`, tombstones, then
-  tiebreaks) and the result is **normalized** — duplicate same-name folders/tags collapse,
-  folder cycles break, refs to dead containers re-home, purged rows stay redacted
-  tombstones. Backup file contents = versioned `SyncSnapshot` JSON (`merge::to_json`);
-  legacy v1 `export_json` files upgrade on first sync.
+- The primary sync backend: the user's own Postgres (Neon recommended), raw wire
+  protocol via `tokio-postgres` + rustls/ring. Remote schema is app-managed idempotent
+  DDL: row tables with a `seq` column bumped from one global sequence by trigger.
+- **Incremental**: each device pulls `WHERE seq > cursor` and pushes only rows marked
+  in SQLite's `sync_dirty` (maintained by triggers in `db.rs`), inside one transaction
+  holding `pg_advisory_xact_lock`. Conflict resolution reuses `merge.rs` unchanged.
+- Mobile is pull-only at compile time (`SyncMode::PullOnly` via `cfg!(mobile)`).
+- Config under `"neon"` in `settings.json`; password in the OS keyring on desktop
+  (settings fallback), settings.json on mobile. Build-time env prefill:
+  `FERRICO_NEON_HOST` / `FERRICO_NEON_DB` / `FERRICO_NEON_USER`.
+- `neon_*` commands in `lib.rs` wrap the engine. UI: `src/components/BackupSettingsPage.tsx`.
+- Docs: `docs/neon-sync.md`, design: `docs/neon-sync-plan.md`.
+
+## Google Drive backup (`gdrive.rs`) — manual fallback
+
+- OAuth2 PKCE + loopback flow, Drive v3 REST, `drive.file` scope. No automatic sync:
+  one-way `export_to_drive` (overwrite remote file with local snapshot) and
+  `import_from_drive` (restore local from remote, after a frontend confirm; writes a
+  `pre-restore-backup-<ts>.json` safety export beside the DB first).
+- Backup file = versioned `SyncSnapshot` JSON (`merge::to_json`); legacy v1 files parse.
 - Config (client id/secret, refresh token, folder, `last_sync`) is persisted under the
   `"backup"` key in `settings.json`, merged so the HTTP `api_token` is preserved.
-- `backup_*` commands in `lib.rs` wrap the engine. UI: `src/components/BackupSettingsModal.tsx`.
 - Docs: `docs/google-drive-backup.md`.
 
 ## Testing

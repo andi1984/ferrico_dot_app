@@ -13,7 +13,7 @@ import './mobile.css'
 type Theme = 'dark' | 'light'
 type Screen = 'browse' | 'settings'
 
-// Foreground-resume pull cooldown — avoids hammering backup_sync_now every
+// Foreground-resume pull cooldown — avoids hammering neon_sync_now every
 // time the user briefly switches away and back. Exported for the test.
 export const FOREGROUND_SYNC_MIN_INTERVAL_MS = 10 * 60 * 1000
 
@@ -157,16 +157,16 @@ export function MobileApp() {
   // button — this adds a third trigger for the common "leave app, come back"
   // case, without touching Rust (see #70 for why: cheap, testable, with the
   // native `RunEvent::Resumed` noted as an upgrade path if this proves
-  // unreliable on-device). Only fires when paired (`backup_status().enabled`)
+  // unreliable on-device). Only fires when paired (`neon_status().enabled`)
   // so unpaired users never see a spurious "not connected" error banner.
   useEffect(() => {
     function onVisibilityChange() {
       if (document.visibilityState !== 'visible') return
       if (Date.now() - lastSyncAttemptRef.current < FOREGROUND_SYNC_MIN_INTERVAL_MS) return
       lastSyncAttemptRef.current = Date.now()
-      invoke<{ enabled: boolean } | null>('backup_status')
+      invoke<{ enabled: boolean } | null>('neon_status')
         .then((status) => {
-          if (status?.enabled) return invoke('backup_sync_now')
+          if (status?.enabled) return invoke('neon_sync_now')
         })
         .catch(() => {})
     }

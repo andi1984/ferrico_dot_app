@@ -26,9 +26,23 @@ function connectedStatus(overrides?: Record<string, unknown>) {
   }
 }
 
+function unconfiguredNeon() {
+  return {
+    configured: false,
+    enabled: false,
+    host: null,
+    dbname: 'neondb',
+    user: null,
+    interval_min: 0,
+    last_seq: 0,
+    last_sync: null,
+  }
+}
+
 function mockBackend(status: Record<string, unknown>) {
   vi.mocked(invoke).mockImplementation((cmd: string) => {
     if (cmd === 'backup_status') return Promise.resolve(status)
+    if (cmd === 'neon_status') return Promise.resolve(unconfiguredNeon())
     if (cmd === 'backup_export_pairing') return Promise.resolve(PAIRING_CODE)
     if (cmd === 'backup_list_folders') return Promise.resolve([])
     return Promise.resolve(null)
@@ -88,7 +102,7 @@ describe('BackupSettingsPage — mobile pairing', () => {
     })
     expect(invoke).toHaveBeenCalledWith('backup_export_pairing')
     expect(screen.getByLabelText('Pairing code')).toHaveValue(PAIRING_CODE)
-    expect(screen.getByText(/contains your google drive credentials/i)).toBeInTheDocument()
+    expect(screen.getByText(/contains your database credentials/i)).toBeInTheDocument()
   })
 
   it('copies the pairing string to the clipboard', async () => {
@@ -121,6 +135,7 @@ describe('BackupSettingsPage — mobile pairing', () => {
     mockBackend(connectedStatus())
     vi.mocked(invoke).mockImplementation((cmd: string) => {
       if (cmd === 'backup_status') return Promise.resolve(connectedStatus())
+      if (cmd === 'neon_status') return Promise.resolve(unconfiguredNeon())
       if (cmd === 'backup_export_pairing')
         return Promise.reject({ name: 'Backup', message: 'Google Drive is not connected' })
       return Promise.resolve(null)

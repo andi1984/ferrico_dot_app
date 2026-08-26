@@ -22,13 +22,18 @@ export async function subscribeToCoverUpdated(
   return listen<CoverUpdated>('cover-updated', (e) => handler(e.payload))
 }
 
-// ─── Google Drive backup sync ──────────────────────────────────────────────────
+// ─── Sync lifecycle (Neon sync cycles + manual Drive export/restore) ───────────
 
-export type BackupSyncStart = { op: 'pull' | 'push' }
-export type BackupSyncDone = { op: 'pull' | 'push'; changed: boolean }
-export type BackupSyncError = { op: 'pull' | 'push'; message: string }
+/** Which operation a sync event belongs to. Neon cycles: `pull` (on open /
+ *  mobile), `push` (before close), `auto` (change-driven), `interval`, `sync`
+ *  (manual). Drive manual ops: `export`, `restore`. */
+export type SyncOp = 'pull' | 'push' | 'auto' | 'interval' | 'sync' | 'export' | 'restore'
 
-/** Subscribes to the backup lifecycle events. Returns a single unlisten that
+export type BackupSyncStart = { op: SyncOp }
+export type BackupSyncDone = { op: SyncOp; changed: boolean; pushed?: number }
+export type BackupSyncError = { op: SyncOp; message: string }
+
+/** Subscribes to the sync lifecycle events. Returns a single unlisten that
  *  tears down all three listeners. */
 export async function subscribeToBackupSync(handlers: {
   onSyncing?: (p: BackupSyncStart) => void
