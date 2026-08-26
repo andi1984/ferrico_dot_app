@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.15.0] - 2026-08-26
+
+### Features
+
+- Neon sync settings, Drive demoted to manual backup UI
+- demote Drive to manual one-way export/import
+- v2 pairing payload carrying Neon + Drive blocks
+- SyncEngine, neon_* commands, lifecycle takeover
+- real Postgres store, remote schema, credential storage
+- incremental sync core with store seam
+- trigger-based dirty tracking for incremental sync
+
+### Bug Fixes
+
+- diagnosable connection errors, tolerate connection-string paste
+- fence dirty-mark clearing so mid-sync edits survive
+
+
 ## [0.14.2] - 2026-07-19
 
 
