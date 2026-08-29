@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.1] - 2026-08-29
+
+### Bug Fixes
+
+- clear tag query after selecting a tag
+
+
 ## [0.15.0] - 2026-08-26
 
 ### Features
