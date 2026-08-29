@@ -660,6 +660,11 @@ function mountTagCombobox(container, tags, token, selectedTagIds, analysis, getR
       selectedTagIds.splice(idx, 1)
     } else {
       selectedTagIds.push(id)
+      // Selecting consumes the query — otherwise the typed text lingers
+      // behind the freshly rendered pill.
+      query = ''
+      inputEl.value = ''
+      activeIndex = -1
     }
     renderChips()
     if (open) renderDropdown()
