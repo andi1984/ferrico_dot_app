@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.16.0] - 2026-08-31
+
+### Features
+
+- read-write Android with full two-way Neon sync
+
+### Bug Fixes
+
+- sign release APKs with a stable keystore, shrink APK
+- bound neon_flush with a timeout, explicit button types in sheets
+
+
 ## [0.15.1] - 2026-08-29
 
 ### Bug Fixes
