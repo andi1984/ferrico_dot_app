@@ -77,6 +77,10 @@ export function MobileSettings({ onClose, theme, onToggleTheme }: {
     run('unpair', () => invoke<NeonStatus>('neon_disconnect'), setStatus)
   }
 
+  function setInterval(intervalMin: number) {
+    run('interval', () => invoke<NeonStatus>('neon_set_interval', { intervalMin }), setStatus)
+  }
+
   const spinner = (
     <span
       className="inline-block w-3 h-3 rounded-full border-2 animate-spin flex-none"
@@ -106,7 +110,8 @@ export function MobileSettings({ onClose, theme, onToggleTheme }: {
           <FieldLabel>Pair with desktop</FieldLabel>
           <p className="text-xs" style={{ color: 'var(--text-2)', lineHeight: 1.5 }}>
             On your desktop, open Settings → Sync &amp; Backup → Pair a mobile device, then
-            paste the code here. This device only ever pulls — it never writes back.
+            paste the code here. Changes sync both ways — edits on this device push to
+            your database.
           </p>
           <textarea
             value={pairingInput}
@@ -153,7 +158,7 @@ export function MobileSettings({ onClose, theme, onToggleTheme }: {
                 Last synced: {formatLastSync(status.last_sync)}
               </span>
               <span className="text-xs" style={{ color: 'var(--text-3)' }}>
-                This device is download-only — it never pushes changes back.
+                Syncs both ways — edits here push to your database.
               </span>
             </div>
             <button
@@ -165,6 +170,26 @@ export function MobileSettings({ onClose, theme, onToggleTheme }: {
               {busy === 'sync' ? spinner : <IconRestore size={13} />}
               {busy === 'sync' ? 'Syncing…' : 'Sync now'}
             </button>
+          </div>
+
+          <div className="flex items-center justify-between gap-2">
+            <label htmlFor="sync-interval" className="text-xs" style={{ color: 'var(--text-2)' }}>
+              Also pull remote changes every
+            </label>
+            <select
+              id="sync-interval"
+              value={status.interval_min}
+              disabled={busy !== null}
+              onChange={(e) => setInterval(Number(e.target.value))}
+              className="px-2 py-1 rounded-md text-xs"
+              style={{ background: 'var(--input-bg)', border: '1px solid var(--border-soft)', color: 'var(--text-1)' }}
+            >
+              <option value={0}>only on open / resume</option>
+              <option value={15}>15 min</option>
+              <option value={30}>30 min</option>
+              <option value={60}>1 hour</option>
+              <option value={360}>6 hours</option>
+            </select>
           </div>
         </div>
       )}

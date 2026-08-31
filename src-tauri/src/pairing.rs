@@ -158,6 +158,7 @@ mod tests {
             interval_min: 0,
             last_seq: 42,
             last_sync: None,
+            mobile_write_migrated: false,
         }
     }
 

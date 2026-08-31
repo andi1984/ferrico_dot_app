@@ -40,8 +40,8 @@ interface MobileHeaderProps {
 /**
  * Top chrome of the mobile shell: title row with refresh / theme / view /
  * settings buttons, then a full-width search row. The refresh button only
- * appears once the device is paired (Neon sync enabled) and triggers the
- * pull-only `neon_sync_now`; its spinner and disabled state are driven by the
+ * appears once the device is paired (Neon sync enabled) and triggers a full
+ * `neon_sync_now` cycle; its spinner and disabled state are driven by the
  * event-sourced `syncing` prop so automatic syncs show the same feedback.
  */
 export function MobileHeader({

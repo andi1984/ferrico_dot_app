@@ -1115,6 +1115,19 @@ fn neon_disconnect(
     engine.disconnect()
 }
 
+/// Best-effort push, fired by the mobile frontend when the app is
+/// backgrounded (`visibilitychange` → hidden). Android has no
+/// `CloseRequested` equivalent, so this is the last chance to flush pending
+/// edits before the OS may kill the process. Errors are only emitted as
+/// `backup-error` by the engine — a flaky network at backgrounding must not
+/// surface as a user-facing failure.
+#[tauri::command]
+async fn neon_flush(engine: State<'_, pgsync::SyncEngine>) -> Result<(), AppError> {
+    let engine = engine.inner().clone();
+    engine.push_if_active().await;
+    Ok(())
+}
+
 // ─── Entry Point ──────────────────────────────────────────────────────────────
 
 /// Where the SQLite DB and `settings.json` live. Platform-split on purpose:
@@ -1187,9 +1200,10 @@ pub fn run() {
                 });
             }
 
-            // Change-driven near-realtime push + periodic pull — desktop only
-            // (mobile is pull-only and syncs on launch/foreground instead).
-            #[cfg(desktop)]
+            // Change-driven near-realtime push + periodic pull — both
+            // platforms since mobile became read-write (slower tick there;
+            // Android suspends the loop while backgrounded, which is fine —
+            // the frontend flushes via `neon_flush` on backgrounding).
             tauri::async_runtime::spawn(engine.clone().run_change_loop());
 
             // Sync-before-close: intercept the main window close, hold it open
@@ -1287,6 +1301,7 @@ pub fn run() {
             neon_set_interval,
             neon_sync_now,
             neon_disconnect,
+            neon_flush,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

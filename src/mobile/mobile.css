@@ -172,23 +172,32 @@
 
 .mobile-list-item {
   display: flex;
-  align-items: flex-start;
-  gap: 12px;
+  align-items: center;
   width: 100%;
-  min-height: 48px;
-  padding: 12px 16px;
-  text-align: left;
-  background: transparent;
-  border: none;
   border-bottom: 1px solid var(--border-dim);
-  color: inherit;
   /* Android WebView shows a text-selection callout on a long-press by
      default even inside a <button> — `select-none` (Tailwind) handles
      standard user-select, this catches WebKit's separate touch-callout
      menu so a tap reliably reaches the onClick handler instead. */
   -webkit-touch-callout: none;
 }
-.mobile-list-item:active {
+
+/* Main tap target (favicon + text); the trailing "⋮" action button sits
+   beside it as a sibling, so the two taps can't swallow each other. */
+.mobile-list-item-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-height: 48px;
+  padding: 12px 0 12px 16px;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: inherit;
+}
+.mobile-list-item-main:active {
   background: var(--btn-hover-bg);
 }
 
@@ -223,4 +232,71 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Floating "add bookmark" button — clears the gesture bar via safe-area. */
+.mobile-fab {
+  position: fixed;
+  right: 20px;
+  bottom: calc(20px + env(safe-area-inset-bottom));
+  z-index: 50;
+  width: 56px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+.mobile-fab:active {
+  filter: brightness(0.9);
+}
+
+/* FilterDrawer management chrome: section "+" buttons and per-row "⋮". */
+.filter-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.filter-section-add {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-2);
+}
+.filter-section-add:active {
+  background: var(--btn-hover-bg);
+}
+
+.filter-row-wrap {
+  display: flex;
+  align-items: center;
+}
+.filter-row-wrap .filter-row {
+  flex: 1;
+  min-width: 0;
+}
+.filter-row-menu {
+  flex: none;
+  width: 40px;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-3);
+}
+.filter-row-menu:active {
+  background: var(--btn-hover-bg);
 }

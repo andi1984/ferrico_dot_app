@@ -109,7 +109,7 @@ describe('MobileSettings', () => {
     })
     render(<MobileSettings onClose={() => {}} theme="dark" onToggleTheme={() => {}} />)
     await waitFor(() => screen.getByText(/ferrico@ep-test/))
-    expect(screen.getByText(/download-only/i)).toBeInTheDocument()
+    expect(screen.getByText(/syncs both ways/i)).toBeInTheDocument()
 
     await userEvent.click(screen.getByRole('button', { name: 'Sync now' }))
     expect(invoke).toHaveBeenCalledWith('neon_sync_now')

@@ -1,5 +1,11 @@
 # Mobile v1 Playbook — execution guide for the remaining work
 
+> **Superseded in part (v0.16, mobile-write change):** Android is no longer
+> read-only — it is a full read-write sync peer over Neon (mutation UI in
+> `src/mobile/`, `SyncMode::Full` on both platforms, push via change loop +
+> `neon_flush` on backgrounding). The read-only/pull-only statements below
+> describe the v1 milestone as shipped and are kept as a historical record.
+
 Audience: the AI assistant (or human) doing day-to-day work on the **Mobile v1 —
 read-only Android** milestone. This doc assumes you have the repo's `CLAUDE.md`
 files in context but no memory of the sessions that produced Phases 1–3.

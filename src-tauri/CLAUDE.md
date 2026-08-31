@@ -61,7 +61,9 @@ rusqlite). The DB file lives in the OS data dir (see root `CLAUDE.md` → Platfo
 - **Incremental**: each device pulls `WHERE seq > cursor` and pushes only rows marked
   in SQLite's `sync_dirty` (maintained by triggers in `db.rs`), inside one transaction
   holding `pg_advisory_xact_lock`. Conflict resolution reuses `merge.rs` unchanged.
-- Mobile is pull-only at compile time (`SyncMode::PullOnly` via `cfg!(mobile)`).
+- Both platforms sync `Full` (mobile was pull-only before v0.16; `SyncMode::PullOnly`
+  survives for tests / a possible per-device read-only setting). Mobile pushes via the
+  change loop (15 s tick vs 5 s desktop) and the `neon_flush` command on backgrounding.
 - Config under `"neon"` in `settings.json`; password in the OS keyring on desktop
   (settings fallback), settings.json on mobile. Build-time env prefill:
   `FERRICO_NEON_HOST` / `FERRICO_NEON_DB` / `FERRICO_NEON_USER`.
