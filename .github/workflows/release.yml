@@ -330,13 +330,46 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # Debug-signed on purpose: a plain `--release` APK is *unsigned* and
-      # therefore uninstallable, and we have no signing keystore yet. The
-      # debug keystore is generated automatically, so this needs no secrets.
-      # Proper release signing is tracked in #74; the asset name below says
-      # "debug-signed" so nobody mistakes this for a Play-ready build.
+      # Release signing (#74): the keystore lives in repo secrets and is
+      # materialized as the gitignored `keystore.properties` + keystore file
+      # that app/build.gradle.kts picks up. A *stable* key matters — the old
+      # debug-signed builds used a keystore generated fresh on every runner,
+      # so each release had a different signature and Android refused to
+      # install it over the previous version.
+      #
+      # Fail loudly if the secrets are missing: an unsigned release APK is
+      # uninstallable, and the `release` job below ships desktop artifacts
+      # even when this job goes red.
+      - name: Set up release keystore
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ANDROID_KEYSTORE_B64}" ] || [ -z "${ANDROID_KEYSTORE_PASSWORD}" ] \
+            || [ -z "${ANDROID_KEY_ALIAS}" ] || [ -z "${ANDROID_KEY_PASSWORD}" ]; then
+            echo "::error::Android signing secrets missing (ANDROID_KEYSTORE_B64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD). See docs/android-release-signing.md."
+            exit 1
+          fi
+          app_dir=src-tauri/gen/android/app
+          printf '%s' "$ANDROID_KEYSTORE_B64" | base64 -d > "$app_dir/upload.keystore"
+          cat > "$app_dir/keystore.properties" <<EOF
+          storeFile=upload.keystore
+          storePassword=$ANDROID_KEYSTORE_PASSWORD
+          keyAlias=$ANDROID_KEY_ALIAS
+          keyPassword=$ANDROID_KEY_PASSWORD
+          EOF
+
+      # Real `--release` build now that signing works: minified, stripped
+      # native libs. `--split-per-abi` emits one APK per ABI instead of a
+      # universal APK bundling every architecture — the debug universal APK
+      # weighed ~1GB (unstripped debug .so files x 4 ABIs); a stripped
+      # per-ABI release APK is a few dozen MB. Only arm targets: x86/x86_64
+      # are emulator-only and nobody sideloads those from a GitHub release.
       - name: Build APK
-        run: bun run android:build -- --debug --apk
+        run: bun run android:build -- --apk --split-per-abi --target aarch64 armv7
 
       - name: Stage APK
         env:
