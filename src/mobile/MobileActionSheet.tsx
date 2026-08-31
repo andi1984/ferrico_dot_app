@@ -43,6 +43,7 @@ export function MobileActionSheet({ open, title, actions, onClose }: MobileActio
           {actions.map((action) => (
             <button
               key={action.label}
+              type="button"
               className="filter-row"
               style={action.danger ? { color: 'var(--red)' } : undefined}
               onClick={() => {

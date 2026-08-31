@@ -43,6 +43,7 @@ export function MobileFolderPicker({ open, folders, onPick, onClose }: MobileFol
     return (
       <div key={folder.id}>
         <button
+          type="button"
           className="filter-row"
           style={{ paddingLeft: 16 + level * INDENT_STEP }}
           onClick={() => pick(folder.id)}
@@ -66,7 +67,7 @@ export function MobileFolderPicker({ open, folders, onPick, onClose }: MobileFol
           </button>
         </div>
         <div className="filter-drawer-body">
-          <button className="filter-row" onClick={() => pick(null)}>
+          <button type="button" className="filter-row" onClick={() => pick(null)}>
             <IconInbox size={15} />
             <span className="filter-row-label">Inbox (no folder)</span>
           </button>

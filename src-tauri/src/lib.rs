@@ -1124,7 +1124,10 @@ fn neon_disconnect(
 #[tauri::command]
 async fn neon_flush(engine: State<'_, pgsync::SyncEngine>) -> Result<(), AppError> {
     let engine = engine.inner().clone();
-    engine.push_if_active().await;
+    // Bounded: Android may kill the process shortly after backgrounding, and a
+    // hung network must not keep the runtime pinned until then. A timed-out
+    // cycle is harmless — dirty marks survive for the next sync.
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(15), engine.push_if_active()).await;
     Ok(())
 }
 
