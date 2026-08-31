@@ -16,6 +16,8 @@ interface BookmarkGridProps {
   onTagClick?: (tagId: string) => void
   onDragPointerDown?: (e: React.PointerEvent, bookmark: Bookmark) => void
   readOnly?: boolean
+  /** Touch-mode action-sheet opener, threaded to each card (readOnly only). */
+  onMore?: (bookmark: Bookmark) => void
 }
 
 export function computeColumns(width: number): number {
@@ -31,6 +33,7 @@ export const BookmarkGrid = memo(function BookmarkGrid({
   onTagClick,
   onDragPointerDown,
   readOnly,
+  onMore,
 }: BookmarkGridProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const [columns, setColumns] = useState(1)
@@ -102,6 +105,7 @@ export const BookmarkGrid = memo(function BookmarkGrid({
                   onTagClick={onTagClick}
                   onDragPointerDown={onDragPointerDown}
                   readOnly={readOnly}
+                  onMore={onMore}
                 />
               ))}
             </div>

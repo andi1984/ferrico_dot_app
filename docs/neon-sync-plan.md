@@ -18,7 +18,7 @@ sync mechanism; Google Drive is demoted to a manual one-way export/import fallba
 | D5 | **Row-level storage, incremental sync.** Real rows in Postgres (not a JSON blob), pulled/pushed incrementally via a server-assigned sequence cursor. Merge semantics unchanged: the existing `merge.rs` per-record rank/normalize is reused as-is. |
 | D6 | **Near-realtime push** (debounced a few seconds after each local change). Pull on app open + interval + manual. Faster pull polling / realtime channel: later. |
 | D7 | **Remote schema is app-managed** — idempotent `CREATE TABLE IF NOT EXISTS` + additive migrations, mirroring the `db.rs` style. User runs zero SQL. |
-| D8 | **Android stays pull-only**, enforced at compile time (same `cfg!(mobile)` pattern as Drive). |
+| D8 | **Android stays pull-only**, enforced at compile time (same `cfg!(mobile)` pattern as Drive). *Superseded: Android is a full read-write sync peer since the mobile-write change (v0.16).* |
 | D9 | **QR pairing payload v2** carries Neon host/dbname/user/password; manual paste remains as fallback. v1 (Drive) payloads still parse. |
 | D10 | **Drive demoted**: all automatic triggers removed. Two manual buttons remain — "Export to Drive" (upload snapshot) and "Import from Drive" (wipe-and-restore behind an explicit confirm dialog, with an automatic local safety-export first). |
 | D11 | **Exactly one auto-sync backend** (Neon). Drive and Neon never both sync automatically. |

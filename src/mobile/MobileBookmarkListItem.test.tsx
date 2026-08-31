@@ -46,6 +46,8 @@ describe('MobileBookmarkListItem', () => {
   it('is not user-selectable (Android long-press can select text instead of clicking)', () => {
     const bookmark = makeBookmark({ title: 'Test' })
     render(<MobileBookmarkListItem bookmark={bookmark} />)
-    expect(screen.getByRole('button', { name: 'Test' }).className).toContain('select-none')
+    expect(
+      screen.getByRole('button', { name: 'Test' }).closest('.mobile-list-item')!.className
+    ).toContain('select-none')
   })
 })

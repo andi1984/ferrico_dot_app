@@ -5,12 +5,14 @@ import { MobileBookmarkListItem } from './MobileBookmarkListItem'
 
 interface MobileBookmarkListProps {
   bookmarks: Bookmark[]
+  onMore?: (bookmark: Bookmark) => void
+  inBin?: boolean
 }
 
 const ROW_HEIGHT = 68
 const ROW_HEIGHT_WITH_DESC = 88
 
-export const MobileBookmarkList = memo(function MobileBookmarkList({ bookmarks }: MobileBookmarkListProps) {
+export const MobileBookmarkList = memo(function MobileBookmarkList({ bookmarks, onMore, inBin }: MobileBookmarkListProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
 
   const virtualizer = useVirtualizer({
@@ -36,7 +38,7 @@ export const MobileBookmarkList = memo(function MobileBookmarkList({ bookmarks }
               transform: `translateY(${virtualRow.start}px)`,
             }}
           >
-            <MobileBookmarkListItem bookmark={bookmarks[virtualRow.index]} />
+            <MobileBookmarkListItem bookmark={bookmarks[virtualRow.index]} onMore={onMore} inBin={inBin} />
           </div>
         ))}
       </div>

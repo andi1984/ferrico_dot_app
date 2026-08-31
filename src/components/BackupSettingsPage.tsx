@@ -486,8 +486,8 @@ export function BackupSettingsPage({ onClose, onDone }: { onClose: () => void; o
           {!pairingCode ? (
             <>
               <p className="text-xs" style={{ color: 'var(--text-2)', lineHeight: 1.5 }}>
-                Give the Ferrico mobile app read-only access to your synced bookmarks: scan a
-                QR code or paste a pairing code — no sign-in or password typing on the phone.
+                Connect the Ferrico mobile app to your synced bookmarks — changes sync both
+                ways. Scan a QR code or paste a pairing code; no sign-in on the phone.
               </p>
               <button
                 onClick={showPairing}

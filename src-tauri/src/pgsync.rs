@@ -30,14 +30,16 @@ use std::path::Path;
 use crate::error::AppError;
 use crate::merge::{self, SyncSnapshot};
 
-/// How a sync cycle may touch the remote. `PullOnly` is the mobile mode: the
-/// merge still runs (remote rows land locally), but nothing is ever uploaded.
-/// Selected once per cycle via `cfg!(mobile)` in `run_sync`, which makes
-/// read-only sync a compile-time property of the mobile binary rather than a
-/// runtime setting someone could flip.
+/// How a sync cycle may touch the remote. With `PullOnly` the merge still
+/// runs (remote rows land locally), but nothing is ever uploaded. Every
+/// platform now syncs `Full` — mobile was pull-only until v0.16; the variant
+/// stays for the test harness and a possible future per-device read-only
+/// setting.
 #[derive(Clone, Copy, PartialEq)]
 pub enum SyncMode {
     Full,
+    /// Only constructed by tests today (see the doc comment above).
+    #[allow(dead_code)]
     PullOnly,
 }
 
@@ -81,6 +83,13 @@ pub struct NeonConfig {
     /// Epoch seconds of the last successful sync (display only).
     #[serde(default)]
     pub last_sync: Option<i64>,
+    /// One-shot upgrade marker for mobile builds. Pull-only builds (< v0.16)
+    /// cleared dirty marks without ever pushing, so rows created or edited on
+    /// this device have no pending-push record. The first sync of a
+    /// write-capable build re-marks everything dirty once; `push_set` then
+    /// uploads only rows that actually differ from the remote.
+    #[serde(default)]
+    pub mobile_write_migrated: bool,
 }
 
 impl NeonConfig {
@@ -980,6 +989,16 @@ impl SyncEngine {
         self.app.emit("backup-syncing", serde_json::json!({ "op": op })).ok();
 
         let result = async {
+            if cfg!(mobile) && !cfg.mobile_write_migrated {
+                // See `NeonConfig::mobile_write_migrated`. Marks land in the
+                // persistent `sync_dirty` table, so setting the flag before the
+                // cycle succeeds is safe — a failed sync keeps the marks.
+                let conn = self.lock_conn()?;
+                crate::db::db_mark_all_dirty(&conn)?;
+                drop(conn);
+                self.update_cfg(|c| c.mobile_write_migrated = true)?;
+            }
+
             let (dirty, fence, local) = {
                 let conn = self.lock_conn()?;
                 // First contact with this remote: rows predating dirty tracking
@@ -995,8 +1014,7 @@ impl SyncEngine {
             };
 
             let mut store = self.connect(&cfg).await?;
-            let mode = if cfg!(mobile) { SyncMode::PullOnly } else { SyncMode::Full };
-            let outcome = sync_once(&mut store, local, &dirty, cfg.last_seq, mode).await?;
+            let outcome = sync_once(&mut store, local, &dirty, cfg.last_seq, SyncMode::Full).await?;
 
             {
                 let conn = self.lock_conn()?;
@@ -1049,7 +1067,6 @@ impl SyncEngine {
         }
     }
 
-    #[cfg(desktop)]
     pub async fn push_if_active(&self) {
         if self.is_active() {
             if let Err(e) = self.run_sync("push").await {
@@ -1066,13 +1083,16 @@ impl SyncEngine {
     /// *remote* changes land without a local edit; `0` disables that part.
     /// After a failure (offline, bad credentials) it backs off before
     /// retrying so a closed laptop lid doesn't hammer the network.
-    #[cfg(desktop)]
+    ///
+    /// Runs on both platforms. Mobile uses a slower tick — Android suspends
+    /// the process when backgrounded anyway, and the frontend flushes pending
+    /// changes on `visibilitychange`, so sub-5s latency buys nothing there.
     pub async fn run_change_loop(self) {
-        const TICK: std::time::Duration = std::time::Duration::from_secs(5);
+        let tick = std::time::Duration::from_secs(if cfg!(mobile) { 15 } else { 5 });
         const ERROR_BACKOFF: std::time::Duration = std::time::Duration::from_secs(60);
         let mut last_full = std::time::Instant::now();
         loop {
-            tokio::time::sleep(TICK).await;
+            tokio::time::sleep(tick).await;
             if !self.is_active() {
                 continue;
             }

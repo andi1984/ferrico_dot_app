@@ -45,7 +45,7 @@ prefilled): set `FERRICO_NEON_HOST`, `FERRICO_NEON_DB`, and/or
 | **Conflict resolution** | Byte-for-byte the same per-record merge as the old Drive sync (`merge.rs`): UUID identity, `updated_at` ranking, delete-beats-edit ties, structural normalization (duplicate-folder collapse, cycle breaking, re-homing). Commutative — all devices converge. |
 | **Serialization** | Every cycle runs inside one Postgres transaction holding `pg_advisory_xact_lock`, so concurrent devices queue instead of interleaving; the cursor is read inside the lock. |
 | **Push timing** | Desktop pushes within ~5 seconds of a local change (change-driven loop), plus on open, before close (window held briefly), on the optional pull interval, and manually. |
-| **Android** | Pull-only, enforced at compile time — the mobile binary cannot construct a pushing sync. Pulls on launch, on foreground resume, and via the refresh button. |
+| **Android** | Full two-way sync (since v0.16 — pull-only before that). Pulls on launch, on foreground resume, on the optional interval, and via the refresh button; local edits push through the change loop (~15 s tick) and a best-effort flush when the app is backgrounded (Android has no close event). |
 | **Empty-local safety** | A fresh install or wiped local DB always pulls the remote in full (stale cursors are ignored when local is empty) — absence never wins. |
 | **Drive restore interplay** | Restoring a Drive backup replaces the *local* device only; if Neon sync is enabled, the next cycle merges the synced state back in. To make a restore authoritative you'd currently need a fresh Neon database (or branch). |
 

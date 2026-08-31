@@ -172,3 +172,11 @@ export const IconFilter = ({ size = 14 }: { size?: number }) => (
     <path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3Z" />
   </svg>
 )
+
+export const IconMore = ({ size = 14 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true">
+    <circle cx="12" cy="5" r="1.8" />
+    <circle cx="12" cy="12" r="1.8" />
+    <circle cx="12" cy="19" r="1.8" />
+  </svg>
+)

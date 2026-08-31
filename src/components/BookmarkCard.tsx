@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import type { Bookmark } from '../types'
 import { domainOf, formatDate, initials } from '../utils'
 import { Favicon } from './Favicon'
-import { IconClose } from './icons'
+import { IconClose, IconMore } from './icons'
 
 interface BookmarkCardProps {
   bookmark: Bookmark
@@ -12,6 +12,9 @@ interface BookmarkCardProps {
   onTagClick?: (tagId: string) => void
   onDragPointerDown?: (e: React.PointerEvent, bookmark: Bookmark) => void
   readOnly?: boolean
+  /** Touch-mode action-sheet opener: renders an always-visible "⋮" button in
+      `readOnly` mode (where hover affordances don't exist). */
+  onMore?: (bookmark: Bookmark) => void
 }
 
 // Stable preview gradients keyed off the URL so each tile reads as its own.
@@ -36,6 +39,7 @@ export const BookmarkCard = memo(function BookmarkCard({
   onTagClick,
   onDragPointerDown,
   readOnly,
+  onMore,
 }: BookmarkCardProps) {
   function openUrl(e: React.MouseEvent | React.KeyboardEvent) {
     e.preventDefault()
@@ -134,6 +138,24 @@ export const BookmarkCard = memo(function BookmarkCard({
             radius={6}
           />
         </div>
+
+        {readOnly && onMore && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onMore(bookmark) }}
+            className="absolute top-1.5 right-1.5 rounded-full cursor-pointer flex items-center justify-center"
+            style={{
+              width: 32,
+              height: 32,
+              background: 'rgba(0,0,0,0.4)',
+              backdropFilter: 'blur(6px)',
+              color: 'rgba(255,255,255,0.9)',
+            }}
+            aria-label={`Actions for ${bookmark.title}`}
+            data-no-drag
+          >
+            <IconMore size={16} />
+          </button>
+        )}
 
         {!readOnly && (
           <button

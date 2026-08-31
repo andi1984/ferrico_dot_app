@@ -48,6 +48,9 @@ function mockBackend({
 }: { bookmarks?: Bookmark[]; sidebar?: SidebarData } = {}) {
   vi.mocked(invoke).mockImplementation((cmd: string) => {
     if (cmd === 'get_bookmarks') return Promise.resolve(bookmarks)
+    if (cmd === 'get_bin_bookmarks') return Promise.resolve([
+      makeBookmark({ id: 'bm-binned', title: 'Binned', url: 'https://binned.example.com' }),
+    ])
     if (cmd === 'get_sidebar') return Promise.resolve(sidebar)
     if (cmd === 'neon_status') return Promise.resolve({
       configured: false, enabled: false, host: null, dbname: 'neondb', user: null,
@@ -72,7 +75,7 @@ describe('MobileApp shell', () => {
     expect(screen.getByLabelText('Loading bookmarks')).toBeInTheDocument()
   })
 
-  it('loads bookmarks and sidebar via read-only commands', async () => {
+  it('loads bookmarks and sidebar on mount', async () => {
     mockBackend()
     render(<MobileApp />)
     expect(await screen.findByText('Example')).toBeInTheDocument()
@@ -86,12 +89,14 @@ describe('MobileApp shell', () => {
     expect(invoke).toHaveBeenCalledWith('get_sidebar')
   })
 
-  it('never calls purge_expired_bin and never subscribes to bookmark-added', async () => {
+  it('purges the expired bin on startup but never subscribes to bookmark-added', async () => {
     mockBackend()
     render(<MobileApp />)
     await screen.findByText('Example')
     const commands = vi.mocked(invoke).mock.calls.map((c) => c[0])
-    expect(commands).not.toContain('purge_expired_bin')
+    expect(commands).toContain('purge_expired_bin')
+    // The extension HTTP server doesn't run on mobile, so there is no
+    // bookmark-added event to listen for.
     expect(subscribeToBookmarkAdded).not.toHaveBeenCalled()
   })
 
@@ -115,7 +120,7 @@ describe('MobileApp shell', () => {
     render(<MobileApp />)
     await screen.findByText('Example')
     fireEvent.click(screen.getByRole('button', { name: 'Filter by folder or tag' }))
-    fireEvent.click(screen.getByRole('button', { name: /Reading/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Reading/ }))
     await waitFor(() => {
       expect(invoke).toHaveBeenCalledWith('get_bookmarks', {
         folderId: 'folder-1',
@@ -186,7 +191,7 @@ describe('MobileApp shell', () => {
     expect(img!.src).toBe('https://example.com/cover.png')
   })
 
-  it('opens a bookmark read-only via open_url on tap', async () => {
+  it('opens a bookmark via open_url on tap', async () => {
     mockBackend()
     render(<MobileApp />)
     fireEvent.click(await screen.findByText('Example'))
@@ -201,6 +206,94 @@ describe('MobileApp shell', () => {
     expect(await screen.findByLabelText('Pairing code')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Back' }))
     expect(await screen.findByText('Example')).toBeInTheDocument()
+  })
+})
+
+describe('MobileApp write flows', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.clear()
+    document.documentElement.removeAttribute('data-theme')
+    vi.mocked(subscribeToBackupSync).mockResolvedValue(() => {})
+    vi.mocked(subscribeToCoverUpdated).mockResolvedValue(() => {})
+  })
+
+  it('adds a bookmark through the FAB modal', async () => {
+    mockBackend()
+    render(<MobileApp />)
+    await screen.findByText('Example')
+    fireEvent.click(screen.getByRole('button', { name: 'Add bookmark' }))
+    fireEvent.change(screen.getByLabelText('URL *'), { target: { value: 'https://new.example.com' } })
+    fireEvent.change(screen.getByLabelText('Title *'), { target: { value: 'New one' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save bookmark' }))
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('add_bookmark', {
+        input: expect.objectContaining({ url: 'https://new.example.com', title: 'New one' }),
+      })
+    })
+  })
+
+  it('moves a bookmark to the bin via the row action sheet', async () => {
+    mockBackend()
+    render(<MobileApp />)
+    await screen.findByText('Example')
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for Example' }))
+    fireEvent.click(screen.getByRole('button', { name: /Move to bin/ }))
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('delete_bookmark', { id: 'bm-1' })
+    })
+  })
+
+  it('moves a bookmark to a folder via the folder picker', async () => {
+    mockBackend()
+    render(<MobileApp />)
+    await screen.findByText('Example')
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for Example' }))
+    fireEvent.click(screen.getByRole('button', { name: /Move to folder/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /^Reading/ }))
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('move_bookmark', { id: 'bm-1', folderId: 'folder-1' })
+    })
+  })
+
+  it('bin view lists binned bookmarks and restores via the action sheet', async () => {
+    mockBackend()
+    render(<MobileApp />)
+    await screen.findByText('Example')
+    fireEvent.click(screen.getByRole('button', { name: 'Filter by folder or tag' }))
+    fireEvent.click(screen.getByRole('button', { name: /^Bin/ }))
+    expect(await screen.findByText('Binned')).toBeInTheDocument()
+    expect(invoke).toHaveBeenCalledWith('get_bin_bookmarks')
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for Binned' }))
+    fireEvent.click(screen.getByRole('button', { name: /Restore/ }))
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('restore_bookmark', { id: 'bm-binned' })
+    })
+  })
+
+  it('creates a folder from the FilterDrawer', async () => {
+    mockBackend()
+    render(<MobileApp />)
+    await screen.findByText('Example')
+    fireEvent.click(screen.getByRole('button', { name: 'Filter by folder or tag' }))
+    fireEvent.click(screen.getByRole('button', { name: 'New folder' }))
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Later' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create folder' }))
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('add_folder', { name: 'Later', parentId: null })
+    })
+  })
+
+  it('deletes a tag through its action sheet', async () => {
+    mockBackend()
+    render(<MobileApp />)
+    await screen.findByText('Example')
+    fireEvent.click(screen.getByRole('button', { name: 'Filter by folder or tag' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for tag rust' }))
+    fireEvent.click(await screen.findByRole('button', { name: /Delete tag/ }))
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('delete_tag', { id: 'tag-1' })
+    })
   })
 })
 
@@ -297,5 +390,18 @@ describe('MobileApp foreground resume sync', () => {
     // assertion that matters here is that a hidden document never triggers a
     // sync attempt.
     expect(invoke).not.toHaveBeenCalledWith('neon_sync_now')
+  })
+
+  it('flushes pending edits via neon_flush when the app is backgrounded', async () => {
+    mockBackendWithBackupStatus(true)
+    render(<MobileApp />)
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_bookmarks', expect.anything()))
+
+    setVisibility('hidden')
+    act(() => resume())
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('neon_flush')
+    })
   })
 })

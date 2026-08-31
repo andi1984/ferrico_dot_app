@@ -1,5 +1,12 @@
 # Mobile v1 — device verification checklist (#71)
 
+> **Superseded in part (v0.16, mobile-write change):** the phone now pushes
+> local edits (full two-way Neon sync), so §3's "pull-only proof" no longer
+> holds for the sync database — it remains valid only for Google Drive, which
+> stays desktop-manual. A fresh write-path device pass should verify: add /
+> edit / delete on the phone appears on desktop after a sync cycle, and a
+> backgrounded phone flushes pending edits (`neon_flush`).
+
 Operator checklist for the final end-to-end pass on a real device/emulator,
 expanding issue #71's checklist into concrete steps for this repo. Needs a
 human with the device — nothing here is automatable, so run it yourself
