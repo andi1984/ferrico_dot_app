@@ -102,7 +102,7 @@ Read-only isn't just a UI choice — **the mobile build physically cannot write 
 
 The phone pulls on launch, on returning to the foreground (rate-limited), and on manual refresh.
 
-**Install:** grab the APK from a [release](https://github.com/andi1984/ferrico_dot_app/releases) and sideload it, or build it yourself (see below). Release APKs are currently **debug-signed** — fine for sideloading, not Play-Store ready.
+**Install:** grab the APK from a [release](https://github.com/andi1984/ferrico_dot_app/releases) and sideload it, or build it yourself (see below). Pick the `arm64-v8a` APK for any reasonably modern phone (`armeabi-v7a` for old 32-bit devices). Release APKs are signed with a stable release key (see [`docs/android-release-signing.md`](docs/android-release-signing.md)), so updates install over the existing app. If you still have a pre-v0.16 debug-signed install, uninstall it once first — the signing key changed.
 
 **Build it yourself:** one-time Android SDK/NDK setup is documented in [`CLAUDE.md`](CLAUDE.md#android-setup-one-time), then:
 

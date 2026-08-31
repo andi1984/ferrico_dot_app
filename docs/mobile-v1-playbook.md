@@ -52,8 +52,8 @@ Remaining:
   **pull-only proof** (Drive `modifiedTime` must never change from phone activity) —
   has not been walked end to end.
 - **#72–#75** Stretch (QR scanning, pull-to-refresh, release signing, iOS) — only on
-  explicit user request. Note #74 (release signing) is what would let CI ship a
-  properly-signed APK instead of the current debug-signed one.
+  explicit user request. #74 (release signing) is **done** — CI ships properly
+  signed per-ABI release APKs; see `docs/android-release-signing.md`.
 
 **Lesson from #67–#70**: they were built in parallel worktrees off the same
 `origin/main` point (all independent per the epic's dependency notes), which meant

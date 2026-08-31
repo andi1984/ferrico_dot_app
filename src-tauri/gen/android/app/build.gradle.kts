@@ -13,6 +13,16 @@ val tauriProperties = Properties().apply {
     }
 }
 
+// Release signing: `keystore.properties` is gitignored; CI materializes it from
+// repo secrets (see release.yml), local builds can create it by hand. Keys:
+// storeFile (path relative to this dir), storePassword, keyAlias, keyPassword.
+val keystorePropertiesFile = file("keystore.properties")
+val keystoreProperties = Properties().apply {
+    if (keystorePropertiesFile.exists()) {
+        keystorePropertiesFile.inputStream().use { load(it) }
+    }
+}
+
 android {
     compileSdk = 36
     namespace = "com.ferrico.app"
@@ -23,6 +33,16 @@ android {
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+    }
+    signingConfigs {
+        create("release") {
+            if (keystorePropertiesFile.exists()) {
+                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
     }
     buildTypes {
         getByName("debug") {
@@ -37,6 +57,12 @@ android {
             }
         }
         getByName("release") {
+            // Only sign when a keystore is configured — otherwise Gradle would
+            // fail every local `--release` build for contributors without keys.
+            // An unsigned release APK still builds; it just can't be installed.
+            if (keystorePropertiesFile.exists()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = true
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }
